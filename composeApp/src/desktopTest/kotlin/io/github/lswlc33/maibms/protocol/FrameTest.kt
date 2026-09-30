@@ -239,6 +239,43 @@ class FrameTest {
         assertTrue(kotlin.math.abs((r.maxCellV - r.minCellV) - r.deltaCellV) < 1e-9)
     }
 
+    // ---- 日志遮蔽（密码不得进日志文件）----
+
+    /** 0x23 密码帧：数据区必须打码，且任何一位密码字节都不能出现在输出里 */
+    @Test fun authFrameIsRedactedInLog() {
+        val frame = Frame.auth(330, "12345678".encodeToByteArray())
+        val logged = Frame.hexForLog(frame)
+        // 帧头保留：地址、功能码、槽地址、长度仍可见（排查需要）
+        assertTrue(logged.startsWith("7E A1 23 4A 01 08"), "帧头应保留：$logged")
+        assertEquals(frame.size, logged.split(' ').size, "遮蔽不能改变长度结构")
+        // 密码明文的所有字节形态都不得出现
+        for (b in "12345678".encodeToByteArray()) {
+            val h = "%02X".format(b)
+            assertTrue(!logged.contains(h), "日志里出现了密码字节 $h：$logged")
+        }
+        assertTrue(logged.contains("**_"), "数据区应打码：$logged")
+    }
+
+    /** 真实密码帧（一级 12345678，docs 常见报文）逐字节确认遮蔽位置正确 */
+    @Test fun realAuthFrameRedaction() {
+        val frame = hex("7EA1234A01083132333435363738DB50AA55")
+        assertEquals("7E A1 23 4A 01 08 **_ **_ **_ **_ **_ **_ **_ **_ DB 50 AA 55", Frame.hexForLog(frame))
+    }
+
+    /** 非密码帧一律原样输出（实时/参数/控制都不含敏感信息） */
+    @Test fun otherFramesNotRedacted() {
+        assertEquals("7E A1 01 00 00 F5 58 62 AA 55", Frame.hexForLog(Frame.readRealtime()))
+        assertEquals("7E A1 02 68 00 20 18 65 AA 55", Frame.hexForLog(Frame.readParam(104, 32)))
+        assertEquals("7E A1 51 07 00 00 38 E4 AA 55", Frame.hexForLog(Frame.control(7)))
+    }
+
+    /** 长度字段与帧长不符时不能越界（宁可整串输出也不能崩） */
+    @Test fun malformedAuthFrameDoesNotCrash() {
+        val bad = hex("7EA1234A01FF313233")      // 声称 255 字节数据，实际只有 3 字节
+        assertEquals("7E A1 23 4A 01 FF 31 32 33", Frame.hexForLog(bad))
+        assertTrue(Frame.hexForLog(hex("7EA1")).isNotBlank())   // 超短帧同样安全
+    }
+
     private fun hex(s: String): ByteArray =
         s.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 

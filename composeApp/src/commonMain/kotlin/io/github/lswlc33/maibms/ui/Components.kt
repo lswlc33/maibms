@@ -379,25 +379,38 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         // 没收到过数据就一律 "--"：拿 0.0Ah / 0% 当读数是误导
         fun v(text: String) = if (status.hasData) text else "--"
-        // 左=MOS/均衡，右=电池状态+容量，左右各三行（SOH 已按需求移除）
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
-                SRow(BmsColors.OffGray, "充电 MOS", v(status.chMos))
-                SRow(BmsColors.OkGreen, "放电 MOS", v(status.disMos))
-                SRow(BmsColors.OffGray, "均衡状态", v(status.balance))
-            }
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
-                SRow(BmsColors.WarnAmber, "电池状态", v(status.battState))
-                SRow(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".format(status.remainCapAh) + " Ah" else "--")
-                SRow(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".format(status.totalCapAh) + " Ah" else "--")
+        // 左=MOS/均衡，右=电池状态+容量，左右各三行（SOH 已按需求移除）。
+        // 每行必须是同一个 Row：此前左右各一个 Column 自堆自的，行高由各行内容
+        // （中文 vs 拉丁数字的字体行高）决定，两列从第二行起逐行错位。
+        val rows = listOf(
+            listOf(
+                Triple(BmsColors.OffGray, "充电 MOS", v(status.chMos)),
+                Triple(BmsColors.WarnAmber, "电池状态", v(status.battState)),
+            ),
+            listOf(
+                Triple(BmsColors.OkGreen, "放电 MOS", v(status.disMos)),
+                Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".format(status.remainCapAh) + " Ah" else "--"),
+            ),
+            listOf(
+                Triple(BmsColors.OffGray, "均衡状态", v(status.balance)),
+                Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".format(status.totalCapAh) + " Ah" else "--"),
+            ),
+        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            rows.forEach { cells ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    cells.forEach { (dot, label, value) ->
+                        SRow(dot, label, value, Modifier.weight(1f))
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun SRow(dot: Color, label: String, value: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = Modifier) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
         StatusDot(dot)
         Spacer(Modifier.width(6.dp))
         Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))

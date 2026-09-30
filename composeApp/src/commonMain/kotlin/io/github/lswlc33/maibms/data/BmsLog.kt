@@ -75,6 +75,7 @@ object BmsLog {
         val list = _entries.value
         if (list.isEmpty()) return "（日志为空）"
         val sb = StringBuilder("麻衣 BMS 日志导出 · ${list.size} 条\n")
+        sb.appendLine("说明：0x23 密码校验帧的数据区已遮蔽（**），不会包含密码明文。")
         var lastDay = -1L
         for (e in list) {
             val day = e.atMs / 86_400_000L

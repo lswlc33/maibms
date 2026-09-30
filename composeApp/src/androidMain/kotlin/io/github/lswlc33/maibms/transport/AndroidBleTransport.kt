@@ -352,7 +352,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         val g = gatt ?: run { logW("写入被丢弃：未连接"); return }
         val wc = writeChar ?: run { logW("写入被丢弃：无写通道"); return }
         if (_linkState.value != LinkState.Connected) { logW("写入被丢弃：链路未就绪"); return }
-        logD("→ ${hex(frame)}")
+        // 帧日志统一走协议层的遮蔽版：0x23 密码帧的数据区不能被原样写进日志
+        logD("→ ${io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame)}")
         val chunk = minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)
         var offset = 0
         while (offset < frame.size) {

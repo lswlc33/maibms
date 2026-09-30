@@ -392,7 +392,8 @@ class BmsRepository(
             awaiting = d
             expectFunc = expectedFunc
             expectReg = expectedReg
-            BmsLog.d("TX", BmsLog.hex(frame))
+            // 密码类帧走遮蔽版：日志会被导出成文件，别把 0x23 的密码明文留在里面
+            BmsLog.d("TX", Frame.hexForLog(frame))
             transport.write(frame)
             val r = withTimeoutOrNull(timeoutMs) { d.await() }
             awaiting = null; expectFunc = -1; expectReg = null

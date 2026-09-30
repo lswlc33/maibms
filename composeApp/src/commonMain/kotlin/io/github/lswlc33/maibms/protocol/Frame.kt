@@ -97,6 +97,36 @@ object Frame {
     fun auth(slotAddr: Int, payload: ByteArray, addr: Byte = Proto.ADDR_MAIN): ByteArray =
         build(addr, Proto.FC_AUTH, slotAddr, payload, payload.size)
 
+    /**
+     * 日志用的帧十六进制串：**密码类帧的数据区整段打码**。
+     *
+     * `0x23` 的数据区就是密码明文，而日志会被导出成文件、贴进 issue；
+     * 不遮蔽等于把密码写进文本。帧头（地址/功能码/槽地址/长度）与 CRC 仍原样保留——
+     * 排查时照样能看出「什么时候、往哪个槽、发了多长的密码」，只是看不到内容。
+     *
+     * 其余功能码照常输出（实时/参数/控制帧不含敏感信息）。
+     */
+    fun hexForLog(frame: ByteArray): String {
+        // 7E | addr | func | regLo | regHi | len | data[len] | crcLo | crcHi | AA 55
+        if (frame.size < 8) return hex(frame)
+        val func = frame[2].toInt() and 0xFF
+        if (func != Proto.FC_AUTH) return hex(frame)
+        val dataLen = frame[5].toInt() and 0xFF
+        val dataStart = 6
+        val dataEnd = dataStart + dataLen
+        if (dataEnd > frame.size - 4) return hex(frame)   // 长度字段与帧长不符：宁可整串输出也别越界
+        val sb = StringBuilder(frame.size * 3)
+        for (i in frame.indices) {
+            if (i in dataStart until dataEnd) sb.append("**_")
+            else sb.append("%02X".format(frame[i]))
+            if (i != frame.lastIndex) sb.append(' ')
+        }
+        return sb.toString()
+    }
+
+    /** 帧的十六进制串（空格分隔） */
+    fun hex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
+
     /** 密码校验（按等级编码：五级/管理员槽 12 字节，管理员用点分十进制） */
     fun auth(level: Int, password: String, addr: Byte = Proto.ADDR_MAIN): ByteArray =
         auth(ParamTable.slotAddr(level), PasswordCodec.encode(level, password), addr)
