@@ -1,0 +1,60 @@
+# ---- 构建产物 / 本地工具链（不入库）----
+.gradle/
+.kotlin/
+build/
+composeApp/build/
+local.properties
+
+# 本地 Gradle 发行版（约 276MB）
+.tools/
+
+# ---- Android 产物 ----
+*.apk
+*.aab
+*.apk.idsig
+*.idsig
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- 签名材料：绝不入库 ----
+# CI 从仓库 secrets 取 keystore（SIGNING_KEYSTORE_BASE64），本地用 keystore.properties +
+# maibms-release.jks。这两个文件请务必备份——丢了就没法再给已发布的版本推送覆盖安装的更新。
+*.jks
+*.keystore
+keystore.properties
+
+# ---- 第三方逆向资料：只留本地，不随仓库发布 ----
+# 官方小程序的解包结果与源包（版权属原厂），仅作协议分析参考
+unpack/
+小程序源包/
+小程序解包工具/
+解包结果/
+
+# ---- 离屏渲染 / 临时截图 ----
+.shots/
+
+# ---- 本机工具与编辑器配置 ----
+.zcode/
+.zcodeignore
+.idea/
+*.iml
+.vscode/
+.fleet/
+*.swp
+*.swo
+
+# ---- 系统 ----
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ---- 临时与日志 ----
+*.log
+*.tmp
+*.bak
+*~
+
+# Node（若后续使用工具链）
+node_modules/

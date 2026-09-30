@@ -1,0 +1,127 @@
+name: Beta
+
+# 每次推送到 main 自动出一个预发布包，版本名带 -beta.<序号>，方便随时装最新改动。
+# 版本号只在工作区里改，不提交（避免和 Release 工作流的版本提交打架）。
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - 'LICENSE'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta
+  cancel-in-progress: true
+
+env:
+  KEEP_BETAS: 10
+
+jobs:
+  beta:
+    name: Beta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Ensure Android platform and build-tools
+        run: |
+          echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" | tail -3
+
+      - name: Tag the build as beta
+        id: version
+        run: |
+          set -e
+          GRADLE_FILE=composeApp/build.gradle.kts
+          CODE="$(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | head -1 | grep -oE '[0-9]+')"
+          BASE="$(grep -oE 'versionName = "[^"]*"' "$GRADLE_FILE" | head -1 | cut -d'"' -f2)"
+          NAME="${BASE}-beta.${{ github.run_number }}"
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$GRADLE_FILE"
+          echo "beta version: ${NAME} (versionCode ${CODE})"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag=beta-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :composeApp:desktopTest
+
+      - name: Build signed APK
+        id: build
+        env:
+          SIGNING_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -e
+          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
+            printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
+            echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/maibms-release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::未配置签名 secrets，本次用 debug 签名，无法覆盖安装正式版"
+          fi
+
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :composeApp:assembleRelease
+
+          SRC=composeApp/build/outputs/apk/release/composeApp-release.apk
+          test -f "$SRC" || { echo "::error::未找到构建产物 $SRC"; exit 1; }
+          OUT="maibms-${{ steps.version.outputs.name }}.apk"
+          cp "$SRC" "$OUT"
+          echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+          echo "built: $OUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-apk
+          path: ${{ steps.build.outputs.apk }}
+          if-no-files-found: error
+
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VER: ${{ steps.version.outputs.name }}
+        run: |
+          NOTES="预发布版 **${VER}**，由 \`${GITHUB_SHA:0:7}\` 自动构建，已签名可直接覆盖安装。
+
+          Automated beta build **${VER}** from \`${GITHUB_SHA:0:7}\`. Signed, installs over the previous build."
+          gh release create "$TAG" \
+            --title "${VER}" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --notes "$NOTES"
+          gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+          echo "published: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+      - name: Prune old betas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: ${{ env.KEEP_BETAS }}
+        run: |
+          # 只保留最近 KEEP 个 beta 预发布，避免 Releases 页被刷屏
+          gh release list --limit 100 --json tagName,isPrerelease \
+            | python3 -c "
+          import json,sys
+          keep=int('${KEEP}')
+          rels=[r for r in json.load(sys.stdin) if r['isPrerelease'] and r['tagName'].startswith('beta-')]
+          for r in rels[keep:]:
+              print(r['tagName'])
+          " | while read -r tag; do
+            echo "deleting old beta: $tag"
+            gh release delete "$tag" --yes --cleanup-tag || true
+          done

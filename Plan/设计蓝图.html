@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>蚂蚁BMS开源版 · 界面设计蓝图</title>
+<style>
+:root{
+  /* 图纸 chrome */
+  --paper:#F1F3F2; --paper-2:#E7EBE9; --ink:#1B1F1E; --ink-2:#4C5553; --ink-3:#7A8481;
+  --line:#D3DAD7; --line-2:#BEC7C3;
+  --spec:#0B5E60; --spec-bg:#E0F1F0;
+  /* 应用 M3 tonal（文档用） */
+  --m3-primary:#00696E; --m3-onP:#FFFFFF; --m3-pc:#B4ECED; --m3-onPc:#002021;
+  --m3-surf:#F4FAFA; --m3-surfC:#E7EEEE; --m3-out:#C4D7D8; --m3-onSurf:#161D1D; --m3-onSurfV:#3F4949;
+  --m3-sec:#4A6365; --m3-secC:#D2E7E8;
+  --ok:#2E6B4F; --ok-bg:#D3F0E0; --warn:#8F5B00; --warn-bg:#FFE9C2; --bad:#B3261E; --bad-bg:#FFDAD4;
+  --info:#1D5FA8; --info-bg:#D6E5F8; --off:#79747E; --off-bg:#E8E0E8;
+  --amber:#E8A13A; --blue:#5A8FD8;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,"Courier New",monospace;
+  --sans:"PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:64px}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.65;
+  background-image:radial-gradient(var(--line) .8px, transparent .8px);background-size:26px 26px}
+::selection{background:var(--m3-pc)}
+a{color:var(--spec)}
+button{font-family:inherit}
+:focus-visible{outline:2.5px solid var(--spec);outline-offset:2px;border-radius:4px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto}}
+
+/* ===== 顶部条 ===== */
+.topbar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 88%,white);
+  backdrop-filter:blur(8px);border-bottom:1.5px solid var(--line-2)}
+.topbar-in{max-width:1240px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.topbar b{font-size:15px;letter-spacing:.02em}
+.topbar nav{display:flex;gap:4px;flex-wrap:wrap}
+.topbar nav a{text-decoration:none;font-size:13px;color:var(--ink-2);padding:5px 12px;border-radius:99px}
+.topbar nav a:hover{background:var(--spec-bg);color:var(--spec)}
+.ver{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+
+/* ===== 图纸页眉 ===== */
+.hero{max-width:1240px;margin:0 auto;padding:56px 24px 8px}
+.hero .eyebrow{font-family:var(--mono);font-size:12.5px;color:var(--spec);letter-spacing:.14em}
+.hero h1{font-size:clamp(30px,4.4vw,46px);font-weight:900;letter-spacing:.01em;line-height:1.25;margin:10px 0 12px}
+.hero h1 span{color:var(--spec)}
+.hero p.sub{max-width:760px;color:var(--ink-2);font-size:16px}
+.hero .meta{display:flex;gap:10px;flex-wrap:wrap;margin-top:20px}
+.hero .meta span{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);border:1.5px solid var(--line-2);
+  background:white;border-radius:8px;padding:4px 10px}
+.hero .meta span i{font-style:normal;color:var(--spec);font-weight:700}
+
+.wrap{max-width:1240px;margin:0 auto;padding:0 24px 80px}
+
+/* ===== 图纸分节 ===== */
+.sheet{margin-top:64px}
+.sheet-h{display:flex;align-items:baseline;gap:14px;border-bottom:2.5px solid var(--ink);padding-bottom:10px;margin-bottom:26px}
+.sheet-h .no{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--spec);letter-spacing:.1em}
+.sheet-h h2{font-size:26px;font-weight:900}
+.sheet-h .tail{margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--ink-3)}
+.sheet>p.lead{max-width:840px;color:var(--ink-2);margin-bottom:24px}
+
+/* ===== 信息架构 metro 图 ===== */
+.ia{background:white;border:1.5px solid var(--line-2);border-radius:20px;padding:28px 26px;overflow-x:auto}
+.ia .lane{display:grid;grid-template-columns:210px 1fr;gap:0 18px;align-items:start;min-width:940px}
+.ia .lane+.lane{margin-top:6px}
+.ia .root{writing-mode:horizontal-tb;align-self:center;background:var(--ink);color:#fff;border-radius:14px;
+  padding:14px 12px;text-align:center;font-weight:700;font-size:14px;line-height:1.5}
+.ia .root small{display:block;font-weight:400;font-size:11px;color:#B9C4C2;margin-top:4px}
+.ia .branch{display:flex;gap:14px;align-items:stretch;flex-wrap:wrap}
+.ia .node{border:1.8px solid var(--line-2);border-radius:14px;padding:10px 14px;background:var(--paper);min-width:150px}
+.ia .node.root2{background:var(--spec);border-color:var(--spec);color:#fff;font-weight:700}
+.ia .node a{color:inherit;text-decoration:none;display:block}
+.ia .node .n1{font-weight:700;font-size:14px}
+.ia .node .n2{font-size:11.5px;color:var(--ink-3);font-family:var(--mono);margin-top:2px}
+.ia .node.root2 .n2{color:#BCE3E2}
+.ia .kids{display:flex;flex-direction:column;gap:6px;padding-top:4px}
+.ia .kid{position:relative;border:1.5px dashed var(--line-2);border-radius:10px;padding:5px 12px 5px 26px;
+  font-size:12.5px;background:white;color:var(--ink-2);white-space:nowrap}
+.ia .kid::before{content:"";position:absolute;left:9px;top:50%;width:8px;height:8px;transform:translateY(-50%);
+  border-radius:50%;background:var(--spec);opacity:.55}
+.ia .kid.dlg::before{background:transparent;border:2px solid var(--warn)}
+.ia .kid.dlg{color:var(--warn);border-style:dashed}
+.ia .kid:hover{border-color:var(--spec);color:var(--spec)}
+.ia .kid a{text-decoration:none;color:inherit}
+.ia .arrow{align-self:center;color:var(--ink-3);font-family:var(--mono);font-size:16px;padding:0 2px;flex:none}
+.ia .connote{font-size:11px;color:var(--ink-3);font-family:var(--mono);margin-top:5px}
+.ia .note{margin-top:16px;font-size:12.5px;color:var(--ink-2)}
+.ia .note code{font-family:var(--mono);font-size:11.5px;background:var(--paper-2);border-radius:6px;padding:1px 6px}
+
+/* ===== 设计基线 tokens ===== */
+.base{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}
+.base .card{background:white;border:1.5px solid var(--line-2);border-radius:18px;padding:20px}
+.base h3{font-size:15px;font-weight:900;margin-bottom:12px}
+.base h3 small{font-weight:400;color:var(--ink-3);font-size:11.5px;font-family:var(--mono);margin-left:8px}
+.chips{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chipc{display:flex;gap:10px;align-items:center;border:1.5px solid var(--line);border-radius:12px;padding:8px 10px}
+.chipc .sw{width:34px;height:34px;border-radius:10px;flex:none;border:1px solid rgba(0,0,0,.08)}
+.chipc .nm{font-size:12px;line-height:1.35}
+.chipc .nm code{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);display:block}
+.typerow{border-top:1px dashed var(--line-2);padding:10px 0;display:flex;align-items:baseline;gap:12px}
+.typerow:first-of-type{border-top:0}
+.typerow .tag{font-family:var(--mono);font-size:10.5px;color:var(--ink-3);width:84px;flex:none}
+.comp-demo .segd{border:1.5px solid var(--m3-out);border-radius:16px;overflow:hidden;background:var(--m3-surf)}
+.comp-demo .segd .rowi{display:flex;align-items:center;gap:10px;padding:9px 13px;font-size:13px}
+.comp-demo .segd .rowi+.rowi{border-top:1px solid var(--m3-out)}
+.comp-demo .sw-on,.comp-demo .sw-off{width:34px;height:18px;border-radius:99px;position:relative;flex:none;margin-left:auto}
+.comp-demo .sw-on{background:var(--m3-primary)}
+.comp-demo .sw-on::after,.comp-demo .sw-off::after{content:"";position:absolute;top:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.comp-demo .sw-on::after{right:2px}
+.comp-demo .sw-off{background:#DAE2E1}.comp-demo .sw-off::after{left:2px;background:#8A9391}
+.comp-demo .ico{width:28px;height:28px;border-radius:9px;background:var(--m3-secC);flex:none}
+.comp-demo .btnd{display:inline-block;font-size:12.5px;font-weight:700;border-radius:99px;padding:7px 16px;margin:2px 6px 2px 0}
+.comp-demo .bd-f{background:var(--m3-primary);color:#fff}
+.comp-demo .bd-t{border:1.5px solid var(--m3-primary);color:var(--m3-primary)}
+.comp-demo .bd-d{background:var(--bad);color:#fff}
+.badges{display:flex;flex-wrap:wrap;gap:8px}
+.badges .bg1{font-size:12px;font-weight:600;border-radius:99px;padding:4px 12px}
+
+/* ===== 屏幕行布局 ===== */
+.scr{margin-top:44px}
+.scr-h{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.scr-h .id{font-family:var(--mono);font-size:12px;font-weight:700;color:#fff;background:var(--ink);border-radius:8px;padding:3px 10px;letter-spacing:.06em}
+.scr-h h3{font-size:21px;font-weight:900}
+.scr-h .kind{font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-left:auto;letter-spacing:.08em}
+.scr>p.path{font-family:var(--mono);font-size:12px;color:var(--ink-3);margin-bottom:18px}
+.scr>p.path b{color:var(--spec);font-weight:600}
+.row{display:grid;grid-template-columns:352px minmax(0,1fr);gap:34px;align-items:start}
+.row.multi{grid-template-columns:repeat(auto-fit,minmax(330px,1fr))}
+@media (max-width:860px){.row{grid-template-columns:1fr}}
+
+/* ===== 手机稿 ===== */
+.phone{width:330px;background:#101312;border-radius:38px;padding:9px;box-shadow:0 22px 44px -18px rgba(23,36,34,.4),0 4px 12px rgba(23,36,34,.14);position:sticky;top:76px}
+@media (max-width:860px){.phone{position:static;margin:0 auto}}
+.screen{background:var(--m3-surf);border-radius:30px;height:648px;overflow:hidden;display:flex;flex-direction:column;position:relative}
+.screen.dark{--m3-surf:#101413;--m3-surfC:#1B2020;--m3-out:#2F3837;--m3-onSurf:#E1E5E4;--m3-onSurfV:#B4C0BF;
+  --m3-primary:#6FD9DE;--m3-onP:#002022;--m3-pc:#004F53;--m3-onPc:#B4ECED;--m3-sec:#B1CDCE;--m3-secC:#334B4C;
+  background:var(--m3-surf);color:var(--m3-onSurf)}
+.p-status{display:flex;justify-content:space-between;padding:9px 22px 4px;font-size:11.5px;font-weight:700;color:var(--m3-onSurf)}
+.p-status .bat{display:inline-flex;align-items:center;gap:3px}
+.p-status .bat::before{content:"";width:17px;height:9px;border:1.4px solid currentColor;border-radius:3px;
+  background:linear-gradient(to right,currentColor 72%,transparent 72%)}
+.app-bar{padding:10px 18px 8px;color:var(--m3-onSurf)}
+.app-bar .t{font-size:21px;font-weight:800;display:flex;align-items:center;gap:8px}
+.app-bar .t .back{font-size:17px;opacity:.8}
+.app-bar .s{font-size:11.5px;color:var(--m3-onSurfV);margin-top:2px}
+.bodyx{flex:1;overflow-y:auto;padding:4px 14px 90px;scrollbar-width:none}
+.bodyx::-webkit-scrollbar{display:none}
+.bnav{position:absolute;left:0;right:0;bottom:0;background:var(--m3-surfC);border-top:1px solid var(--m3-out);
+  display:flex;padding:8px 10px 12px}
+.bnav a{flex:1;text-align:center;text-decoration:none;color:var(--m3-onSurfV);font-size:10.5px;font-weight:600}
+.bnav a .ic{width:30px;height:30px;border-radius:99px;margin:0 auto 3px;display:flex;align-items:center;justify-content:center;font-size:15px}
+.bnav a.on{color:var(--m3-onSurf)}
+.bnav a.on .ic{background:var(--m3-pc);color:var(--m3-onPc)}
+
+/* 应用内组件 —— 紧凑密度（v3：设置类页面去 description、缩 padding） */
+.seg{border:1.2px solid var(--m3-out);border-radius:18px;background:var(--m3-surf);overflow:hidden;margin-bottom:10px}
+.seg .gh{display:flex;align-items:center;gap:8px;padding:7px 14px 5px;font-size:11.5px;font-weight:800;color:var(--m3-primary);letter-spacing:.04em}
+.seg .gh .gt{font-size:10px;font-weight:500;color:var(--m3-onSurfV);margin-left:auto;font-family:var(--mono)}
+.it{display:flex;align-items:center;gap:10px;padding:7px 14px;position:relative;min-height:38px}
+.it+.it{border-top:1px solid var(--m3-out)}
+.it .ic{width:28px;height:28px;border-radius:9px;background:var(--m3-secC);display:flex;align-items:center;justify-content:center;font-size:13.5px;flex:none;color:var(--m3-onSurf)}
+.it .tx{min-width:0;flex:1;display:flex;align-items:center;gap:8px}
+.it .t1{font-size:13px;font-weight:600;color:var(--m3-onSurf);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.it .t2{font-size:10.5px;color:var(--m3-onSurfV);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.it .val{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--m3-onSurf);flex:none}
+.it .val small{font-size:10px;color:var(--m3-onSurfV);font-weight:400;margin-left:2px}
+.it .chev{color:var(--m3-onSurfV);flex:none;font-size:13px}
+.sw-on,.sw-off{width:40px;height:22px;border-radius:99px;position:relative;flex:none}
+.sw-on{background:var(--m3-primary)}.sw-on::after{content:"";position:absolute;right:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--m3-onP)}
+.sw-off{background:color-mix(in srgb,var(--m3-onSurf) 12%,transparent)}.sw-off::after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:var(--m3-onSurfV)}
+.rd{width:18px;height:18px;border-radius:50%;border:2px solid var(--m3-onSurfV);flex:none;position:relative}
+.rd.on{border-color:var(--m3-primary)}
+.rd.on::after{content:"";position:absolute;inset:3px;border-radius:50%;background:var(--m3-primary)}
+.banner{display:flex;gap:9px;align-items:center;border-radius:14px;padding:9px 13px;font-size:12px;font-weight:600;margin-bottom:12px}
+.banner .bic{font-size:15px}
+.banner.readonly{background:var(--warn-bg);color:var(--warn)}
+.banner.err{background:var(--bad-bg);color:var(--bad)}
+.banner.info{background:var(--info-bg);color:var(--info)}
+.banner .go{margin-left:auto;font-family:var(--mono);font-size:11px;text-decoration:underline;flex:none}
+.fabline{display:flex;gap:8px;margin:4px 0 12px}
+.fabline .fab{flex:1;text-align:center;border-radius:16px;padding:11px 6px;font-size:12.5px;font-weight:800;border:1.2px solid var(--m3-out);background:var(--m3-surf);color:var(--m3-onSurf)}
+.fabline .fab.act{background:var(--m3-primary);border-color:var(--m3-primary);color:var(--m3-onP)}
+.fabline .fab.dis{color:var(--m3-onSurfV);opacity:.65}
+.danger-item .t1{color:var(--bad)!important}
+.scrim{position:absolute;inset:0;background:rgba(10,14,13,.46);display:flex;align-items:center;justify-content:center;padding:22px;z-index:5}
+.dlg{background:var(--m3-surf);border-radius:24px;padding:20px 18px;width:100%;max-height:100%;overflow-y:auto;scrollbar-width:none;box-shadow:0 18px 40px rgba(0,0,0,.35)}
+.dlg::-webkit-scrollbar{display:none}
+.dlg h4{font-size:16.5px;font-weight:800;margin-bottom:10px;color:var(--m3-onSurf)}
+.dlg p{font-size:12.5px;color:var(--m3-onSurfV);margin-bottom:12px}
+.dlg .acts{display:flex;justify-content:flex-end;gap:6px;margin-top:14px}
+.dlg .btn{border-radius:99px;padding:8px 18px;font-size:13px;font-weight:700;border:0;background:transparent;color:var(--m3-primary)}
+.dlg .btn.fill{background:var(--m3-primary);color:var(--m3-onP)}
+.dlg .btn.dang{background:var(--bad);color:#fff}
+.dlg .listit{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--m3-out);font-size:13px}
+.dlg .listit .rssi{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--m3-onSurfV)}
+.field{border:1.5px solid var(--m3-out);border-radius:14px;padding:8px 13px;margin:10px 0 4px}
+.field .fl{font-size:10.5px;color:var(--m3-primary);font-weight:700}
+.field .fv{font-family:var(--mono);font-size:18px;font-weight:700;color:var(--m3-onSurf)}
+.field .fv small{font-size:12px;color:var(--m3-onSurfV);font-weight:400}
+.range{font-family:var(--mono);font-size:10.5px;color:var(--m3-onSurfV);margin-top:6px}
+
+/* 仪表盘专用 —— 高密度卡片（对齐官方 APP：大卡 + 卡内自组布局） */
+.dev-head{display:flex;justify-content:space-between;align-items:center;padding:2px 2px 6px}
+.dev-head .nm{font-size:13.5px;font-weight:800;color:var(--m3-onSurf)}
+.dev-head .sb{font-size:9.5px;color:var(--m3-onSurfV);display:flex;gap:7px;margin-top:1px;flex-wrap:wrap}
+.dev-head .conn{font-size:9.5px;font-weight:700;color:var(--m3-onP);background:var(--m3-primary);border-radius:99px;padding:3px 9px;flex:none}
+/* 卡1 主题色变体 */
+.appcard.hero{background:var(--m3-primary);border-color:var(--m3-primary);color:#fff}
+.appcard.hero .kvrows .kv .k{color:rgba(255,255,255,.72)}
+.appcard.hero .kvrows .kv .v{color:#fff}
+.appcard.hero .miniact .ma{color:#fff;border-color:rgba(255,255,255,.55)}
+/* 卡1 · 横向电池大卡：整卡背景即电量（左有色=有电，右透明=空电），右极头模拟电池 */
+.batcard{position:relative;border-radius:14px;border:1.5px solid var(--m3-out);margin:0 8px 8px 0;padding-right:7px;
+  background:color-mix(in srgb,var(--m3-onSurf) 6%,var(--m3-surf))}
+.batcard::after{content:"";position:absolute;right:-6px;top:50%;transform:translateY(-50%);width:5px;height:36%;
+  border-radius:0 4px 4px 0;background:var(--m3-out)}
+.batfill{position:absolute;top:0;bottom:0;left:0;background:var(--m3-primary);z-index:0;
+  border-radius:13px 0 0 13px;transition:width .5s}
+.batbody{position:relative;z-index:1;padding:9px 8px 9px 12px;display:flex;gap:8px;align-items:stretch}
+.batcard .kvrows .kv .k{color:var(--m3-onSurfV)}
+.batcard .kvrows .kv .v{color:var(--m3-onSurf);font-weight:700}
+.batcard .kvfill .kv .k{color:rgba(255,255,255,.78)}
+.batcard .kvfill .kv .v{color:#fff}
+/* 大卡右侧小块：实底可读 */
+.bchip{font-size:9.5px;font-weight:800;border-radius:99px;padding:3px 10px;white-space:nowrap;text-align:center;
+  background:var(--m3-surf);color:var(--m3-onSurf);border:1.2px solid var(--m3-out);box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.bchip.soc{font-family:var(--mono);font-size:15px;font-weight:800;padding:4px 12px}
+.bchip.soc small{font-size:9px;font-weight:600;color:var(--m3-onSurfV)}
+.perm{display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;border-radius:99px;
+  padding:3px 10px;cursor:pointer;white-space:nowrap;border:1.2px solid var(--m3-primary);
+  background:var(--m3-surf);color:var(--m3-primary);box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.perm .pd{width:0;height:0;border-left:3.5px solid transparent;border-right:3.5px solid transparent;border-top:4px solid currentColor;opacity:.7}
+.perm .pd{width:0;height:0;border-left:3.5px solid transparent;border-right:3.5px solid transparent;border-top:4px solid currentColor;opacity:.7}
+/* 顶栏加号菜单 */
+.topplus{position:absolute;top:34px;right:12px;background:var(--m3-surf);border:1.2px solid var(--m3-out);border-radius:14px;
+  box-shadow:0 10px 26px rgba(0,0,0,.18);padding:5px;z-index:6;min-width:150px}
+.topplus .pi{display:flex;align-items:center;gap:9px;padding:7px 11px;border-radius:9px;font-size:12px;font-weight:600;color:var(--m3-onSurf)}
+.topplus .pi .pic{width:24px;height:24px;border-radius:8px;background:var(--m3-secC);display:flex;align-items:center;justify-content:center;font-size:12px;flex:none}
+/* 通用高密度卡：单一卡片承载整块信息 */
+.appcard{background:var(--m3-surf);border:1.2px solid var(--m3-out);border-radius:16px;padding:9px 11px;margin-bottom:8px;position:relative}
+.appcard>.badge-no{top:-8px;left:-8px}
+/* 卡1：设备信息 KV 行 + 右侧竖排按钮 */
+.kvrows{display:flex;flex-direction:column;gap:3.5px;flex:1}
+.kvrows .kv{display:flex;gap:6px;font-size:10.5px;line-height:1.45;align-items:baseline}
+.kvrows .kv .k{color:var(--m3-onSurfV);flex:none;white-space:nowrap}
+.kvrows .kv .v{color:var(--m3-onSurf);font-weight:600;font-family:var(--mono);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.miniact{display:flex;flex-direction:column;gap:5px;justify-content:center;flex:none;margin-left:8px}
+.miniact .ma{font-size:9.5px;font-weight:700;color:var(--m3-primary);border:1.2px solid var(--m3-primary);border-radius:99px;padding:2.5px 9px;text-align:center;white-space:nowrap}
+/* 卡2：状态列表 + SOC 环同卡 */
+.statlist{display:flex;flex-direction:column;gap:4.5px;justify-content:center;flex:1;min-width:0;overflow:hidden}
+.statlist .srow{display:flex;align-items:center;gap:5px;font-size:10.5px;color:var(--m3-onSurfV);white-space:nowrap;min-width:0;overflow:hidden}
+.statlist .srow .dot{width:7px;height:7px;border-radius:50%;flex:none}
+.statlist .srow b{margin-left:auto;font-weight:600;font-size:10px;color:var(--m3-onSurf);font-family:var(--mono)}
+.ring{width:66px;height:66px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;position:relative;
+  background:conic-gradient(var(--m3-primary) 0 274deg,color-mix(in srgb,var(--m3-onSurf) 9%,transparent) 274deg 360deg)}
+.ring::before{content:"";position:absolute;inset:7px;border-radius:50%;background:var(--m3-surf)}
+.ring .p{position:relative;font-family:var(--mono);font-weight:800;font-size:15px;color:var(--m3-onSurf)}
+.ring .p small{font-size:8.5px;color:var(--m3-onSurfV)}
+.soccap{font-size:10px;color:var(--m3-onSurfV);line-height:1.7;flex:none;margin-left:8px}
+.soccap b{font-family:var(--mono);color:var(--m3-onSurf);font-size:12px}
+/* 卡3：4×2 彩色圆图标指标网格（对齐官方） */
+.icongrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 3px;padding:2px 0}
+.icongrid .ig{display:flex;flex-direction:column;align-items:center;gap:1.5px;text-align:center}
+.icongrid .ig-ic{width:29px;height:29px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12.5px;color:#fff;font-weight:800}
+.icongrid .ig-l{font-size:9px;color:var(--m3-onSurfV)}
+.icongrid .ig-v{font-family:var(--mono);font-size:11px;font-weight:700;color:var(--m3-onSurf)}
+.ic-blue{background:#4E82D6}.ic-teal{background:#1E9494}.ic-purple{background:#8B6BD8}
+.ic-amber{background:#D08A28}.ic-green{background:#4E9E5F}.ic-red{background:#D45B5B}
+/* 温度：3 列紧凑小格 */
+.tempgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}
+.tempgrid .tg{display:flex;justify-content:space-between;align-items:baseline;border:1px solid var(--m3-out);border-radius:9px;padding:4px 7px;font-size:9px;color:var(--m3-onSurfV)}
+.tempgrid .tg b{font-family:var(--mono);font-size:10.5px;font-weight:700;color:var(--m3-onSurf)}
+/* 保护/告警双卡（高密度） */
+.duo{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;position:relative}
+.pw-card{border:1.2px solid var(--m3-out);border-radius:16px;background:var(--m3-surf);padding:8px 10px}
+.pw-card .ph{display:flex;align-items:center;font-size:11px;font-weight:800;color:var(--m3-onSurf);margin-bottom:3px}
+.pw-card .ph .cnt{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--m3-onSurfV)}
+.pw-card .li{font-size:10px;color:var(--m3-onSurfV);padding:1.5px 0;display:flex;gap:5px;align-items:center}
+.pw-card .li::before{content:"";width:5px;height:5px;border-radius:50%;flex:none}
+.pw-card.prot .li::before{background:var(--bad)}
+.pw-card.alarm .li::before{background:var(--warn)}
+.pw-card .none{font-size:10px;color:var(--m3-onSurfV);opacity:.75}
+.pw-card .all{font-size:9.5px;color:var(--m3-primary);font-weight:700;margin-top:3px}
+/* 单体电压网格（高密度） */
+.cells{border:1.2px solid var(--m3-out);border-radius:16px;background:var(--m3-surf);padding:9px 11px;margin-bottom:8px;position:relative}
+.cells .ch{display:flex;align-items:baseline;font-size:11px;font-weight:800;color:var(--m3-onSurf);margin-bottom:6px}
+.cells .ch small{margin-left:auto;font-family:var(--mono);font-size:8.5px;color:var(--m3-onSurfV);font-weight:400}
+.cellg{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.cellv{border:1px solid var(--m3-out);border-radius:8px;text-align:center;padding:3px 1px 3px;position:relative;background:var(--m3-surf)}
+.cellv .cn{font-size:8.5px;color:var(--m3-onSurfV);font-weight:700;line-height:1.2}
+.cellv .cv{font-family:var(--mono);font-size:9.5px;font-weight:700;color:var(--m3-onSurf);line-height:1.2}
+.cellv.max{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 14%,var(--m3-surf))}
+.cellv.min{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 14%,var(--m3-surf))}
+.cellv.bal::after{content:"";position:absolute;top:2.5px;right:2.5px;width:4.5px;height:4.5px;border-radius:50%;background:var(--m3-primary)}
+/* 趋势图 */
+.trend .th{display:flex;font-size:11px;font-weight:800;color:var(--m3-onSurf);margin-bottom:4px}
+.trend .th .lg{margin-left:auto;display:flex;gap:9px;font-weight:500;font-size:9px;color:var(--m3-onSurfV);font-family:var(--mono)}
+.trend .th .lg i{font-style:normal;display:inline-flex;align-items:center;gap:4px}
+.trend .th .lg i::before{content:"";width:10px;height:3px;border-radius:2px;background:var(--m3-primary)}
+.trend .th .lg i.v::before{background:var(--amber)}
+.trend svg{display:block;width:100%}
+.ctrlrow{display:flex;gap:6px;margin-top:2px}
+.ctrlrow .cb{flex:1;border-radius:13px;padding:8px 4px;text-align:center;font-size:11px;font-weight:800;border:1.2px solid var(--m3-out);background:var(--m3-surf);color:var(--m3-onSurf)}
+.ctrlrow .cb.on{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.ctrlrow .cb.force{border-color:var(--warn);color:var(--warn)}
+
+/* 未连接态 */
+.center-hero{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0 30px}
+.center-hero .blogo{width:84px;height:84px;border-radius:28px;background:var(--m3-pc);color:var(--m3-onPc);display:flex;align-items:center;justify-content:center;font-size:38px;margin-bottom:18px}
+.center-hero h3{font-size:19px;font-weight:900;color:var(--m3-onSurf);margin-bottom:6px}
+.center-hero p{font-size:12.5px;color:var(--m3-onSurfV);margin-bottom:22px}
+.center-hero .bigbtn{display:block;width:100%;border-radius:99px;padding:13px;font-size:14px;font-weight:800;text-decoration:none;margin-bottom:10px}
+.center-hero .bigbtn.fill{background:var(--m3-primary);color:var(--m3-onP)}
+.center-hero .bigbtn.ton{border:1.5px solid var(--m3-primary);color:var(--m3-primary)}
+.center-hero .hint{font-family:var(--mono);font-size:10.5px;color:var(--m3-onSurfV);margin-top:8px}
+
+/* 日志 */
+.logbox{font-family:var(--mono);font-size:9.6px;line-height:1.75;background:#0C100F;color:#9BE8C4;border-radius:14px;padding:11px 12px;white-space:pre;overflow-x:auto}
+.logbox .tx{color:#F2B96B}.logbox .cm{color:#5F7A72}.logbox .er{color:#FF9C93}
+
+/* ===== 图例 ===== */
+.legend{background:white;border:1.5px solid var(--line-2);border-radius:18px;padding:18px 20px}
+.legend h4{font-size:13px;font-weight:900;letter-spacing:.06em;margin-bottom:10px;display:flex;gap:8px;align-items:baseline}
+.legend h4 .en{font-family:var(--mono);font-size:10px;color:var(--ink-3);font-weight:400}
+.legend ol{list-style:none;counter-reset:r}
+.legend li{counter-increment:r;display:flex;gap:11px;padding:8px 10px;border-radius:10px;cursor:default;font-size:13px;align-items:flex-start}
+.legend li+.li{border-top:1px dashed var(--line)}
+.legend li::before{content:counter(r,decimal-leading-zero);font-family:var(--mono);font-size:11px;font-weight:700;
+  color:var(--ink-3);background:var(--paper-2);border-radius:7px;padding:2px 7px;flex:none;margin-top:1px;transition:.15s}
+.legend li b{display:block;font-size:13.5px}
+.legend li span{color:var(--ink-2);font-size:12px;display:block}
+.legend li:hover,.legend li.hot{background:var(--spec-bg)}
+.legend li:hover::before,.legend li.hot::before{background:var(--spec);color:#fff}
+.legend li code{font-family:var(--mono);font-size:11px;background:var(--paper-2);border-radius:5px;padding:0 5px}
+.legend .note{font-size:12px;color:var(--ink-2);border-top:1.5px solid var(--line);margin-top:10px;padding-top:10px}
+.legend .note b{color:var(--ink)}
+
+/* 屏幕内区域高亮 */
+.reg{position:relative;border-radius:18px;transition:box-shadow .18s, background-color .18s}
+.reg.lit{box-shadow:0 0 0 2.5px var(--spec),0 0 0 7px color-mix(in srgb,var(--spec) 22%,transparent);background-color:color-mix(in srgb,var(--spec) 5%,transparent)}
+.badge-no{position:absolute;top:-9px;left:-9px;width:22px;height:22px;border-radius:50%;background:var(--spec);color:#fff;
+  font-family:var(--mono);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,60,62,.35)}
+
+/* ===== 流程图 ===== */
+.flow{background:white;border:1.5px solid var(--line-2);border-radius:18px;padding:22px;overflow-x:auto}
+.flow .frow{display:flex;align-items:center;gap:10px;min-width:900px;padding:7px 0}
+.flow .step{border:1.6px solid var(--ink-2);border-radius:12px;padding:7px 13px;font-size:12.5px;font-weight:600;white-space:nowrap;background:var(--paper)}
+.flow .step.auto{border-style:dashed;color:var(--ink-2)}
+.flow .step.ui{border-color:var(--spec);color:var(--spec);background:var(--spec-bg)}
+.flow .step.warn{border-color:var(--warn);color:var(--warn);background:var(--warn-bg)}
+.flow .step.bad{border-color:var(--bad);color:var(--bad);background:var(--bad-bg)}
+.flow .arr{font-family:var(--mono);color:var(--ink-3);font-size:13px;flex:none}
+.flow .lbl{font-family:var(--mono);font-size:10px;color:var(--ink-3);flex:none}
+.flow .tag{font-family:var(--mono);font-size:10px;color:var(--ink-3);margin-left:8px;font-weight:400}
+
+/* ===== 核对表 ===== */
+table.check{width:100%;border-collapse:collapse;background:white;border:1.5px solid var(--line-2);border-radius:18px;overflow:hidden;font-size:13px}
+table.check th{background:var(--ink);color:#fff;text-align:left;padding:10px 14px;font-size:12px;letter-spacing:.04em}
+table.check td{padding:9px 14px;border-top:1px solid var(--line);vertical-align:top}
+table.check td code{font-family:var(--mono);font-size:11px;background:var(--paper-2);border-radius:5px;padding:1px 6px}
+table.check tr:hover td{background:var(--spec-bg)}
+.pill{font-family:var(--mono);font-size:10.5px;border-radius:99px;padding:2px 9px;font-weight:700;white-space:nowrap}
+.pill.m1{background:var(--spec-bg);color:var(--spec)}
+.pill.m4{background:var(--ok-bg);color:var(--ok)}
+.pill.m5{background:var(--warn-bg);color:var(--warn)}
+.pill.m6{background:var(--info-bg);color:var(--info)}
+.pill.m7{background:var(--bad-bg);color:var(--bad)}
+
+footer{border-top:2.5px solid var(--ink);margin-top:70px;padding:26px 24px 40px;max-width:1240px;margin-left:auto;margin-right:auto}
+footer p{font-size:12.5px;color:var(--ink-3)}
+footer .mono{font-family:var(--mono);font-size:11px;margin-top:6px}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-in">
+    <b>蚂蚁BMS开源版 · 设计蓝图</b>
+    <nav aria-label="页面导航">
+      <a href="#ia">信息架构</a><a href="#base">设计基线</a><a href="#screens">页面详解</a><a href="#states">状态与边界</a><a href="#flows">关键流程</a><a href="#check">核对表</a>
+    </nav>
+    <span class="ver">对应 Plan/开发计划.md v1.3 · 本地文档·不发布</span>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="eyebrow">ANT BMS OPEN · UI BLUEPRINT · SHEET 00</div>
+  <h1>界面设计蓝图 <span>／</span> 布局与层级全览</h1>
+  <p class="sub">本页是 Android/iOS 客户端（KMP + Compose Multiplatform + Material 3 Expressive）的完整界面设计规范：信息架构、每一层级的页面布局、功能入口与状态边界。所有手机稿为可滚动的交互式示意，悬停右侧图例可在画面中定位对应区域。</p>
+  <div class="meta">
+    <span><i>底栏</i> 仪表盘 · 配置 · 设置</span>
+    <span><i>页面</i> 3 个主标签 + 12 个下级页 + 5 个弹窗</span>
+    <span><i>视觉</i> M3 Expressive · 动态取色 · 深浅双主题</span>
+    <span><i>数据</i> 500ms 轮询 0x11 · 权限五级</span>
+  </div>
+</section>
+
+<main class="wrap">
+
+<!-- ============ 信息架构 ============ -->
+<section class="sheet" id="ia">
+  <div class="sheet-h"><span class="no">SHT 01</span><h2>信息架构</h2><span class="tail">IA MAP · 节点可点击跳转</span></div>
+  <p class="lead">三条导航结构：顶栏为全局入口（未连接态是独立于底栏的根页面），主框架由三个底栏标签构成，实线框为推入页面，虚线框为弹窗。配置页的七个参数分组共用同一模板，仅数据不同。</p>
+
+  <div class="ia">
+    <div class="lane">
+      <div class="root">启动 / 未连接<small>S00 连接中枢</small></div>
+      <div class="branch">
+        <div class="arrow">─▸</div>
+        <div class="node"><a href="#s01"><span class="n1">设备列表 / 扫码连接</span><span class="n2">S01 · BLE 扫描 ANT 前缀</span></a></div>
+        <div class="arrow">或</div>
+        <div class="node"><a href="#s12"><span class="n1">演示模式</span><span class="n2">设置-连接 亦可开</span></a></div>
+        <div class="arrow">─▸</div>
+        <div class="node root2"><a href="#s02"><span class="n1">已连接 · 主框架</span><span class="n2">底栏三标签 + 500ms 轮询</span></a></div>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="root" style="background:var(--m3-primary)">仪表盘<small>底栏 1 · S02</small></div>
+      <div class="branch">
+        <div class="arrow">─▸</div>
+        <div class="kids">
+          <a class="kid" href="#s03">保护/告警详情（弹窗）</a>
+          <a class="kid dlg" href="#s04">MOS 控制二次确认（弹窗）</a>
+          <a class="kid dlg" href="#s19">断连横幅（状态，非页面）</a>
+        </div>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="root" style="background:var(--warn)">配置<small>底栏 2 · S05</small></div>
+      <div class="branch">
+        <div class="arrow">─▸</div>
+        <div class="kids">
+          <a class="kid" href="#s06">电压保护 <code style="font-family:var(--mono);font-size:10px">0~54</code> ／ 温度 <code style="font-family:var(--mono);font-size:10px">56~98</code> ／ 电流 <code style="font-family:var(--mono);font-size:10px">104~138</code></a>
+          <a class="kid" href="#s06">均衡 <code style="font-family:var(--mono);font-size:10px">140~150</code> ／ 电池组与容量 <code style="font-family:var(--mono);font-size:10px">152~196</code> ／ SOC 表 ／ 系统参数</a>
+          <a class="kid" href="#s08">控制与工具（命令全集）</a>
+          <a class="kid dlg" href="#s07">参数编辑（弹窗）</a>
+          <a class="kid dlg" href="#s09">未保存提醒（弹窗）</a>
+        </div>
+      </div>
+    </div>
+    <div class="lane">
+      <div class="root" style="background:var(--info)">设置<small>底栏 3 · S10</small></div>
+      <div class="branch">
+        <div class="arrow">─▸</div>
+        <div class="kids">
+          <a class="kid" href="#s11">外观</a>
+          <a class="kid" href="#s12">连接</a>
+          <a class="kid" href="#s13">权限 / 密码</a>
+          <a class="kid" href="#s14">关于 → 设备信息</a>
+          <a class="kid" href="#s15">开发者 → 报文调试日志</a>
+        </div>
+      </div>
+    </div>
+    <p class="note">层级规则：底栏标签之间平级切换<b>不保留滚动位置</b>；推入页（外观/电压保护等）遵循返回栈；弹窗均为模态。<code>权限&lt;3</code> 时配置主页顶部出现常驻只读横幅（S05），写入口禁用但可浏览。</p>
+  </div>
+</section>
+
+<!-- ============ 设计基线 ============ -->
+<section class="sheet" id="base">
+  <div class="sheet-h"><span class="no">SHT 02</span><h2>设计基线</h2><span class="tail">TOKENS · M3 EXPRESSIVE</span></div>
+  <p class="lead">应用主题 = materialExpressiveTheme + 动态取色（MaterialKolor，可关闭）；下表为静态基线种子色。所有页面由浅色/深色两套 tonal scheme 生成，组件只引用色彩角色、不写死色值。</p>
+
+  <div class="base">
+    <div class="card">
+      <h3>应用色彩角色<small>M3 tonal roles</small></h3>
+      <div class="chips">
+        <div class="chipc"><span class="sw" style="background:var(--m3-primary)"></span><span class="nm">primary 主色<code>#00696E · 品牌 teal</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--m3-pc)"></span><span class="nm">primaryContainer<code>#B4ECED · 选中态/底栏徽章</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--ok);border-radius:10px"></span><span class="nm">状态·正常/放电<code>#2E6B4F on #D3F0E0</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--warn)"></span><span class="nm">状态·充电/告警<code>#8F5B00 on #FFE9C2</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--bad)"></span><span class="nm">状态·保护/危险<code>#B3261E on #FFDAD4</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--off)"></span><span class="nm">状态·关闭/未知<code>#79747E on #E8E0E8</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--m3-surf)"></span><span class="nm">surface<code>#F4FAFA · 页面底</code></span></div>
+        <div class="chipc"><span class="sw" style="background:var(--m3-out)"></span><span class="nm">outline<code>#C4D7D8 · 卡片描边</code></span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>字体阶梯<small>中文主体 + 等宽数据</small></h3>
+      <div class="typerow"><span class="tag">display/标题 21px 800</span><span style="font-size:21px;font-weight:800">仪表盘</span></div>
+      <div class="typerow"><span class="tag">title/条目 13.5px 600</span><span style="font-size:13.5px;font-weight:600">单体过压保护电压</span></div>
+      <div class="typerow"><span class="tag">数值/mono 17px 800</span><span style="font-family:var(--mono);font-size:17px;font-weight:800">52.83<small style="font-size:10px;color:var(--ink-3)"> V</small></span></div>
+      <div class="typerow"><span class="tag">support 11px 400</span><span style="font-size:11px;color:var(--ink-3)">写入后需发送 51/07 保存</span></div>
+      <p style="font-size:11.5px;color:var(--ink-3);margin-top:8px">全部电压/电流/报文使用等宽字体（tabular figures），保证 500ms 刷新时数字不跳动。</p>
+    </div>
+    <div class="card comp-demo">
+      <h3>组件词汇<small>自封装 Widget</small></h3>
+      <div class="segd">
+        <div class="rowi"><span class="ico"></span><span>分组容器 SegmentedColumn</span><span class="sw-on"></span></div>
+        <div class="rowi"><span class="ico"></span><span>SwitchWidget 开关项</span><span class="sw-off"></span></div>
+        <div class="rowi"><span class="ico"></span><span>BaseWidget 跳转项</span><span style="margin-left:auto;color:var(--ink-3)">›</span></div>
+      </div>
+      <div style="margin-top:12px">
+        <span class="btnd bd-f">填充按钮</span><span class="btnd bd-t">文本按钮</span><span class="btnd bd-d">危险操作</span>
+      </div>
+      <div class="badges" style="margin-top:10px">
+        <span class="bg1" style="background:var(--ok-bg);color:var(--ok)">● 放电MOS 开启</span>
+        <span class="bg1" style="background:var(--off-bg);color:var(--off)">● 充电MOS 关闭</span>
+        <span class="bg1" style="background:var(--warn-bg);color:var(--warn)">● 单体过压告警</span>
+      </div>
+      <p style="font-size:11.5px;color:var(--ink-3);margin-top:10px">大标题页头用 LargeFlexibleTopAppBar（折叠式）；单选/下拉项在点击后弹出 M3 对话框，不在列表内展开。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 页面详解 ============ -->
+<section class="sheet" id="screens">
+  <div class="sheet-h"><span class="no">SHT 03</span><h2>页面详解</h2><span class="tail">SCREENS · 悬停图例 → 定位画面区域</span></div>
+  <p class="lead">每屏一图一注：左侧为可滚动的手机稿（内容为协议样例数据），右侧图例按视觉动线自上而下编号。图例编号与画面上的蓝色角标一一对应。</p>
+
+  <!-- S00 -->
+  <div class="scr" id="s00">
+    <div class="scr-h"><span class="id">S00</span><h3>未连接 · 连接中枢</h3><span class="kind">ROOT · 无底栏</span></div>
+    <p class="path">入口：启动未配对 / 底栏全部页面断连后自动回到此页</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">100%</span></div>
+        <div class="center-hero">
+          <div class="blogo reg" data-r="00a">⚡</div>
+          <h3>连接你的保护板</h3>
+          <p>打开蓝牙，靠近电池保护板即可发现设备（名称以 ANT 开头）</p>
+          <a class="bigbtn fill reg" data-r="00b" href="#s01">搜索附近设备</a>
+          <a class="bigbtn ton reg" data-r="00c" href="#s01">扫码连接</a>
+          <a class="bigbtn ton reg" data-r="00d" href="#s02" style="border-style:dashed">进入演示模式（无需设备）</a>
+          <div class="hint">演示模式 = 内置虚拟 BMS · 可模拟充电/放电/保护触发</div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li data-r="00a"><div><b>品牌锚点 + 一句话指引</b><span>空态即邀请：说明发现条件（蓝牙开启、ANT 前缀、需就近）。</span></div></li>
+          <li data-r="00b"><div><b>搜索附近设备</b><span>主操作。首次点击触发 <code>BLUETOOTH_SCAN/CONNECT</code> 运行时权限申请（API≤30 需定位权限）。</span></div></li>
+          <li data-r="00c"><div><b>扫码连接</b><span>扫电池二维码解析 MAC/配对码，直达连接；与已连接后的<b>顶栏「＋」菜单</b>共用同一扫码流程（S01 弹窗内亦可发起）。</span></div></li>
+          <li data-r="00d"><div><b>演示模式入口</b><span>虚线样式 = 非真实连接；与「设置-连接-演示模式」同一开关。</span></div></li>
+        </ol>
+        <p class="note"><b>没有底栏</b>：未连接时配置/仪表盘无数据意义，整个根页面独立于主框架。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- S01 -->
+  <div class="scr" id="s01">
+    <div class="scr-h"><span class="id">S01</span><h3>设备列表（弹窗）</h3><span class="kind">DIALOG · ON S00</span></div>
+    <p class="path">入口：S00「搜索附近设备」/「扫码连接」成功后也回到此列表确认</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">100%</span></div>
+        <div style="flex:1"></div>
+        <div class="scrim" style="position:absolute">
+          <div class="dlg">
+            <h4>附近的设备</h4>
+            <p>按名称前缀 ANT 过滤 · 信号强度排序</p>
+            <div class="listit"><span style="width:8px;height:8px;border-radius:50%;background:var(--m3-primary)"></span><span><b>ANT-BMS-16S</b><br><small style="font-family:var(--mono);font-size:10px;color:var(--m3-onSurfV)">AA:BB:CC:0E:56:C2</small></span><span class="rssi">-52 dBm</span></div>
+            <div class="listit"><span style="width:8px;height:8px;border-radius:50%;background:var(--off)"></span><span><b>ANT-BMS-24S</b><br><small style="font-family:var(--mono);font-size:10px;color:var(--m3-onSurfV)">AA:BB:CC:11:9A:07</small></span><span class="rssi">-78 dBm</span></div>
+            <div class="listit" style="opacity:.5"><span style="width:8px;height:8px;border-radius:50%;background:var(--off)"></span><span>正在搜索…</span></div>
+            <div class="acts"><button class="btn" type="button">扫码</button><button class="btn fill" type="button">连接</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>扫描进行态</b><span>列表底部无限循环占位；扫描持续进行，新设备按信号强度插入。</span></div></li>
+          <li><div><b>设备行</b><span>名称 + MAC（等宽小字）+ RSSI；选中高亮主色圆点。</span></div></li>
+          <li><div><b>广播连接数提示</b><span>广播数据含「最大可连接数/已连接数」（高半字节），已达上限的设备置灰并标注「被占用」。</span></div></li>
+          <li><div><b>扫码 / 连接</b><span>连接即启动通道探测（ffe1 → fff3-4 → fff5-6），过程在 S02 顶部显示进度。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S02 仪表盘 -->
+  <div class="scr" id="s02">
+    <div class="scr-h"><span class="id">S02</span><h3>仪表盘（主页）</h3><span class="kind">TAB 1 · 旧版排布全量迁移</span></div>
+    <p class="path">入口：底栏 1 · 排布基准 <b>unpack/…/BatteryStatus.wxml</b>（区块 1→8 顺序保持）</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">仪表盘</div><span style="margin-left:auto;font-size:19px;font-weight:700;cursor:pointer" title="加号菜单">＋</span></div>
+        <div class="topplus">
+          <div class="pi"><span class="pic">📷</span>扫码连接</div>
+          <div class="pi"><span class="pic">📋</span>设备列表</div>
+        </div>
+        <div class="bodyx" style="opacity:.72">
+          <div class="batcard hero reg" data-r="d1"><span class="badge-no">1</span>
+            <div class="batfill" style="width:76%"></div>
+            <div class="batbody">
+              <div class="kvrows kvfill" style="flex:1;max-width:56%">
+                <div class="kv"><span class="k">设备名称:</span><span class="v">ANT-BMS-16S</span></div>
+                <div class="kv"><span class="k">运行时间:</span><span class="v">14:22:05</span></div>
+                <div class="kv"><span class="k">软件版本:</span><span class="v">V3.2.1</span></div>
+                <div class="kv"><span class="k">硬件版本:</span><span class="v">V2.8</span></div>
+                <div class="kv"><span class="k">电池类型:</span><span class="v">磷酸铁锂</span></div>
+              </div>
+              <div class="miniact">
+                <span class="bchip reg" data-r="d1b">已连接</span>
+                <span class="perm reg" data-r="d1c">3 级权限 <span class="pd"></span></span>
+                <span class="bchip soc reg" data-r="d3">76<small>%</small></span>
+              </div>
+            </div>
+          </div>
+          <div class="appcard reg" data-r="d2"><span class="badge-no">2</span>
+            <div style="display:flex;gap:10px">
+              <div class="statlist">
+                <div class="srow"><span class="dot" style="background:var(--warn)"></span>电池状态<b>放电中</b></div>
+                <div class="srow"><span class="dot" style="background:var(--off)"></span>充电 MOS<b>关闭</b></div>
+                <div class="srow"><span class="dot" style="background:var(--ok)"></span>放电 MOS<b>开启</b></div>
+                <div class="srow"><span class="dot" style="background:var(--off)"></span>均衡状态<b>关闭</b></div>
+              </div>
+              <div class="soccap">剩余<br><b>76.0</b> Ah<br>总容量<br><b>100.0</b> Ah</div>
+            </div>
+          </div>
+          <div class="appcard reg" data-r="d4"><span class="badge-no">3</span>
+            <div class="icongrid">
+              <div class="ig"><span class="ig-ic ic-blue">V</span><span class="ig-l">总电压</span><span class="ig-v">52.83</span></div>
+              <div class="ig"><span class="ig-ic ic-teal">A</span><span class="ig-l">电流</span><span class="ig-v">-12.6</span></div>
+              <div class="ig"><span class="ig-ic ic-purple">W</span><span class="ig-l">功率</span><span class="ig-v">665</span></div>
+              <div class="ig"><span class="ig-ic ic-red">↑V</span><span class="ig-l">最高电压</span><span class="ig-v">3.312</span></div>
+              <div class="ig"><span class="ig-ic ic-amber">↓V</span><span class="ig-l">最低电压</span><span class="ig-v">3.287</span></div>
+              <div class="ig"><span class="ig-ic ic-green">⌀V</span><span class="ig-l">平均电压</span><span class="ig-v">3.300</span></div>
+              <div class="ig"><span class="ig-ic ic-purple">Δ</span><span class="ig-l">压差</span><span class="ig-v">0.025</span></div>
+              <div class="ig"><span class="ig-ic ic-blue">↻</span><span class="ig-l">总循环</span><span class="ig-v">1860</span></div>
+            </div>
+          </div>
+          <div class="duo reg" data-r="d5"><span class="badge-no">4</span>
+            <div class="pw-card prot"><div class="ph">保护信息<span class="cnt">0</span></div><div class="none">无保护动作 ✓</div></div>
+            <div class="pw-card alarm"><div class="ph">告警信息<span class="cnt">1</span></div>
+              <div class="li">单体压差告警</div><div class="all">查看全部 ›</div></div>
+          </div>
+          <div class="appcard reg" data-r="d6"><span class="badge-no">5</span>
+            <div class="tempgrid">
+              <div class="tg"><span>MOS</span><b>31.5°</b></div>
+              <div class="tg"><span>均衡</span><b>30.0°</b></div>
+              <div class="tg"><span>T1</span><b>28.4°</b></div>
+              <div class="tg"><span>T2</span><b>28.9°</b></div>
+              <div class="tg"><span>T3</span><b>29.1°</b></div>
+              <div class="tg"><span>T4</span><b>28.7°</b></div>
+            </div>
+          </div>
+          <div class="cells reg" data-r="d7"><span class="badge-no">6</span>
+            <div class="ch">单体电压 × 16<small>黄=最高 蓝=最低 ●=均衡中</small></div>
+            <div class="cellg">
+              <div class="cellv"><div class="cn">1</div><div class="cv">3.301</div></div>
+              <div class="cellv"><div class="cn">2</div><div class="cv">3.298</div></div>
+              <div class="cellv"><div class="cn">3</div><div class="cv">3.305</div></div>
+              <div class="cellv"><div class="cn">4</div><div class="cv">3.292</div></div>
+              <div class="cellv max"><div class="cn">5</div><div class="cv">3.312</div></div>
+              <div class="cellv"><div class="cn">6</div><div class="cv">3.299</div></div>
+              <div class="cellv bal"><div class="cn">7</div><div class="cv">3.310</div></div>
+              <div class="cellv"><div class="cn">8</div><div class="cv">3.296</div></div>
+              <div class="cellv"><div class="cn">9</div><div class="cv">3.303</div></div>
+              <div class="cellv"><div class="cn">10</div><div class="cv">3.294</div></div>
+              <div class="cellv"><div class="cn">11</div><div class="cv">3.307</div></div>
+              <div class="cellv min"><div class="cn">12</div><div class="cv">3.287</div></div>
+              <div class="cellv"><div class="cn">13</div><div class="cv">3.300</div></div>
+              <div class="cellv"><div class="cn">14</div><div class="cv">3.295</div></div>
+              <div class="cellv"><div class="cn">15</div><div class="cv">3.302</div></div>
+              <div class="cellv"><div class="cn">16</div><div class="cv">3.297</div></div>
+            </div>
+          </div>
+          <div class="appcard reg" data-r="d8a"><span class="badge-no">7</span>
+            <div class="trend">
+              <div class="th">趋势 · 近 5 分钟<span class="lg"><i>电流</i><i class="v">电压</i></span></div>
+              <svg viewBox="0 0 280 54" height="54" aria-hidden="true">
+                <polyline points="0,30 20,32 40,28 60,35 80,33 100,40 120,36 140,44 160,38 180,46 200,42 220,48 240,45 260,50 280,47" fill="none" stroke="var(--m3-primary)" stroke-width="2"/>
+                <polyline points="0,38 20,38 40,37 60,38 80,37 100,38 120,37 140,38 160,38 180,37 200,38 220,37 240,38 260,38 280,37" fill="none" stroke="var(--amber)" stroke-width="2"/>
+              </svg>
+            </div>
+            <div class="ctrlrow reg" data-r="d8b"><span class="badge-no">8</span>
+              <button class="cb" type="button">充电开关</button>
+              <button class="cb on" type="button">放电开关</button>
+              <button class="cb force" type="button">强制充电</button>
+            </div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a class="on" href="#s02"><span class="ic">⚡</span>仪表盘</a>
+          <a href="#s05"><span class="ic">⚙</span>配置</a>
+          <a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口（对应计划 §6 区块表）<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li data-r="d1"><div><b>卡1 · 电池大卡（v2.2）</b><span>整卡背景即电量：<b>左侧主题色填充 = 有电，右侧透明 = 空电</b>，右缘小凸起模拟电池极头——一个横向电池图标。卡内左侧 KV 行（名称/运行时间/软硬件版本/电池类型），右侧三个小块：<b>已连接 / 权限徽章 / 电量百分数</b>。低电量时填充变红（S16）。</span></div></li>
+          <li data-r="d1b"><div><b>权限徽章 = 换级入口</b><span>点击后列出该设备 1~5/9 级记住的密码，选中即发 0x23 升级；未记住的等级引导去 S13 录入。连接成功时按设备「默认等级」已自动校验过一次。</span></div></li>
+          <li data-r="d2"><div><b>卡2 · 状态与容量（独立卡，恢复）</b><span>左列 4 行状态（圆点+名称+值右对齐）：电池状态/充电 MOS/放电 MOS/均衡；右列剩余/总容量 Ah。无圆环——电量由卡1 背景填充表达。</span></div></li>
+          <li><div><b>顶栏「＋」菜单（v2.1）</b><span>扫码连接、设备列表收敛至此——仪表盘页内不再放重复入口；菜单浮层如左图。</span></div></li>
+          <li data-r="d4"><div><b>卡3 · 4×2 彩色圆图标指标网格</b><span>对齐官方：单卡内 4 列×2 行圆形彩色图标 + 标签 + 等宽数值。8 项一卡，密度为旧方案的 4 倍。</span></div></li>
+          <li data-r="d5"><div><b>保护/告警双卡</b><span>各显示前 3 条 + 数量角标 + 「查看全部」→ S03 弹窗（避免嵌套滚动）。</span></div></li>
+          <li data-r="d6"><div><b>卡4 · 温度 3 列紧凑格</b><span>MOS/均衡 + T1~Tn 动态数量；未接传感器显示「—」（-40°C 哨兵值不直出）。</span></div></li>
+          <li data-r="d7"><div><b>卡5 · 单体电压网格</b><span>4×N 自适应；最高黄、最低蓝、均衡串角标。与旧版高亮规则一致。</span></div></li>
+          <li data-r="d8a"><div><b>卡6 · 趋势图（新增）</b><span>近 5 分钟电流/电压，Canvas 绘制，每秒聚合 1 点，不持久化。</span></div></li>
+          <li data-r="d8b"><div><b>控制按钮（卡6 底部内嵌）</b><span>仅三个高频操作；点击 → S04 确认弹窗。完整命令集在配置页。</span></div></li>
+        </ol>
+        <p class="note"><b>密度原则（v2 修订）</b>：采用官方 APP 的「大卡 + 卡内自组布局」而非每格独立小卡；<b>电量不用圆环</b>——大卡背景即横向电池进度（v2.2），Compose 实现为 Box + 背景填充宽度 = SOC%。整页单 LazyColumn。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- S03 -->
+  <div class="scr" id="s03">
+    <div class="scr-h"><span class="id">S03</span><h3>保护/告警详情（弹窗）</h3><span class="kind">DIALOG · ON S02</span></div>
+    <p class="path">入口：仪表盘「保护/告警」卡 → 查看全部</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div style="flex:1"></div>
+        <div class="scrim" style="position:absolute">
+          <div class="dlg">
+            <h4>告警详情 <span style="color:var(--m3-onSurfV);font-size:12px;font-weight:400">位域 12~19</span></h4>
+            <div class="listit"><span style="width:8px;height:8px;border-radius:50%;background:var(--warn)"></span>单体压差告警 <span class="rssi">bit 4</span></div>
+            <div class="listit"><span style="width:8px;height:8px;border-radius:50%;background:var(--warn)"></span>电池放电高温 <span class="rssi">bit 6</span></div>
+            <div class="listit" style="color:var(--m3-onSurfV)"><span style="width:8px;height:8px;border-radius:50%;background:var(--off)"></span>其余 58 位正常 <span class="rssi">u64</span></div>
+            <div class="acts"><button class="btn fill" type="button">知道了</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>逐位解码列表</b><span>64 位保护位域 / 64 位告警位域按 docs 13 §13.1–13.2 字典翻译；触发位在前，附位号（等宽小字）便于对照报文日志。</span></div></li>
+          <li><div><b>保护与告警分色</b><span>保护=红、告警=琥珀，与仪表盘双卡颜色一致。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S04 -->
+  <div class="scr" id="s04">
+    <div class="scr-h"><span class="id">S04</span><h3>MOS 控制确认（弹窗）</h3><span class="kind">DIALOG · 危险操作二级确认</span></div>
+    <p class="path">入口：仪表盘控制按钮 · 通用模式亦用于配置页全部控制命令</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div style="flex:1"></div>
+        <div class="scrim" style="position:absolute">
+          <div class="dlg">
+            <h4>强制开启充电？</h4>
+            <p>将无视充电保护条件直接打开充电 MOS（命令 51/52）。请确认充电器已接好、电池允许充电。</p>
+            <div class="field"><div class="fl">执行后将发送</div><div class="fv" style="font-size:13px">7E A1 51 34 00 ·· CRC ·· AA 55</div></div>
+            <div class="acts"><button class="btn" type="button">取消</button><button class="btn dang" type="button">执行</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>交互规则<span class="en">INTERACTION</span></h4>
+        <ol>
+          <li><div><b>说清后果再确认</b><span>正文用一句话说明影响 + 的人类语言，按钮「执行/取消」，不用「确定」。</span></div></li>
+          <li><div><b>命令预览</b><span>展开显示将发送的帧（等宽），与开发者报文日志呼应——这是「协议未经真机验证」提示的固定位置。</span></div></li>
+          <li><div><b>分级危险</b><span>普通（均衡/开关）= 单次确认；高危（恢复出厂、关闭系统、蓝牙关闭、清零类）= 红色按钮 + <b>输入确认</b>（键入设备名后可执行）。</span></div></li>
+          <li><div><b>执行期间暂停轮询</b><span>弹窗执行中自动暂停 500ms 轮询，完成后恢复（协议串扰规避，计划 §4.10）。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S05 配置主页 -->
+  <div class="scr" id="s05">
+    <div class="scr-h"><span class="id">S05</span><h3>配置（主页）</h3><span class="kind">TAB 2 · 只读权限变体</span></div>
+    <p class="path">入口：底栏 2 · 此稿展示权限&lt;3 时的只读横幅</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">配置</div><div class="s">保护板参数 · 读自临时区</div></div>
+        <div class="bodyx">
+          <div class="banner readonly reg" data-r="c0"><span class="bic">🔒</span>当前权限只读，修改参数需先校验密码<span class="go">去校验</span></div>
+          <div class="seg reg" data-r="c1">
+            <div class="gh">控制与工具<span class="gt">51/xx</span></div>
+            <div class="it"><span class="ic">🎛</span><span class="tx"><span class="t1">MOS 开关 / 强制充电</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🧪</span><span class="tx"><span class="t1">化学体系预设</span></span><span class="chev">›</span></div>
+            <div class="it danger-item"><span class="ic" style="background:var(--bad-bg);color:var(--bad)">⚠</span><span class="tx"><span class="t1">恢复出厂 / 清零类</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg reg" data-r="c2">
+            <div class="gh">保护参数<span class="gt">分块读 0x02</span></div>
+            <div class="it"><span class="ic">⚡</span><span class="tx"><span class="t1">电压保护</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🌡</span><span class="tx"><span class="t1">温度保护</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🔌</span><span class="tx"><span class="t1">电流保护</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">⚖</span><span class="tx"><span class="t1">均衡参数</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg reg" data-r="c3">
+            <div class="gh">电池组<span class="gt">152~406</span></div>
+            <div class="it"><span class="ic">🔋</span><span class="tx"><span class="t1">电池组与容量</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">📈</span><span class="tx"><span class="t1">SOC 电压表</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🛠</span><span class="tx"><span class="t1">系统参数</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg">
+            <div class="it"><span class="ic">💾</span><span class="tx"><span class="t1">参数备份</span></span><span class="chev">›</span></div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a href="#s02"><span class="ic">⚡</span>仪表盘</a>
+          <a class="on" href="#s05"><span class="ic">⚙</span>配置</a>
+          <a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li data-r="c0"><div><b>权限横幅（条件显示）</b><span>权限&lt;3 时常驻：琥珀色 +「去校验」直达 S13 密码页；权限足够后消失。写入入口同时禁用。</span></div></li>
+          <li data-r="c1"><div><b>控制与工具（置顶）</b><span>旧版 BmsControl 页全集收编于此：开关/强制充电/预设/清零/恢复出厂（危险项红色，三级确认）。行内无灰字描述——约束说明在 S04 确认弹窗。</span></div></li>
+          <li data-r="c2"><div><b>保护参数分组</b><span>七个分组对应附录 A 地址块；地址范围与项数只在分组头角标（<code>gt</code>）出现，条目行单行无描述。</span></div></li>
+          <li data-r="c3"><div><b>电池组分组</b><span>电池组与容量 / SOC 表 / 系统参数；u32 跨地址参数（容量）在组内合并为单条。</span></div></li>
+          <li><div><b>参数备份</b><span>整块快照导出 JSON（Android 走 SAF/分享）；修改参数前建议先备份（计划 §4.11）。</span></div></li>
+        </ol>
+        <p class="note">进入本页即<b>分块读参数</b>（0/52/56/104/140/152/298…），读期间分组行显示骨架占位。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- S06 电压保护分组 -->
+  <div class="scr" id="s06">
+    <div class="scr-h"><span class="id">S06</span><h3>参数分组页 · 以电压保护为例</h3><span class="kind">PUSH · 七分组共用模板</span></div>
+    <p class="path">入口：S05 各分组 · 模板 = 折叠详情 + 行内编辑值</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>电压保护</div><div class="s">地址 0~54 · 26 项 · 倍率见条目详情</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="it"><span class="tx"><span class="t1">单体过压保护电压</span></span>
+              <span class="val">3.650<small>V</small></span><span class="chev">⌄</span></div>
+            <div class="it" style="background:color-mix(in srgb,var(--m3-primary) 5%,transparent);display:block">
+              <div style="display:flex;gap:14px;font-family:var(--mono);font-size:10.5px;color:var(--m3-onSurfV);padding:2px 2px 6px">
+                <span>地址 0x00</span><span>倍率 0.001</span><span>范围 2.00~4.50 V</span></div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <div class="field" style="flex:1;margin:0"><div class="fl">新值</div><div class="fv">3.650 <small>V</small></div></div>
+                <button class="btn fill" type="button" style="border-radius:99px;padding:9px 18px;font-size:13px;font-weight:700;border:0;background:var(--m3-primary);color:#fff">写入</button>
+              </div>
+            </div>
+            <div class="it"><span class="tx"><span class="t1">单体过压恢复电压</span></span><span class="val">3.450<small>V</small></span><span class="chev">⌄</span></div>
+            <div class="it"><span class="tx"><span class="t1">单体二级过压保护</span></span><span class="val">3.750<small>V</small></span><span class="chev">›</span></div>
+            <div class="it"><span class="tx"><span class="t1">总压过压保护电压</span></span><span class="val">58.40<small>V</small></span><span class="chev">›</span></div>
+            <div class="it"><span class="tx"><span class="t1">单体欠压保护电压</span></span><span class="val">2.800<small>V</small></span><span class="chev">›</span></div>
+            <div class="it"><span class="tx"><span class="t1">单体压差保护</span></span><span class="val">0.080<small>V</small></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg">
+            <div class="gh">告警阈值<span class="gt">地址 32~50</span></div>
+            <div class="it"><span class="tx"><span class="t1">单体过压告警电压</span></span><span class="val">3.550<small>V</small></span><span class="chev">›</span></div>
+            <div class="it"><span class="tx"><span class="t1">单体欠压告警电压</span></span><span class="val">3.000<small>V</small></span><span class="chev">›</span></div>
+          </div>
+          <div class="banner info"><span class="bic">ℹ</span>修改写入临时区，需「保存应用参数」才持久化<span class="go">立即保存</span></div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>参数行（默认态）</b><span>名称 + 当前值（等宽）+ 单位，单行无描述；点击展开。这就是「用户视角」：地址默认不出现。</span></div></li>
+          <li><div><b>展开详情（编辑态）</b><span>展开后显示 <code>地址 / 倍率 / 范围</code>（等宽小字，供对照文档）+ 行内编辑。写入 = 0x22 单寄存器。</span></div></li>
+          <li><div><b>范围校验与结果码</b><span>前端按范围预校验；BMS 拒绝时结果码 2/3 携带的上下限回填到提示（协议级兜底）。</span></div></li>
+          <li><div><b>分组小节</b><span>保护阈值与告警阈值分区（附录 A.1 结构），避免 26 项一锅粥。</span></div></li>
+          <li><div><b>保存横幅（脏状态显示）</b><span>有未保存修改时出现，替代全页悬浮按钮：<code>51/07</code> 保存 + 离页拦截（S09）。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S07 参数编辑弹窗 -->
+  <div class="scr" id="s07">
+    <div class="scr-h"><span class="id">S07</span><h3>参数编辑（弹窗）</h3><span class="kind">DIALOG · 行内编辑的替代形态</span></div>
+    <p class="path">入口：参数行点击「编辑」/ 部分只读偏好设备使用弹窗编辑</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div style="flex:1"></div>
+        <div class="scrim" style="position:absolute">
+          <div class="dlg">
+            <h4>单体过压保护电压</h4>
+            <div class="field"><div class="fl">当前值</div><div class="fv">3.650 <small>V</small></div></div>
+            <div class="field" style="border-color:var(--bad)"><div class="fl" style="color:var(--bad)">新值 · 超出允许范围</div><div class="fv">4.800 <small>V</small></div></div>
+            <p style="color:var(--bad)">⚠ BMS 返回：大于最大值 4.500 V（结果码 3），已按上限回填。</p>
+            <div class="acts"><button class="btn" type="button">取消</button><button class="btn fill" type="button">重试 4.500</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>交互规则<span class="en">INTERACTION</span></h4>
+        <ol>
+          <li><div><b>当前值 / 新值双区</b><span>新值非法时红色描边 + 中文原因；不弹 toast，就地说明。</span></div></li>
+          <li><div><b>结果码 2/3 兜底</b><span>设备拒绝时展示其回传的允许上下限，一键回填重试——把协议错误变成可恢复操作。</span></div></li>
+          <li><div><b>不直接落盘</b><span>「写入」只改临时区+标记脏参数；真正持久化靠保存横幅/弹窗。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S08 控制与工具 -->
+  <div class="scr" id="s08">
+    <div class="scr-h"><span class="id">S08</span><h3>控制与工具</h3><span class="kind">PUSH · 命令全集</span></div>
+    <p class="path">入口：S05「控制与工具」· 对应旧版 BmsControl 页 30+ 命令</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>控制与工具</div><div class="s">全部命令执行前需确认 · 高危项需输入确认</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="gh">开关控制<span class="gt">51/1·3·4·6·52</span></div>
+            <div class="it"><span class="ic">⚡</span><span class="tx"><span class="t1">充电开关</span></span><span class="sw-off"></span></div>
+            <div class="it"><span class="ic">🔋</span><span class="tx"><span class="t1">放电开关</span></span><span class="sw-on"></span></div>
+            <div class="it"><span class="ic">⏩</span><span class="tx"><span class="t1">强制开启充电</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">⚖</span><span class="tx"><span class="t1">均衡开关</span></span><span class="sw-off"></span></div>
+          </div>
+          <div class="seg">
+            <div class="gh">校准与维护<span class="gt">51/7·8·36·44</span></div>
+            <div class="it"><span class="ic">💾</span><span class="tx"><span class="t1">保存应用参数</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🎯</span><span class="tx"><span class="t1">电流归零</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🔄</span><span class="tx"><span class="t1">重启系统</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🔔</span><span class="tx"><span class="t1">蜂鸣器</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg">
+            <div class="it danger-item"><span class="ic" style="background:var(--bad-bg);color:var(--bad)">⏱</span><span class="tx"><span class="t1">清零类操作</span></span><span class="chev">›</span></div>
+            <div class="it danger-item"><span class="ic" style="background:var(--bad-bg);color:var(--bad)">🧨</span><span class="tx"><span class="t1">恢复出厂 / 恢复厂家设置</span></span><span class="chev">›</span></div>
+            <div class="it danger-item"><span class="ic" style="background:var(--bad-bg);color:var(--bad)">📵</span><span class="tx"><span class="t1">关闭系统 / 蓝牙关闭</span></span><span class="chev">›</span></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局与入口<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>开关组</b><span>开关形态直连 51 命令，切换即弹 S04 确认；开关位置本身回显实时状态。</span></div></li>
+          <li><div><b>维护组</b><span>保存/归零/重启等中危操作；约束说明（如电流归零需无电流）放进 S04 确认弹窗正文，不占列表行。</span></div></li>
+          <li><div><b>危险组</b><span>红色图标即危险信号；后果说明在确认弹窗，输入确认（设备名）三重防误触。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S09 未保存提醒 -->
+  <div class="scr" id="s09">
+    <div class="scr-h"><span class="id">S09</span><h3>未保存修改提醒（弹窗）</h3><span class="kind">DIALOG · 离页/断连拦截</span></div>
+    <p class="path">入口：有脏参数时离开配置页 / 蓝牙断连瞬间</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div style="flex:1"></div>
+        <div class="scrim" style="position:absolute">
+          <div class="dlg">
+            <h4>有 3 项修改未保存</h4>
+            <p>未执行「保存应用参数」的修改在断电后丢失。是否先保存？</p>
+            <div class="field"><div class="fl">待保存</div><div class="fv" style="font-size:12.5px;font-family:var(--mono)">单体过压保护 3.650V · 欠压恢复 2.900V · 均衡启动压差 0.030V</div></div>
+            <div class="acts"><button class="btn" type="button">放弃修改</button><button class="btn fill" type="button">保存并继续</button></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>交互规则<span class="en">INTERACTION</span></h4>
+        <ol>
+          <li><div><b>列出具体改动</b><span>逐项列出脏参数名+新值，让「保存/放弃」是知情决定。</span></div></li>
+          <li><div><b>断连也拦截</b><span>断连瞬间脏参数仍在内存，弹窗保留操作副本，重连后可重新写入。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S10 设置主页 -->
+  <div class="scr" id="s10">
+    <div class="scr-h"><span class="id">S10</span><h3>设置（主页）</h3><span class="kind">TAB 3 · InstallerX 式分组</span></div>
+    <p class="path">入口：底栏 3 · 分组页面逐层跳转，不堆单页长列表</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">设置</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="it"><span class="ic">🎨</span><span class="tx"><span class="t1">外观</span><span class="t2" style="margin-left:auto">跟随系统</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">📶</span><span class="tx"><span class="t1">连接</span><span class="t2" style="margin-left:auto">ANT-BMS-16S</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🔑</span><span class="tx"><span class="t1">权限与密码</span><span class="t2" style="margin-left:auto">已记住</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg">
+            <div class="it"><span class="ic">ℹ</span><span class="tx"><span class="t1">关于</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="ic">🧑‍💻</span><span class="tx"><span class="t1">开发者</span></span><span class="chev">›</span></div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a href="#s02"><span class="ic">⚡</span>仪表盘</a>
+          <a href="#s05"><span class="ic">⚙</span>配置</a>
+          <a class="on" href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>两个 Segment 分组</b><span>用户级（外观/连接/权限）与信息级（关于/开发者）分离——开发者选项刻意沉底。</span></div></li>
+          <li><div><b>行内值替代副标题</b><span>无描述行：当前状态（主题模式/记忆设备名/密码状态）以小字内联在行右侧，与标题同行，行高一致紧凑。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S11 外观 -->
+  <div class="scr" id="s11">
+    <div class="scr-h"><span class="id">S11</span><h3>外观</h3><span class="kind">PUSH · 主题三件套</span></div>
+    <p class="path">入口：S10「外观」</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>外观</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="gh">主题模式</div>
+            <div class="it"><span class="rd on"></span><span class="tx"><span class="t1">跟随系统</span></span></div>
+            <div class="it"><span class="rd"></span><span class="tx"><span class="t1">浅色</span></span></div>
+            <div class="it"><span class="rd"></span><span class="tx"><span class="t1">深色</span></span></div>
+          </div>
+          <div class="seg">
+            <div class="it"><span class="ic">🌈</span><span class="tx"><span class="t1">动态取色</span></span><span class="sw-on"></span></div>
+            <div class="it"><span class="ic">⬛</span><span class="tx"><span class="t1">AMOLED 纯黑</span></span><span class="sw-off"></span></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>主题模式</b><span>实现为 M3 单选对话框（此处直出展示）；改动即时生效并持久化到 DataStore。</span></div></li>
+          <li><div><b>动态取色</b><span>基于 MaterialKolor，不卡 API 31+；关闭后回落到本页种子色。深色模式下自动取对应 tonal scheme。</span></div></li>
+          <li><div><b>AMOLED 纯黑</b><span>仅深色模式下有意义；开启时 surface 替换为纯黑。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S12 连接 -->
+  <div class="scr" id="s12">
+    <div class="scr-h"><span class="id">S12</span><h3>连接</h3><span class="kind">PUSH · 演示模式在此</span></div>
+    <p class="path">入口：S10「连接」</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>连接</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="gh">演示模式<span class="gt">MOCK</span></div>
+            <div class="it"><span class="ic">🧪</span><span class="tx"><span class="t1">启用演示模式</span></span><span class="sw-on"></span></div>
+            <div class="it"><span class="tx"><span class="t1">模拟场景</span><span class="t2" style="margin-left:auto">正常放电</span></span><span class="chev">›</span></div>
+            <div class="it"><span class="tx"><span class="t1">注入保护/告警</span></span><span class="chev">›</span></div>
+          </div>
+          <div class="seg">
+            <div class="gh">蓝牙<span class="gt">BLE</span></div>
+            <div class="it"><span class="ic">🔁</span><span class="tx"><span class="t1">自动重连</span></span><span class="sw-on"></span></div>
+            <div class="it"><span class="ic">📌</span><span class="tx"><span class="t1">记忆设备</span><span class="t2" style="margin-left:auto">ANT-BMS-16S</span></span><span class="chev">›</span></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>演示模式组</b><span>开关与 S00 入口同一状态；场景选择：正常充电/放电/静止/保护触发/告警/主动均衡。</span></div></li>
+          <li><div><b>场景注入</b><span>开发者联调用：手动置位保护/告警位域，验证仪表盘徽章与详情弹窗着色。</span></div></li>
+          <li><div><b>蓝牙组</b><span>记忆设备保存 MAC+名称（作为密码库的设备键）；自动重连失败 3 次后停止并提示。扫码/设备列表入口统一在顶栏「＋」菜单。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S13 权限 -->
+  <div class="scr" id="s13">
+    <div class="scr-h"><span class="id">S13</span><h3>权限与密码</h3><span class="kind">PUSH · 按设备分级密码库</span></div>
+    <p class="path">入口：S10「权限与密码」/ S05 只读横幅「去校验」/ S02 卡1 权限徽章</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>权限与密码</div><div class="s">设备：ANT-BMS-16S · 当前权限 3 级</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="gh">该设备的密码库<span class="gt">按设备存储</span></div>
+            <div class="it"><span class="tx"><span class="t1">1 级</span><span class="t2" style="margin-left:auto;font-family:var(--mono)">••••678</span></span><span class="rd on"></span></div>
+            <div class="it"><span class="tx"><span class="t1">2 级</span><span class="t2" style="margin-left:auto;color:var(--m3-onSurfV)">未设置</span></span><span class="chev">＋</span></div>
+            <div class="it"><span class="tx"><span class="t1">3 级</span><span class="t2" style="margin-left:auto;font-family:var(--mono)">••••••••</span></span><span class="rd"></span></div>
+            <div class="it"><span class="tx"><span class="t1">4 级</span><span class="t2" style="margin-left:auto;color:var(--m3-onSurfV)">未设置</span></span><span class="chev">＋</span></div>
+            <div class="it"><span class="tx"><span class="t1">5 级</span><span class="t2" style="margin-left:auto;color:var(--m3-onSurfV)">未设置</span></span><span class="chev">＋</span></div>
+            <div class="it"><span class="tx"><span class="t1">9 级厂家</span><span class="t2" style="margin-left:auto;color:var(--m3-onSurfV)">未设置</span></span><span class="chev">＋</span></div>
+          </div>
+          <div class="seg">
+            <div class="gh">连接行为<span class="gt">0x23</span></div>
+            <div class="it"><span class="tx"><span class="t1">连接后自动升级到</span><span class="t2" style="margin-left:auto">3 级</span></span><span class="chev">⌄</span></div>
+            <div class="it"><span class="ic">🧠</span><span class="tx"><span class="t1">显示明文</span></span><span class="sw-off"></span></div>
+          </div>
+          <div class="banner info"><span class="bic">⚡</span>下次连接将自动校验 3 级密码</div>
+          <div class="banner err"><span class="bic">⚠</span>密码为明文存储，勿共用设备<span class="go">了解</span></div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>密码库按设备分组（v2.1）</b><span>密码跟随设备：每台设备独立存储 1~5 级 + 9 级厂家密码（协议 330/338/346/354/362 寄存器）。行 = 等级，右侧掩码预览 / 「未设置 +」入口；单选点标出当前生效等级。</span></div></li>
+          <li><div><b>默认等级自动升级</b><span>「连接后自动升级到 N 级」：连接成功即用该等级记住的密码静默发 0x23，直接到目标权限；该级未设密码则回退只读并提示。切换等级 = 改选单选点。</span></div></li>
+          <li><div><b>页头实时权限</b><span>副标题回显当前设备与权限级（0/1/3/5/9）。</span></div></li>
+          <li><div><b>存储</b><span>PasswordStore 接口，v1 明文实现 + 风险提示；接口预留 Keystore/Keychain 替换。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S14 设备信息 -->
+  <div class="scr" id="s14">
+    <div class="scr-h"><span class="id">S14</span><h3>设备信息</h3><span class="kind">PUSH · 对应旧版 SysInfo</span></div>
+    <p class="path">入口：S10「关于」→ 设备信息</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>设备信息</div><div class="s">身份区 · 地址 528/576/620/636/262</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="it"><span class="tx"><span class="t1">软件版本</span></span><span class="val">V3.2.1</span></div>
+            <div class="it"><span class="tx"><span class="t1">硬件版本</span></span><span class="val">V2.8</span></div>
+            <div class="it"><span class="tx"><span class="t1">Boot 版本</span></span><span class="val">V1.4</span></div>
+            <div class="it"><span class="tx"><span class="t1">设备地址</span></span><span class="val">A1</span></div>
+          </div>
+          <div class="seg">
+            <div class="it"><span class="tx"><span class="t1">电池组 ID</span></span><span class="val" style="font-size:11px">PACK-2308-0142</span></div>
+            <div class="it"><span class="tx"><span class="t1">Code Key</span></span><span class="val" style="font-size:11px">202.183.110.42</span></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>版本区</b><span>软硬件/Boot 版本——升级判断与售后报修的核心信息。</span></div></li>
+          <li><div><b>身份区</b><span>电池组 ID、Code Key；副标题标注协议地址，与文档互相印证。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+
+  <!-- S15 开发者 -->
+  <div class="scr" id="s15">
+    <div class="scr-h"><span class="id">S15</span><h3>开发者 · 报文调试日志</h3><span class="kind">PUSH · 真机核对工具</span></div>
+    <p class="path">入口：S10「开发者」</p>
+    <div class="row">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t"><span class="back">‹</span>开发者</div></div>
+        <div class="bodyx">
+          <div class="seg">
+            <div class="it"><span class="ic">📝</span><span class="tx"><span class="t1">报文调试日志</span></span><span class="sw-on"></span></div>
+          </div>
+          <div class="logbox">12:30:01.204 → <span class="tx">7E A1 01 00 00 F5 58 62 AA 55</span>  <span class="cm">| 0x01 读实时 245B</span>
+12:30:01.431 ← <span class="tx">7E A1 11 00 00 F5 01 10 04 00 …</span>  <span class="cm">| CRC OK · 16S/4T</span>
+12:30:01.432 <span class="cm">      组合帧：+0xFE 段 机型 0x056C</span>
+12:30:01.702 → <span class="tx">7E A1 02 00 00 68 ·· ·· AA 55</span>  <span class="cm">| 0x02 读参 0~104</span>
+12:30:02.511 ⚠ <span class="er">CRC FAIL</span> <span class="cm">滑动重找帧头 · 丢弃 2B</span>
+12:30:03.010 → <span class="tx">7E A1 51 34 00 00 ·· AA 55</span>  <span class="cm">| 51/52 强制充电</span>
+12:30:03.108 ← <span class="tx">7E A1 61 34 00 01 ·· AA 55</span>  <span class="cm">| 结果码 1 成功</span></div>
+          <div class="seg" style="margin-top:10px">
+            <div class="it"><span class="ic">📋</span><span class="tx"><span class="t1">复制全部 / 分享</span></span><span class="chev">›</span></div>
+          </div>
+        </div>
+      </div></div>
+      <div class="legend">
+        <h4>布局说明<span class="en">LAYOUT LEDGER</span></h4>
+        <ol>
+          <li><div><b>环形缓冲日志</b><span>时间戳 + 方向 + 十六进制帧 + 语义注释（功能码/CRC 判定/丢弃字节）；只存内存不落盘。</span></div></li>
+          <li><div><b>导出</b><span>一键复制/系统分享，是接真机时「对照 docs 逐帧核对」与社区反馈的载体。</span></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 主题对照 ============ -->
+<section class="sheet" id="theme">
+  <div class="sheet-h"><span class="no">SHT 04</span><h2>深浅主题对照</h2><span class="tail">THEME PAIR · 同一屏幕 S02</span></div>
+  <p class="lead">深色模式为一等公民：全组件走 MaterialTheme 动态色，以下为仪表盘在两套 tonal scheme 下的对照（AMOLED 纯黑开启时背景更深一档）。着色规则不变：放电绿 / 充电琥珀 / 保护红 / 关闭灰。</p>
+  <div class="row multi">
+    <div class="scr" style="margin-top:8px;width:fit-content">
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">仪表盘 · 浅色</div></div>
+        <div class="bodyx">
+          <div class="batcard hero">
+            <div class="batfill" style="width:76%"></div>
+            <div class="batbody">
+              <div class="kvrows kvfill" style="flex:1;max-width:56%">
+                <div class="kv"><span class="k">设备名称:</span><span class="v">ANT-BMS-16S</span></div>
+                <div class="kv"><span class="k">电池类型:</span><span class="v">磷酸铁锂</span></div>
+              </div>
+              <div class="miniact"><span class="bchip">已连接</span><span class="bchip soc">76<small>%</small></span></div>
+            </div>
+          </div>
+          <div class="appcard">
+            <div style="display:flex;gap:10px">
+              <div class="statlist">
+                <div class="srow"><span class="dot" style="background:var(--warn)"></span>电池状态<b>放电中</b></div>
+                <div class="srow"><span class="dot" style="background:var(--ok)"></span>放电 MOS<b>开启</b></div>
+              </div>
+              <div class="soccap">剩余<br><b>76.0</b> Ah<br>总容量<br><b>100.0</b> Ah</div>
+            </div>
+          </div>
+          <div class="appcard">
+            <div class="icongrid">
+              <div class="ig"><span class="ig-ic ic-blue">V</span><span class="ig-l">总电压</span><span class="ig-v">52.83</span></div>
+              <div class="ig"><span class="ig-ic ic-teal">A</span><span class="ig-l">电流</span><span class="ig-v">-12.6</span></div>
+            </div>
+          </div>
+          <div class="cells" style="margin-bottom:10px">
+            <div class="cellg">
+              <div class="cellv"><div class="cn">1</div><div class="cv">3.301</div></div>
+              <div class="cellv"><div class="cn">2</div><div class="cv">3.298</div></div>
+              <div class="cellv max"><div class="cn">5</div><div class="cv">3.312</div></div>
+              <div class="cellv min"><div class="cn">12</div><div class="cv">3.287</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a class="on" href="#s02"><span class="ic">⚡</span>仪表盘</a><a href="#s05"><span class="ic">⚙</span>配置</a><a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+    </div>
+    <div class="scr" style="margin-top:8px;width:fit-content">
+      <div class="phone"><div class="screen dark">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">仪表盘 · 深色</div></div>
+        <div class="bodyx">
+          <div class="batcard hero">
+            <div class="batfill" style="width:76%"></div>
+            <div class="batbody">
+              <div class="kvrows kvfill" style="flex:1;max-width:56%">
+                <div class="kv"><span class="k">设备名称:</span><span class="v">ANT-BMS-16S</span></div>
+                <div class="kv"><span class="k">电池类型:</span><span class="v">磷酸铁锂</span></div>
+              </div>
+              <div class="miniact"><span class="bchip">已连接</span><span class="bchip soc">76<small>%</small></span></div>
+            </div>
+          </div>
+          <div class="appcard">
+            <div style="display:flex;gap:10px">
+              <div class="statlist">
+                <div class="srow"><span class="dot" style="background:var(--warn)"></span>电池状态<b>放电中</b></div>
+                <div class="srow"><span class="dot" style="background:var(--ok)"></span>放电 MOS<b>开启</b></div>
+              </div>
+              <div class="soccap">剩余<br><b>76.0</b> Ah<br>总容量<br><b>100.0</b> Ah</div>
+            </div>
+          </div>
+          <div class="appcard">
+            <div class="icongrid">
+              <div class="ig"><span class="ig-ic ic-blue">V</span><span class="ig-l">总电压</span><span class="ig-v">52.83</span></div>
+              <div class="ig"><span class="ig-ic ic-teal">A</span><span class="ig-l">电流</span><span class="ig-v">-12.6</span></div>
+            </div>
+          </div>
+          <div class="cells" style="margin-bottom:10px">
+            <div class="cellg">
+              <div class="cellv"><div class="cn">1</div><div class="cv">3.301</div></div>
+              <div class="cellv"><div class="cn">2</div><div class="cv">3.298</div></div>
+              <div class="cellv max"><div class="cn">5</div><div class="cv">3.312</div></div>
+              <div class="cellv min"><div class="cn">12</div><div class="cv">3.287</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a class="on" href="#s02"><span class="ic">⚡</span>仪表盘</a><a href="#s05"><span class="ic">⚙</span>配置</a><a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 状态与边界 ============ -->
+<section class="sheet" id="states">
+  <div class="sheet-h"><span class="no">SHT 05</span><h2>状态与边界情况</h2><span class="tail">EDGE STATES</span></div>
+  <p class="lead">仪表盘的三个非常态：保护触发、通信中断、通道探测中。其余边界（空数据、权限只读、脏参数）已在对应页面稿中体现。</p>
+  <div class="row multi">
+    <div class="scr" style="margin-top:8px;width:fit-content">
+      <div class="scr-h"><span class="id">S16</span><h3 style="font-size:17px">保护触发变体</h3></div>
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">40%</span></div>
+        <div class="app-bar"><div class="t">仪表盘</div></div>
+        <div class="bodyx">
+          <div class="batcard hero" style="--m3-primary:var(--bad)">
+            <div class="batfill" style="width:9%"></div>
+            <div class="batbody">
+              <div class="kvrows" style="flex:1">
+                <div class="kv"><span class="k">设备名称:</span><span class="v">ANT-BMS-16S</span></div>
+              </div>
+              <div class="miniact"><span class="bchip">已连接</span><span class="bchip soc">9<small>%</small></span></div>
+            </div>
+          </div>
+          <div class="appcard">
+            <div style="display:flex;gap:10px">
+              <div class="statlist">
+                <div class="srow"><span class="dot" style="background:var(--bad)"></span>电池状态<b>异常</b></div>
+                <div class="srow"><span class="dot" style="background:var(--off)"></span>充电 MOS<b>关闭</b></div>
+                <div class="srow"><span class="dot" style="background:var(--bad)"></span>放电 MOS<b>保护断开</b></div>
+              </div>
+              <div class="soccap">剩余<br><b>9.0</b> Ah<br>SOC 一级告警</div>
+            </div>
+          </div>
+          <div class="banner err"><span class="bic">⛔</span>单体欠压保护已触发 · 放电 MOS 强制断开</div>
+          <div class="duo">
+            <div class="pw-card prot"><div class="ph">保护信息<span class="cnt">1</span></div><div class="li">单体欠压保护</div><div class="all">查看全部 ›</div></div>
+            <div class="pw-card alarm"><div class="ph">告警信息<span class="cnt">2</span></div><div class="li">单体欠压告警</div><div class="li">SOC 一级告警</div><div class="all">查看全部 ›</div></div>
+          </div>
+          <div class="appcard">
+            <div class="icongrid">
+              <div class="ig"><span class="ig-ic ic-blue">V</span><span class="ig-l">总电压</span><span class="ig-v">49.80</span></div>
+              <div class="ig"><span class="ig-ic ic-teal">A</span><span class="ig-l">电流</span><span class="ig-v">0.0</span></div>
+              <div class="ig"><span class="ig-ic ic-amber">↓V</span><span class="ig-l">最低 #9</span><span class="ig-v">2.641</span></div>
+              <div class="ig"><span class="ig-ic ic-purple">Δ</span><span class="ig-l">压差</span><span class="ig-v">0.146</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="bnav">
+          <a class="on" href="#s02"><span class="ic">⚡</span>仪表盘</a><a href="#s05"><span class="ic">⚙</span>配置</a><a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+    </div>
+    <div class="scr" style="margin-top:8px;width:fit-content">
+      <div class="scr-h"><span class="id">S17</span><h3 style="font-size:17px">通信中断 / 探测中</h3></div>
+      <div class="phone"><div class="screen">
+        <div class="p-status"><span>12:30</span><span class="bat">86%</span></div>
+        <div class="app-bar"><div class="t">仪表盘</div></div>
+        <div class="bodyx">
+          <div class="batcard hero" style="opacity:.55">
+            <div class="batfill" style="width:0%;background:var(--off)"></div>
+            <div class="batbody">
+              <div class="kvrows" style="flex:1">
+                <div class="kv"><span class="k">设备名称:</span><span class="v">ANT-BMS-16S</span></div>
+              </div>
+              <div class="miniact"><span class="bchip" style="background:var(--off-bg);color:var(--off)">重连中…</span><span class="bchip soc">--</span></div>
+            </div>
+          </div>
+          <div class="appcard" style="opacity:.55">
+            <div style="display:flex;gap:10px">
+              <div class="statlist">
+                <div class="srow"><span class="dot" style="background:var(--off)"></span>电池状态<b>等待数据…</b></div>
+              </div>
+              <div class="soccap">等待数据恢复…<br>上次数据 12:29:58</div>
+            </div>
+          </div>
+          <div class="banner readonly"><span class="bic">📡</span>通道探测中 fff5-fff6（2/3）· 数据可能延迟</div>
+          <div class="appcard" style="opacity:.55">
+            <div class="icongrid">
+              <div class="ig"><span class="ig-ic ic-blue">V</span><span class="ig-l">总电压</span><span class="ig-v">--</span></div>
+              <div class="ig"><span class="ig-ic ic-teal">A</span><span class="ig-l">电流</span><span class="ig-v">--</span></div>
+            </div>
+          </div>
+          <p style="font-size:11px;color:var(--m3-onSurfV);padding:0 4px">数据区显示「--」而非 0/65535 等哨兵值；30 秒未能恢复则断开并回到连接流程（自动重连开启时后台重试）。</p>
+        </div>
+        <div class="bnav">
+          <a class="on" href="#s02"><span class="ic">⚡</span>仪表盘</a><a href="#s05"><span class="ic">⚙</span>配置</a><a href="#s10"><span class="ic">☰</span>设置</a>
+        </div>
+      </div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 关键流程 ============ -->
+<section class="sheet" id="flows">
+  <div class="sheet-h"><span class="no">SHT 06</span><h2>关键流程</h2><span class="tail">FLOWS · 界面背后的时序约束</span></div>
+  <p class="lead">三条驱动界面状态的协议流程（详见计划 §4/§5）。蓝=界面节点，实线=用户操作，虚线=自动行为。</p>
+  <div class="flow">
+    <div class="frow">
+      <span class="step ui">连接请求</span><span class="arr">→</span>
+      <span class="step auto">订阅通知</span><span class="lbl">必须先于命令</span><span class="arr">→</span>
+      <span class="step auto">MTU 512</span><span class="arr">→</span>
+      <span class="step auto">通道探测 ffe1→fff3→fff5</span><span class="arr">→</span>
+      <span class="step">权限探测</span><span class="arr">→</span>
+      <span class="step ui">仪表盘 500ms 轮询</span>
+    </div>
+    <div class="frow">
+      <span class="step ui">进入配置页</span><span class="arr">→</span>
+      <span class="step auto">暂停轮询</span><span class="arr">→</span>
+      <span class="step auto">分块读参数</span><span class="arr">→</span>
+      <span class="step ui">编辑+写入 0x22</span><span class="arr">→</span>
+      <span class="step warn">未保存拦截</span><span class="arr">→</span>
+      <span class="step">保存 51/07</span><span class="arr">→</span>
+      <span class="step auto">恢复轮询</span>
+    </div>
+    <div class="frow">
+      <span class="step ui">权限&lt;3 写入口禁用</span><span class="arr">→</span>
+      <span class="step ui">S13 输入密码 0x23</span><span class="arr">→</span>
+      <span class="step warn">错误 → 冷却锁定可能</span><span class="lbl">或</span>
+      <span class="step">获得 ≥3 级</span><span class="arr">→</span>
+      <span class="step ui">横幅消失 · 写入口解禁</span><span class="arr">→</span>
+      <span class="step auto">断连后自动重校验（记住密码时）</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 核对表 ============ -->
+<section class="sheet" id="check">
+  <div class="sheet-h"><span class="no">SHT 07</span><h2>页面清单核对表</h2><span class="tail">CHECKLIST · 映射实施里程碑</span></div>
+  <p class="lead">每屏对应的实施里程碑（计划 §8）：M1 脚手架 / M4 仪表盘 / M5 配置 / M6 设置。</p>
+  <table class="check">
+    <tr><th>屏</th><th>页面</th><th>类型</th><th>主要入口</th><th>里程碑</th></tr>
+    <tr><td><code>S00</code></td><td>未连接 · 连接中枢</td><td>根页面</td><td>启动 / 断连回落</td><td><span class="pill m1">M1</span></td></tr>
+    <tr><td><code>S01</code></td><td>设备列表 / 扫码</td><td>弹窗</td><td>S00 搜索/扫码</td><td><span class="pill m1">M1</span></td></tr>
+    <tr><td><code>S02</code></td><td>仪表盘</td><td>底栏 1</td><td>底栏</td><td><span class="pill m4">M4</span></td></tr>
+    <tr><td><code>S03</code></td><td>保护/告警详情</td><td>弹窗</td><td>S02 查看全部</td><td><span class="pill m4">M4</span></td></tr>
+    <tr><td><code>S04</code></td><td>MOS 控制确认</td><td>弹窗</td><td>S02 控制按钮 / S08 全部命令</td><td><span class="pill m4">M4</span></td></tr>
+    <tr><td><code>S05</code></td><td>配置主页（含只读横幅）</td><td>底栏 2</td><td>底栏</td><td><span class="pill m5">M5</span></td></tr>
+    <tr><td><code>S06</code></td><td>参数分组页 ×7</td><td>推入页</td><td>S05 分组</td><td><span class="pill m5">M5</span></td></tr>
+    <tr><td><code>S07</code></td><td>参数编辑（结果码回显）</td><td>弹窗</td><td>S06 展开/编辑</td><td><span class="pill m5">M5</span></td></tr>
+    <tr><td><code>S08</code></td><td>控制与工具（命令全集）</td><td>推入页</td><td>S05 置顶组</td><td><span class="pill m5">M5</span></td></tr>
+    <tr><td><code>S09</code></td><td>未保存修改提醒</td><td>弹窗</td><td>离页/断连拦截</td><td><span class="pill m5">M5</span></td></tr>
+    <tr><td><code>S10</code></td><td>设置主页</td><td>底栏 3</td><td>底栏</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S11</code></td><td>外观（主题/取色/纯黑）</td><td>推入页</td><td>S10</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S12</code></td><td>连接（演示模式/场景）</td><td>推入页</td><td>S10</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S13</code></td><td>权限与密码</td><td>推入页</td><td>S10 / S05 横幅</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S14</code></td><td>设备信息（SysInfo）</td><td>推入页</td><td>S10 关于</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S15</code></td><td>报文调试日志</td><td>推入页</td><td>S10 开发者</td><td><span class="pill m6">M6</span></td></tr>
+    <tr><td><code>S16</code></td><td>保护触发状态变体</td><td>状态</td><td>—</td><td><span class="pill m4">M4</span></td></tr>
+    <tr><td><code>S17</code></td><td>通信中断/探测中变体</td><td>状态</td><td>—</td><td><span class="pill m4">M4</span></td></tr>
+  </table>
+</section>
+
+</main>
+
+<footer>
+  <p>蚂蚁BMS开源版 · 界面设计蓝图 — 本地设计文档，不发布。数据样例取自 docs/附录D（24串4温测试向量族）与 13 §13.1–13.5 状态字典。</p>
+  <p class="mono">ANT BMS OPEN · UI BLUEPRINT v1.0 · 对应 Plan/开发计划.md v1.3 · Compose Multiplatform + Material 3 Expressive</p>
+</footer>
+
+<script>
+// 图例 ↔ 画面区域双向联动
+function bindLedger(){
+  const pairs=[];
+  document.querySelectorAll('.legend li[data-r]').forEach(li=>{
+    const regs=[...document.querySelectorAll('.reg[data-r="'+li.dataset.r+'"]')];
+    if(!regs.length)return;
+    pairs.push([li,regs]);
+    li.addEventListener('mouseenter',()=>regs.forEach(r=>r.classList.add('lit')));
+    li.addEventListener('mouseleave',()=>regs.forEach(r=>r.classList.remove('lit')));
+    li.addEventListener('click',()=>{
+      const r=regs[0];const scr=r.closest('.screen');
+      if(scr) scr.querySelectorAll('.bodyx').forEach(b=>{
+        const top=r.getBoundingClientRect().top-b.getBoundingClientRect().top+b.scrollTop-52;
+        b.scrollTo({top,behavior:'smooth'});
+      });
+      regs.forEach(x=>{x.classList.add('lit');setTimeout(()=>x.classList.remove('lit'),1600)});
+    });
+  });
+  pairs.forEach(([li,regs])=>{
+    regs.forEach(r=>{
+      r.style.cursor='pointer';
+      r.addEventListener('mouseenter',()=>li.classList.add('hot'));
+      r.addEventListener('mouseleave',()=>li.classList.remove('hot'));
+    });
+  });
+}
+bindLedger();
+// 弹窗类屏幕禁滚动
+document.querySelectorAll('.screen .scrim').forEach(s=>{const b=s.closest('.screen').querySelector('.bodyx');if(b)b.style.overflow='hidden'});
+</script>
+</body>
+</html>
