@@ -64,6 +64,13 @@ class BmsRepository(
     /** 期望应答的寄存器值；null=不校验。真机教训：只比功能码会把上一条超时命令的迟到应答收下 */
     private var expectReg: Int? = null
 
+    /**
+     * 正在写参数：只有这个窗口内的 0xFF 附加段才算「写参数结果」。
+     * 读参数区时每条 0x12 后面也跟一条 0xFF（码 11，权限不足时码 1），
+     * 早先靠 `paramsReading` 反着排除，写参数撞上读回就会被吞掉结果（且静默无提示）。
+     */
+    private var writeInFlight = false
+
     private var pollJob: Job? = null
     private var collectorJob: Job? = null
     private var stateJob: Job? = null
@@ -284,6 +291,8 @@ class BmsRepository(
         const val SCAN_WINDOW_MS = 20_000L
         /** 两条校验命令的最小间隔，防链路抖动时反复发 0x23 */
         const val RE_AUTH_COOLDOWN_MS = 60_000L
+        /** 等 0x42 同帧的 0xFF 结果段落地（真机弱信号下两段可能差数百毫秒，取文档建议值） */
+        const val WRITE_STATUS_GRACE_MS = 200L
     }
 
     private suspend fun handleFrame(f: ParsedFrame) {
@@ -338,10 +347,10 @@ class BmsRepository(
             }
             Proto.FC_WRITE_STATUS -> {
                 // 0xFF 附加段：结果码在寄存器低字节，失败时带参数地址与限值。
-                // 码 11 = 读取成功：每条 0x12 读应答后面都跟一条，不能当作「写参数结果」上屏。
-                // 参数读回期间（权限不足时码=1）也一律不入横幅，否则配置页会挂着假的「写参数结果」
+                // 只有「正在写参数」时才收（writeInFlight）：码 11 = 读取成功，每条 0x12 读应答后面都跟一条；
+                // 读参数区时权限不足也会回码 1 —— 这两种都不该冒充「写参数结果」上屏。
                 val code = f.reg and 0xFF
-                if (code != 11 && !MockBms.paramsReading.value) {
+                if (code != 11 && writeInFlight) {
                 MockBms.lastWriteResult.value = code
                 // 只有「小于最小值 / 大于最大值」才附带限值（docs/附录B B.3）
                 MockBms.lastWriteDetail.value = if (f.data.size >= 4 && (code == 2 || code == 3)) {
@@ -404,10 +413,12 @@ class BmsRepository(
      */
     suspend fun auth(level: Int, password: String): Int {
         val addr = ParamTable.slotAddr(level)
-        BmsLog.i("AUTH", "校验 $level 级密码（寄存器 $addr）")
+        // 槽长按等级取（5 级与管理员槽 12 字节，管理员为点分十进制），见 PasswordCodec
+        val payload = PasswordCodec.encode(level, password)
+        BmsLog.i("AUTH", "校验 $level 级密码（寄存器 $addr，${payload.size} 字节）")
         lastAuthAt = System.currentTimeMillis()
         // 弱信号下 0x43 可能 2s 后才回（真机实测），给足 4s
-        val r = requestAndAwait(Frame.auth(addr, password), Proto.RSP_AUTH, expectedReg = addr, timeoutMs = 4000)
+        val r = requestAndAwait(Frame.auth(addr, payload), Proto.RSP_AUTH, expectedReg = addr, timeoutMs = 4000)
         if (r == null) {
             BmsLog.w("AUTH", "$level 级校验无应答")
             return 0
@@ -474,10 +485,8 @@ class BmsRepository(
             if (lv > 0) {
                 MockBms.applyPermission(lv)
                 BmsLog.i("AUTH", "权限回落，已静默重升到 $lv 级")
-                BmsLog.i("AUTH", "权限回落，已静默重升到 $lv 级")
             } else {
                 BmsLog.w("AUTH", "权限回落重升失败（$target 级密码未通过，已从密码库移除）")
-                BmsLog.w("AUTH", "权限回落重升失败（$target 级密码未通过）")
             }
         }
     }
@@ -504,9 +513,6 @@ class BmsRepository(
         if (readJob?.isActive == true) return   // 上一轮还在读：权限升级会 force 重入，但串行读没必要叠
         if (!force && paramsAttempted) return
         paramsAttempted = true
-        // 读参数也会追加 0xFF 段（11=读取成功），别让它留成下一条「写参数结果」横幅
-        MockBms.lastWriteResult.value = -1
-        MockBms.lastWriteDetail.value = null
         readJob = scope.launch {
             MockBms.paramsReading.value = true
             try {
@@ -575,11 +581,16 @@ class BmsRepository(
      *
      * 结果来自 0x42 同帧追加的 **0xFF 段**（不是 0x42 数据区）：实测写被拒时
      * 仍会回显参数块，只有 0xFF 段里的码才是真结论（真机 1=权限不够）。
-     * @return 0xFF 段结果码；-1 = 无应答
+     *
+     * 真机只验证过「被拒」这一侧，成功时是否也追加 0xFF 段没有实证（docs 内部两说），
+     * 所以**没收到结果段时回读该参数做兜底判定**——不能把「写没写进去」交给一个假设。
+     *
+     * @return 0xFF 段结果码；-1 = 未确认（已不再出现，兜底会给出结论）、-2 = 无应答、-3 = 回读不一致
      */
     suspend fun writeParam(addr: Int, rawValue: Int): Int {
         val def = ParamTable.byAddr(addr)
-        BmsLog.i("WRITE", "写参数 0x${"%X".format(addr)}" + (def?.let { "（${it.name}）" } ?: "") + " = $rawValue")
+        val label = "0x${"%X".format(addr)}" + (def?.let { "（${it.name}）" } ?: "")
+        BmsLog.i("WRITE", "写参数 $label = $rawValue")
         MockBms.lastWriteResult.value = -1
         MockBms.lastWriteDetail.value = null
         // 容量类是 u32（低字 @addr、高字 @addr+2）：0x22 一次只写 2 字节，必须连写两帧，
@@ -591,22 +602,70 @@ class BmsRepository(
                 (addr + 2 to Frame.writeParam(addr + 2, (rawValue ushr 16) and 0xFFFF)),
             )
         } else listOf(addr to Frame.writeParam(addr, rawValue))
-        var ok = true
-        for ((a, fr) in writes) {
-            val r = requestAndAwait(fr, Proto.RSP_WRITE, expectedReg = a, timeoutMs = 2500)
-            if (r == null) { ok = false; break }   // 无应答：-2 让界面能区分「超时」与「设备拒绝」
-            delay(200)   // 结果段与 0x42 同帧、紧随其后，给它一点时间落到 lastWriteResult
-            if (!ResultCodes.writeOk(MockBms.lastWriteResult.value)) break
+
+        var answered = true
+        var deviceCode = -1
+        writeInFlight = true
+        try {
+            for ((a, fr) in writes) {
+                val r = requestAndAwait(fr, Proto.RSP_WRITE, expectedReg = a, timeoutMs = 2500)
+                if (r == null) { answered = false; break }   // 无应答：界面能区分「超时」与「设备拒绝」
+                delay(WRITE_STATUS_GRACE_MS)   // 结果段与 0x42 同帧、紧随其后，给它一点时间落地
+                deviceCode = MockBms.lastWriteResult.value
+                if (deviceCode != -1 && !ResultCodes.writeOk(deviceCode)) break   // 设备已明确拒绝，第二帧不必发
+            }
+        } finally {
+            writeInFlight = false
         }
-        if (!ok) {
+
+        if (!answered) {
             MockBms.lastWriteResult.value = -2
             MockBms.lastWriteDetail.value = "设备未应答（链路差或参数不可写），本次未保存"
-            BmsLog.e("WRITE", "写参数 0x${"%X".format(addr)} 失败：设备未应答")
+            BmsLog.e("WRITE", "写参数 $label 失败：设备未应答")
             return -2
         }
+
+        if (deviceCode == -1) {
+            // 设备没回结果段：回读实锤。一致 → 视同成功（值已进临时区，继续保存）；
+            // 不一致/读不到 → 明确报「未确认」，不再静默什么都不显示
+            val want = expectedRaw(addr, rawValue)
+            val actual = readBack(addr)
+            MockBms.lastWriteResult.value = if (actual != null && actual == want) 10 else -3
+            MockBms.lastWriteDetail.value = when {
+                actual == null -> "设备未回结果码，且回读无应答：写入结果未知，请重读确认"
+                actual == want -> "设备未回结果码，已回读确认写入（$label）"
+                else -> "设备未回结果码，且回读值不一致（期望 $want / 实际 $actual）：本次写入未生效"
+            }
+            if (actual == want) {
+                BmsLog.w("WRITE", "写参数 $label 未收到 0xFF 结果段，回读一致（$want），按成功处理")
+            } else {
+                BmsLog.e("WRITE", "写参数 $label 未收到 0xFF 结果段，回读校验不通过（期望 $want / 实际 $actual）")
+                return -3
+            }
+        }
+
         val code = MockBms.lastWriteResult.value
-        if (ResultCodes.writeOk(code)) requestAndAwait(Frame.saveParams(), Proto.RSP_CONTROL, expectedReg = ControlCmd.SAVE_PARAMS)
+        if (ResultCodes.writeOk(code)) {
+            BmsLog.i("WRITE", "写参数 $label 成功，自动保存（51/07）")
+            // 保存的 0x61 应答由 handleFrame 记进 lastControlResult，控制页横幅直接读它
+            requestAndAwait(Frame.saveParams(), Proto.RSP_CONTROL, expectedReg = ControlCmd.SAVE_PARAMS)
+        }
         return code
+    }
+
+    /** 期望落库的原始值：u32 取 32 位、u16 取低 16 位（与设备回读口径一致） */
+    private fun expectedRaw(addr: Int, rawValue: Int): Long =
+        if (addr in ParamTable.u32Addrs) rawValue.toLong() and 0xFFFFFFFFL else (rawValue and 0xFFFF).toLong()
+
+    /** 回读参数做校验：u32 类读 4 字节拼 32 位；读不到返回 null */
+    private suspend fun readBack(addr: Int): Long? {
+        val bytes = if (addr in ParamTable.u32Addrs) 4 else 2
+        val r = requestAndAwait(Frame.readParam(addr, bytes), Proto.RSP_PARAM, expectedReg = addr, timeoutMs = 1500)
+        if (r == null || r.func != Proto.RSP_PARAM || r.data.size < bytes) return null
+        val lo = (r.data[0].toInt() and 0xFF) or ((r.data[1].toInt() and 0xFF) shl 8)
+        if (bytes == 2) return lo.toLong()
+        val hi = (r.data[2].toInt() and 0xFF) or ((r.data[3].toInt() and 0xFF) shl 8)
+        return ((hi.toLong() shl 16) or lo.toLong()) and 0xFFFFFFFFL
     }
 
     private fun applyControlToUi(cmd: Int) {
@@ -617,6 +676,11 @@ class BmsRepository(
             ControlCmd.DISCHARGE_OFF -> MockBms.dischargeSwitch.value = false
             ControlCmd.BALANCE_ON -> MockBms.balanceSwitch.value = true
             ControlCmd.BALANCE_OFF -> MockBms.balanceSwitch.value = false
+        }
+        // 预设/恢复出厂会整片改写参数区：不重读的话，配置页还停在旧阈值上
+        if (ControlCmd.rewritesParams(cmd)) {
+            BmsLog.i("PARAM", "${ControlCmd.name(cmd)} 会改写参数区，强制重读")
+            refreshParams(force = true)
         }
     }
 }

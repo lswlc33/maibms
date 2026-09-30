@@ -71,6 +71,23 @@ private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int): ByteArray {
     return Frame.build(Proto.ADDR_MAIN, Proto.RSP_REALTIME, 0, d, 0)
 }
 
+/**
+ * QA 用「已连接但静默」的传输：桌面端没有 BLE 后端，界面会一直停在未连接态，
+ * 而写权限指示（可编辑/只读/权限不足）恰恰要按连接态区分 —— 截图里必须能看出真机上会长什么样。
+ * 只报告链路状态，不产生任何应答，seed 进去的数据不会被覆盖。
+ */
+private class ShotTransport : io.github.lswlc33.maibms.transport.BmsTransport {
+    private val _link = kotlinx.coroutines.flow.MutableStateFlow(io.github.lswlc33.maibms.transport.LinkState.Idle)
+    override val linkState: kotlinx.coroutines.flow.StateFlow<io.github.lswlc33.maibms.transport.LinkState> = _link
+    private val _incoming = kotlinx.coroutines.flow.MutableSharedFlow<ByteArray>(extraBufferCapacity = 4)
+    override val incoming: kotlinx.coroutines.flow.SharedFlow<ByteArray> = _incoming
+    override val supportsScan: Boolean get() = false
+    override suspend fun connect(address: String?) { _link.value = io.github.lswlc33.maibms.transport.LinkState.Connected }
+    override suspend fun disconnect() { _link.value = io.github.lswlc33.maibms.transport.LinkState.Disconnected }
+    override suspend fun write(frame: ByteArray) { /* 静默：截图不依赖设备应答 */ }
+    override suspend fun scan(onFound: (io.github.lswlc33.maibms.transport.ScanDevice) -> Unit) {}
+}
+
 /** 参数区/身份区取真机读回值（0x02 分块读的实测结果） */
 private fun seedParamsAndIdentity() {
     MockBms.connectedDeviceName.value = "ANT@BLE24CBUB-3547"
@@ -100,6 +117,10 @@ private fun seedParamsAndIdentity() {
 
 /** 注入两拍（略有差异）以便趋势图能成线 */
 private fun seedUi() {
+    // 先接上「已连接但静默」的 QA 传输，再灌数据：App() 里的 start() 会补上收集器，
+    // 但因为没写 AppStore.savedAddress，不会再自发一次 connect（那会清空刚灌的数据）
+    io.github.lswlc33.maibms.data.Bms.repository.setRealTransport(ShotTransport())
+    kotlinx.coroutines.runBlocking { io.github.lswlc33.maibms.data.Bms.repository.connect("F9:99:1B:2B:1B:70") }
     seedParamsAndIdentity()
     listOf(seedFrame(0, 0) to 0, seedFrame(1, 3) to 1).forEach { (bytes, _) ->
         FrameParser().feed(bytes).filter { it.func == Proto.RSP_REALTIME }
@@ -133,7 +154,8 @@ private class Shot(
     val name: String,
     val dark: Boolean,
     val route: Route = Route.Dashboard,
-    val dialog: DialogKind? = null,
+    /** 弹窗要在**灌数据之后**才构造（参数条目里的当前值来自 liveParams），所以用 lambda 而不是直接给值 */
+    val dialog: () -> DialogKind? = { null },
     val prelude: () -> Unit = {},
 )
 
@@ -144,17 +166,45 @@ private val shots = listOf(
     Shot("02-dash-dark", dark = true),
     Shot("03-config", dark = true, route = Route.Config),
     Shot("04-param-group", dark = true, route = Route.ParamGroup(0)),
+    // 参数编辑弹窗（此前没有场景，改了排版也看不见）；3 级权限下弹窗与顶栏都应是「可编辑」
+    Shot("04b-param-edit", dark = true, route = Route.ParamGroup(0), prelude = { MockBms.applyPermission(3) },
+        dialog = { DialogKind.ParamEdit(paramItem("单体过压保护电压")) }),
+    // 只读预览：2 级权限 / 设备状态量参数
+    Shot("04c-param-preview-readonly", dark = true, route = Route.ParamGroup(0), prelude = { MockBms.applyPermission(2) },
+        dialog = {
+            DialogKind.ParamEdit(paramItem("单体过压保护电压"), readOnly = true,
+                readOnlyNote = "当前运行权限 2 级只读：写入需 3 级及以上，点「去校验」升权")
+        }),
+    Shot("04d-param-enum", dark = true, route = Route.ParamGroup(4), prelude = { MockBms.applyPermission(3) },
+        dialog = { DialogKind.ParamEdit(paramItem("电池类型选择")) }),
+    // 3 级（可写）与控制页只读态对照
+    Shot("05b-control-tools-level3", dark = true, route = Route.ControlTools, prelude = { MockBms.applyPermission(3) }),
     Shot("05-control-tools", dark = true, route = Route.ControlTools),
     Shot("06-settings", dark = true, route = Route.Settings),
     Shot("09-password", dark = true, route = Route.Password),
     Shot("11-developer", dark = true, route = Route.Developer),
-    Shot("12-dialog-scan", dark = true, dialog = DialogKind.Scan),
-    Shot("13-dialog-protect", dark = true, dialog = DialogKind.ProtectDetail),
-    Shot("14-dialog-confirm", dark = true, dialog = DialogKind.ControlConfirmNamed("强制开启充电")),
-    Shot("15-dialog-perm", dark = true, dialog = DialogKind.PermLevels),
+    Shot("12-dialog-scan", dark = true, dialog = { DialogKind.Scan }),
+    Shot("13-dialog-protect", dark = true, dialog = { DialogKind.ProtectDetail }),
+    Shot("14-dialog-confirm", dark = true, dialog = { DialogKind.ControlConfirm(io.github.lswlc33.maibms.protocol.ControlCmd.FORCE_CHARGE) }),
+    // 高危确认：需输入「确认」才可执行（恢复出厂/关机/蓝牙关闭这一类）
+    Shot("14b-dialog-danger", dark = true, dialog = { DialogKind.ControlConfirm(io.github.lswlc33.maibms.protocol.ControlCmd.FACTORY_RESET) }),
+    Shot("15-dialog-perm", dark = true, dialog = { DialogKind.PermLevels }),
     Shot("17-config-light", dark = false, route = Route.Config),
     Shot("18-settings-light", dark = false, route = Route.Settings),
 )
+
+/** 截图里用的参数条目：直接按 ParamTable 的定义与当前 seed 数据构造（与界面同一条路径） */
+private fun paramItem(name: String): io.github.lswlc33.maibms.data.ParamItem {
+    val d = io.github.lswlc33.maibms.protocol.ParamTable.defs.first { it.name == name }
+    return io.github.lswlc33.maibms.data.ParamItem(
+        name = d.name,
+        value = io.github.lswlc33.maibms.protocol.ParamTable.format(MockBms.liveParams.value, d),
+        unit = d.unit,
+        addr = "0x%X".format(d.addr),
+        scale = if (d.scale >= 1000) "1e${d.scale.toLong().toString().length - 1}" else d.scale.toLong().toString(),
+        range = io.github.lswlc33.maibms.protocol.ParamTable.rangeText(d),
+    )
+}
 
 @OptIn(ExperimentalComposeUiApi::class)
 private fun shoot(shot: Shot, outDir: File) {
@@ -166,7 +216,7 @@ private fun shoot(shot: Shot, outDir: File) {
         density = Density(DENSITY),
         coroutineContext = Dispatchers.Unconfined,
     ) {
-        App(deepLink = shot.route, deepDialog = shot.dialog, forceDark = shot.dark)
+        App(deepLink = shot.route, deepDialog = shot.dialog(), forceDark = shot.dark)
     }
     try {
         var t = 0L

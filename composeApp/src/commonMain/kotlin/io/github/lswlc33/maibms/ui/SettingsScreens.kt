@@ -219,7 +219,8 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
             Text(
-                if (level == 9) "9 级厂家密码" else "$level 级密码",
+                if (level == 9) "9 级厂家密码（12 段点分十进制，如 0.0.0.…）"
+                else "$level 级密码（槽 ${io.github.lswlc33.maibms.protocol.ParamTable.slotLen(level)} 字节）",
                 fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
@@ -229,7 +230,8 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
             )
             OutlinedTextField(
                 value = input, onValueChange = { input = it; error = null },
-                label = { Text("密码") }, singleLine = true, enabled = !busy,
+                label = { Text(if (level == 9) "点分十进制密码" else "密码") }, singleLine = true, enabled = !busy,
+                isError = error != null,
                 modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             )
             error?.let {
@@ -250,6 +252,10 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
                     enabled = input.isNotBlank() && !busy,
                     onClick = {
                         val pw = input.trim()
+                        // 槽长/格式先本地校验：12 字节槽发 8 字节帧、每段超 255 这类问题，
+                        // 一旦发出去设备只会静默不认，界面还看不出为什么
+                        val bad = io.github.lswlc33.maibms.protocol.PasswordCodec.validate(level, pw)
+                        if (bad != null) { error = bad; return@Button }
                         scope.launch {
                             busy = true
                             val repo = io.github.lswlc33.maibms.data.Bms.repository

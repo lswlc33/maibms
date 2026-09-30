@@ -30,7 +30,46 @@ class FrameTest {
     }
 
     @Test fun buildAuth() {
-        assertEquals("7ea1234a01083132333435363738db50aa55", Frame.auth(330, "12345678").toHex())
+        // 一级：槽 330、8 字节（密码用等级编码，不再手写槽地址）
+        assertEquals("7ea1234a01083132333435363738db50aa55", Frame.auth(1, "12345678").toHex())
+    }
+
+    /** 五级槽（362）与管理员槽（374）是 12 字节：曾写死 8 字节，长度字段与数据都不对，永远校验不过 */
+    @Test fun buildAuthLevel5Uses12ByteSlot() {
+        val f = Frame.auth(5, "12345678")
+        assertEquals(0x23, f[2].toInt() and 0xFF)
+        assertEquals(362, (f[3].toInt() and 0xFF) or ((f[4].toInt() and 0xFF) shl 8))
+        assertEquals(12, f[5].toInt() and 0xFF)          // 长度字段 = 12
+        // 数据区 12 字节：8 位密码 + 4 个 0x00 补齐
+        assertEquals("313233343536373800000000", f.copyOfRange(6, 18).toHex())
+        // 整帧能被自己的解析器读回（长度字段 = 数据长）
+        val p = FrameParser().feed(f)
+        assertEquals(1, p.size)
+        assertEquals(12, p[0].data.size)
+    }
+
+    /** 管理员槽：点分十进制 12 段，每段一个字节 */
+    @Test fun buildAuthAdminDottedDecimal() {
+        val f = Frame.auth(9, "1.2.3.4.5.6.7.8.9.10.11.12")
+        assertEquals(374, (f[3].toInt() and 0xFF) or ((f[4].toInt() and 0xFF) shl 8))
+        assertEquals(12, f[5].toInt() and 0xFF)
+        assertEquals("0102030405060708090a0b0c", f.copyOfRange(6, 18).toHex())
+        // 段数/每段范围不合法要能拦下（别把半个密码发出去）
+        assertTrue(PasswordCodec.validate(9, "1.2.3") != null)
+        assertEquals(null, PasswordCodec.validate(9, "1.2.3.4.5.6.7.8.9.10.11.12"))
+        assertTrue(PasswordCodec.validate(9, "1.2.3.4.5.6.7.8.9.10.11.300") != null)
+    }
+
+    /** 槽长按等级取：一~四级 8 字节、五级 12 字节；超长密码本地拦下，不再静默截断 */
+    @Test fun authSlotLengthByLevel() {
+        assertEquals(8, Frame.auth(2, "12345678")[5].toInt() and 0xFF)
+        assertEquals(12, Frame.auth(5, "12345678")[5].toInt() and 0xFF)
+        val f = Frame.auth(9, "0.0.0.0.0.0.0.0.0.0.0.1")
+        assertEquals(12, f[5].toInt() and 0xFF)
+        assertTrue(PasswordCodec.validate(1, "123456789") != null)
+        assertEquals(null, PasswordCodec.validate(1, "12345678"))
+        assertEquals(null, PasswordCodec.validate(5, "123456789012"))
+        assertTrue(PasswordCodec.validate(5, "1234567890123") != null)
     }
 
     // ---- 解帧 8 场景（docs/15 §15.6）----

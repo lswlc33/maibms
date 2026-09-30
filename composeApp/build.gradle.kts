@@ -108,6 +108,13 @@ android {
 compose.desktop {
     application {
         mainClass = "io.github.lswlc33.maibms.MainKt"
+        // 打包用的图标（窗口图标在 Main.kt 里用 resources/app_icon.png 设置）。
+        // 图标由 tools/icon/generate_icons.py 从 tools/icon/source.jpg 生成。
+        nativeDistributions {
+            windows {
+                iconFile.set(layout.projectDirectory.file("src/desktopMain/resources/app.ico"))
+            }
+        }
     }
 }
 

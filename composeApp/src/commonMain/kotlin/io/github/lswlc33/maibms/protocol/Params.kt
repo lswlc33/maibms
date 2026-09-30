@@ -41,7 +41,7 @@ object ResultCodes {
     fun writeOk(code: Int): Boolean = code == 10 || code == 0 || code == 11
 }
 
-/** 控制命令号（docs/07 §7.1） */
+/** 控制命令号（docs/07 §7.1、附录B B.1） */
 object ControlCmd {
     const val DISCHARGE_OFF = 1
     const val DISCHARGE_ON = 3
@@ -56,6 +56,8 @@ object ControlCmd {
     const val BALANCE_OFF = 14
     const val CLEAR_LOG = 15
     const val BT_INIT = 16
+    const val BT_CLOSE = 28
+    const val BT_OPEN = 29
     const val BUZZER_ON = 30
     const val BUZZER_OFF = 31
     const val CLEAR_DISCHARGE_CAP = 32
@@ -67,10 +69,10 @@ object ControlCmd {
     const val PRESET_TITANATE = 38
     const val PRESET_TERNARY = 39
     const val PRESET_LIFEPO4 = 40
-    const val PRESET_SODIUM = 53
     const val FACTORY_VENDOR_RESET = 42
     const val SAVE_USER_DATA = 44
     const val FORCE_CHARGE = 52
+    const val PRESET_SODIUM = 53
 
     fun name(cmd: Int): String = when (cmd) {
         DISCHARGE_OFF -> "关闭放电"; DISCHARGE_ON -> "打开放电"
@@ -78,6 +80,7 @@ object ControlCmd {
         SAVE_PARAMS -> "保存应用参数"; CURRENT_ZERO -> "电流归零"; RESTART -> "重启系统"
         POWER_OFF -> "关闭系统"; FACTORY_RESET -> "恢复出厂设置"; BALANCE_ON -> "打开均衡"
         BALANCE_OFF -> "关闭均衡"; CLEAR_LOG -> "清除系统日志"; BT_INIT -> "蓝牙初始化"
+        BT_CLOSE -> "蓝牙关闭"; BT_OPEN -> "蓝牙打开"
         BUZZER_ON -> "蜂鸣器开"; BUZZER_OFF -> "蜂鸣器关"
         CLEAR_DISCHARGE_CAP -> "清总放电容量"; CLEAR_CHARGE_CAP -> "清总充电容量"
         CLEAR_DISCHARGE_TIME -> "清总放电时间"; CLEAR_CHARGE_TIME -> "清总充电时间"
@@ -89,13 +92,50 @@ object ControlCmd {
         else -> "命令 $cmd"
     }
 
-    /** 危险命令（需输入确认） */
+    /** 危险命令（红色主题 + 警告文案）：清零/复位/重启/预设这类会改变设备状态或有数据损失 */
     fun isDangerous(cmd: Int): Boolean = cmd in setOf(
-        POWER_OFF, FACTORY_RESET, FACTORY_VENDOR_RESET,
+        POWER_OFF, FACTORY_RESET, FACTORY_VENDOR_RESET, BT_CLOSE, RESTART, CURRENT_ZERO,
         CLEAR_LOG, CLEAR_DISCHARGE_CAP, CLEAR_CHARGE_CAP, CLEAR_DISCHARGE_TIME,
         CLEAR_CHARGE_TIME, CLEAR_RUNTIME, CLEAR_PROTECT_COUNT,
-        CURRENT_ZERO, RESTART,
+        PRESET_TITANATE, PRESET_TERNARY, PRESET_LIFEPO4, PRESET_SODIUM,
     )
+
+    /**
+     * 最高危：需手工输入「确认」才能执行（防误触）。
+     * 这四个要么让设备停机、要么抹掉全部配置，点错一次无法就地撤销。
+     */
+    fun requiresTypedConfirm(cmd: Int): Boolean =
+        cmd in setOf(POWER_OFF, FACTORY_RESET, FACTORY_VENDOR_RESET, BT_CLOSE)
+
+    /** 开关类命令：结果由实时帧就地反映，不必再弹 0x61 结果横幅 */
+    fun isToggle(cmd: Int): Boolean = cmd in setOf(
+        CHARGE_ON, CHARGE_OFF, DISCHARGE_ON, DISCHARGE_OFF, BALANCE_ON, BALANCE_OFF,
+    )
+
+    /** 会重写参数区的命令：成功后要强制重读参数，界面才不会停在旧值 */
+    fun rewritesParams(cmd: Int): Boolean = cmd in setOf(
+        PRESET_TITANATE, PRESET_TERNARY, PRESET_LIFEPO4, PRESET_SODIUM,
+        FACTORY_RESET, FACTORY_VENDOR_RESET, SAVE_USER_DATA,
+    )
+
+    /** 确认弹窗里的后果说明（高危命令必须写清楚会失去什么） */
+    fun warning(cmd: Int): String? = when (cmd) {
+        POWER_OFF -> "设备将立即断电关机，需要人工重新上电才能恢复"
+        FACTORY_RESET -> "会抹掉全部用户参数并恢复默认阈值配置"
+        FACTORY_VENDOR_RESET -> "恢复厂家设置，比恢复出厂更彻底（含厂家参数区）"
+        BT_CLOSE -> "关闭后无法再通过蓝牙连接本设备，需重新上电或改用有线方式恢复"
+        BT_INIT -> "蓝牙模块复位，连接会短暂中断并自动重连"
+        RESTART -> "设备将重启，期间实时数据中断，权限可能回落"
+        CURRENT_ZERO -> "电流传感器零点校准：必须在无电流状态下执行，有电流时执行会校错"
+        CLEAR_LOG -> "设备内的历史记录将被清空，无法恢复"
+        CLEAR_DISCHARGE_CAP, CLEAR_CHARGE_CAP -> "累计充放电容量清零，无法恢复（不影响当前电量）"
+        CLEAR_DISCHARGE_TIME, CLEAR_CHARGE_TIME -> "累计充放电时长清零，无法恢复"
+        CLEAR_RUNTIME -> "累计运行时间清零，无法恢复"
+        CLEAR_PROTECT_COUNT -> "保护次数统计清零，无法恢复"
+        PRESET_TITANATE, PRESET_TERNARY, PRESET_LIFEPO4, PRESET_SODIUM ->
+            "会用一整套预设阈值覆盖当前保护参数（电压/温度/电流），请先确认电池化学体系匹配"
+        else -> null
+    }
 }
 
 /** 电池类型枚举（0xFAFx 编码，docs 13.5；2026-09-30 实测 0xFAF1=三元锂） */
@@ -114,6 +154,10 @@ class ParamDef(
     val max: Double,
     val step: Double = 0.0,
     val dict: Map<Long, String>? = null,   // 枚举值→显示文字（未命中回落数字）
+    /** 设备状态量/累计量：由设备自行维护，只能通过清零类控制命令归零，不给输入框 */
+    val readOnly: Boolean = false,
+    /** 只读原因（编辑弹窗里展示给用户） */
+    val note: String? = null,
 )
 
 object ParamTable {
@@ -209,8 +253,10 @@ object ParamTable {
         ParamDef("自动关机电压", 158, 1000.0, "V", 0.0, 4.5, 0.001),
         ParamDef("最大充电请求电流", 160, 10.0, "A", 1.0, 200.0, 0.1),
         ParamDef("电池物理容量", 162, 1_000_000.0, "Ah", 1.0, 2000.0),
-        ParamDef("剩余容量", 166, 1_000_000.0, "Ah", 0.0, 2000.0),
-        ParamDef("总共循环容量", 170, 1_000_000.0, "Ah", 0.0, 20000.0),
+        ParamDef("剩余容量", 166, 1_000_000.0, "Ah", 0.0, 2000.0, readOnly = true,
+            note = "设备状态量，随充放电自动更新；校准请用「电流归零」等控制命令"),
+        ParamDef("总共循环容量", 170, 1_000_000.0, "Ah", 0.0, 4294.9, readOnly = true,
+            note = "累计量，只能通过「清总充/放电容量」控制命令归零"),
         ParamDef("100% 单体电压", 174, 1000.0, "V", 2.0, 4.5, 0.001),
         ParamDef("90% 单体电压", 176, 1000.0, "V", 2.0, 4.5, 0.001),
         ParamDef("80% 单体电压", 178, 1000.0, "V", 2.0, 4.5, 0.001),
@@ -233,7 +279,8 @@ object ParamTable {
         ParamDef("启动电流", 308, 1.0, "A", 0.0, 500.0),
         ParamDef("系统基准电压", 310, 1000.0, "V", 0.0, 5.0, 0.001),
         ParamDef("总压转换参数", 312, 1.0, "", 0.0, 65535.0),
-        ParamDef("系统运行时间", 314, 1.0, "", 0.0, 65535.0),   // 可清零的累计值（51/36），非实时帧运行时间
+        ParamDef("系统运行时间", 314, 1.0, "", 0.0, 65535.0, readOnly = true,
+            note = "累计运行时长，只能通过「清零运行时间」控制命令归零"),
         ParamDef("禁止放电时长", 316, 1.0, "min", 0.0, 65535.0),
         ParamDef("禁止充电时长", 318, 1.0, "min", 0.0, 65535.0),
         ParamDef("允许放电时长", 320, 1.0, "min", 0.0, 65535.0),

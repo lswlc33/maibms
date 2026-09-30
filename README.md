@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/images/app-icon-512.png" width="120" alt="麻衣 BMS 应用图标"></p>
+
 # 麻衣 BMS
 
 > 蚂蚁 BMS（ANT BMS）保护板的非官方 Android 客户端 · 用 Kotlin Multiplatform + Compose Multiplatform 重写
@@ -42,6 +44,7 @@
 - **掉线自愈**：常驻重连循环（失败退避 + 周期性切换 `autoConnect`），重新连上后自动重新升权、重新读取参数区。
 - **应答匹配按「功能码 + 寄存器」双比对**，避免把上一条超时命令的迟到应答当成结果。
 - 参数区一次读回 200+ 项，写参数走 `0x22` 并对 u32 容量类自动拆两帧写入，避免容量被截断。
+- **写入结果有实锤**：优先取 `0x42` 同帧的 `0xFF` 结果段，没收到就回读该参数比对后再下结论，不会「写完什么都不显示」。
 
 ---
 
@@ -50,8 +53,8 @@
 | 页面 | 内容 |
 | --- | --- |
 | 仪表盘 | 电池大卡（整卡背景即电量进度）、MOS/均衡状态与容量、总压/电流/功率/循环、平均/最高/最低/压差、保护与告警、温度、20 串单体电压网格、趋势曲线与充电/放电/强制充电控制 |
-| 配置 | 参数分组浏览与逐项编辑（写入前校验范围与倍率）、控制命令（开关机、归零、重启、蜂鸣器、恢复出厂等，高危项二次确认） |
-| 权限与密码 | 按设备保存各等级密码、连接后自动升级目标可选、密码可随时修改/清除、保存时直接向设备校验 |
+| 配置 | 参数分组浏览与逐项编辑（写入前校验范围与倍率；**1~2 级只读、3 级及以上可写**，顶栏有「可编辑/只读/权限不足」指示）、控制命令（开关、化学体系预设、归零、重启、蜂鸣器、清零、蓝牙、恢复出厂等，高危项需输入「确认」） |
+| 权限与密码 | 按设备保存各等级密码（一~四级 8 字节槽、五级/管理员 12 字节槽，管理员为点分十进制）、连接后自动升级目标可选、密码可随时修改/清除、保存时直接向设备校验 |
 | 设置 | 外观主题、连接状态与重扫、设备身份区信息（版本 / 电池组 ID / 蓝牙地址） |
 | 开发者 | **分级日志**：帧级/操作级/警告/错误四级，可过滤、按级别着色、复制、**导出为文件**、清空 |
 
@@ -106,6 +109,18 @@ export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
 # 离屏渲染 UI 截图到 composeApp/build/shots/（无需设备）
 ./gradlew :composeApp:shot
 ```
+
+### 应用图标
+
+启动器图标与桌面端窗口图标都由 `tools/icon/generate_icons.py` 从 `tools/icon/source.jpg` 生成（需要 Pillow）：
+
+```bash
+python tools/icon/generate_icons.py             # 重新生成 androidMain/res/mipmap-* 与桌面端图标
+python tools/icon/generate_icons.py --preview   # 只画预览图（.shots/icons/），看各蒙版裁切效果
+python tools/icon/generate_icons.py --variants  # 并排对比几组候选构图，用来换取景
+```
+
+图标不是把原画等比缩小：Android 从 API 26 起由启动器按自己的形状（圆形 / 圆角方形）裁一刀，只保证中间 66dp 的圆形安全区完整可见，所以画面是**按安全区重新取的景**——参数在脚本顶部的 `CROP` / `INSET_DP` / `ZOOM`。
 
 ### 签名配置
 
@@ -168,10 +183,12 @@ composeApp/src/
 │       ├── data/        # 仓库层（连接/轮询/命令队列）、状态流、落盘
 │       ├── transport/   # 传输抽象（Android BLE / Noop）
 │       └── ui/          # Compose 界面
-├── androidMain/         # Android BLE 实现、Activity、系统返回键、剪贴板
+├── androidMain/         # Android BLE 实现、Activity、系统返回键、剪贴板、启动器图标资源
 ├── desktopMain/         # 桌面入口 + 离屏截图工具（QA 用，不进 APK）
 └── desktopTest/         # 协议与数据管线单元测试
 ```
+
+图标原画与生成脚本在 `tools/icon/`（见[应用图标](#应用图标)）。
 
 ---
 

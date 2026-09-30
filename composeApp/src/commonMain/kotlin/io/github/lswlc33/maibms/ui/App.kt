@@ -48,24 +48,18 @@ sealed class Route(val key: String) {
 sealed class DialogKind {
     data object Scan : DialogKind()          // S01
     data object ProtectDetail : DialogKind() // S03
-    data class ControlConfirmNamed(val command: String) : DialogKind()
-    data class ParamEdit(val item: io.github.lswlc33.maibms.data.ParamItem) : DialogKind() // S07
+    /** 控制命令确认：直接带命令号，显示名从 ControlCmd.name 取（不再按中文名反查命令号） */
+    data class ControlConfirm(val cmd: Int) : DialogKind()
+    /**
+     * S07 参数编辑；readOnly=true 时降级为预览。
+     * 只读的两种来源：运行权限不足（note 说明需要几级），或参数本身是设备状态量。
+     */
+    data class ParamEdit(
+        val item: io.github.lswlc33.maibms.data.ParamItem,
+        val readOnly: Boolean = false,
+        val readOnlyNote: String? = null,
+    ) : DialogKind()
     data object PermLevels : DialogKind()          // 权限换级
-}
-
-/** 命令名 → 命令号（开关类按当前状态取反） */
-private fun cmdFor(name: String): Int? = when (name) {
-    "充电开关" -> if (MockBms.chargeSwitch.value) io.github.lswlc33.maibms.protocol.ControlCmd.CHARGE_OFF else io.github.lswlc33.maibms.protocol.ControlCmd.CHARGE_ON
-    "放电开关" -> if (MockBms.dischargeSwitch.value) io.github.lswlc33.maibms.protocol.ControlCmd.DISCHARGE_OFF else io.github.lswlc33.maibms.protocol.ControlCmd.DISCHARGE_ON
-    "均衡开关" -> if (MockBms.balanceSwitch.value) io.github.lswlc33.maibms.protocol.ControlCmd.BALANCE_OFF else io.github.lswlc33.maibms.protocol.ControlCmd.BALANCE_ON
-    "强制开启充电" -> io.github.lswlc33.maibms.protocol.ControlCmd.FORCE_CHARGE
-    "保存应用参数" -> io.github.lswlc33.maibms.protocol.ControlCmd.SAVE_PARAMS
-    "电流归零" -> io.github.lswlc33.maibms.protocol.ControlCmd.CURRENT_ZERO
-    "重启系统" -> io.github.lswlc33.maibms.protocol.ControlCmd.RESTART
-    "蜂鸣器" -> io.github.lswlc33.maibms.protocol.ControlCmd.BUZZER_ON
-    "恢复出厂设置" -> io.github.lswlc33.maibms.protocol.ControlCmd.FACTORY_RESET
-    "关闭系统" -> io.github.lswlc33.maibms.protocol.ControlCmd.POWER_OFF
-    else -> null
 }
 
 /** 深链直达：底栏三根页占 tab，其余页压栈 */
@@ -131,6 +125,11 @@ fun App(
             val isRoot = backStack.isEmpty()
             // 页面内的异步动作（写参数/控制命令）与弹窗共用一个 scope
             val scope = rememberCoroutineScope()
+            // 运行权限与链路：参数编辑的只读判定、控制命令拦截都用这两个（判据集中在 Perm）
+            val bmsStatus by MockBms.status.collectAsState()
+            val bmsLink by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
+            val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
+            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(bmsStatus.permissionLevel) && connected
             // 底栏在三个主标签（含仪表盘变体状态）显示
             val isTabRoot = backStack.isEmpty() && route.isTabRoot()
             // 有底栏时，滚动内容末尾要留出底栏 + 系统导航栏的高度，否则最后一行被压在底栏下
@@ -174,8 +173,10 @@ fun App(
                                     onOpenScan = { dialog.value = DialogKind.Scan },
                                     onOpenProtect = { dialog.value = DialogKind.ProtectDetail },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
-                                    onControlConfirm = { cmd -> dialog.value = DialogKind.ControlConfirmNamed(cmd) },
-                                    onForceCharge = { dialog.value = DialogKind.ControlConfirmNamed("强制开启充电") },
+                                    canWrite = canWrite,
+                                    permissionLevel = bmsStatus.permissionLevel,
+                                    onControlConfirm = { cmd -> dialog.value = DialogKind.ControlConfirm(cmd) },
+                                    onForceCharge = { dialog.value = DialogKind.ControlConfirm(io.github.lswlc33.maibms.protocol.ControlCmd.FORCE_CHARGE) },
                                 )
                                 Route.Config -> ConfigHomeScreen(
                                     bottomPadding = navBarPad,
@@ -193,13 +194,30 @@ fun App(
                                 is Route.ParamGroup -> ParamGroupScreen(
                                     groupIndex = r.index,
                                     onBack = popBack,
-                                    onEdit = { item -> dialog.value = DialogKind.ParamEdit(item) },
+                                    // 只读判定：权限不够 → 预览并说明需要几级；参数本身是状态量 → 预览并说明怎么改
+                                    onEdit = { item ->
+                                        val def = io.github.lswlc33.maibms.protocol.ParamTable
+                                            .byAddr(item.addr.removePrefix("0x").toIntOrNull(16) ?: 0)
+                                        dialog.value = when {
+                                            !canWrite -> DialogKind.ParamEdit(
+                                                item, readOnly = true,
+                                                readOnlyNote = if (!connected)
+                                                    "未连接保护板：连接后才能写入；运行权限需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上"
+                                                else "当前运行权限 ${bmsStatus.permissionLevel} 级只读：写入需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上，点「去校验」升权",
+                                            )
+                                            def?.readOnly == true -> DialogKind.ParamEdit(
+                                                item, readOnly = true,
+                                                readOnlyNote = def.note ?: "该参数由设备自行维护，不可直接写入",
+                                            )
+                                            else -> DialogKind.ParamEdit(item)
+                                        }
+                                    },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
                                     onSave = { scope.launch { io.github.lswlc33.maibms.data.Bms.repository.saveAllParams() } },
                                 )
                                 Route.ControlTools -> ControlToolsScreen(
                                     onBack = popBack,
-                                    onCommand = { cmd -> dialog.value = DialogKind.ControlConfirmNamed(cmd) },
+                                    onCommand = { cmd -> dialog.value = DialogKind.ControlConfirm(cmd) },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
                                 )
                                 Route.Password -> PasswordScreen(onBack = popBack)
@@ -236,20 +254,22 @@ fun App(
                         },
                     )
                     DialogKind.ProtectDetail -> ProtectDetailDialog(onDismiss = { dialog.value = null })
-                    is DialogKind.ControlConfirmNamed -> ControlConfirmDialog(
-                        d.command,
+                    is DialogKind.ControlConfirm -> ControlConfirmDialog(
+                        d.cmd,
                         onDismiss = { dialog.value = null },
-                        onConfirm = { name ->
-                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户确认执行：$name")
-                            cmdFor(name)?.let { cmd ->
-                                scope.launch {
-                                    val code = io.github.lswlc33.maibms.data.Bms.repository.control(cmd)
-                                    MockBms.lastControlResult.value = cmd to code
-                                }
+                        onConfirm = { cmd ->
+                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户确认执行：${io.github.lswlc33.maibms.protocol.ControlCmd.name(cmd)}")
+                            scope.launch {
+                                val code = io.github.lswlc33.maibms.data.Bms.repository.control(cmd)
+                                MockBms.lastControlResult.value = cmd to code
                             }
                         })
                     is DialogKind.ParamEdit -> ParamEditDialog(
                         d.item,
+                        readOnly = d.readOnly,
+                        readOnlyNote = d.readOnlyNote,
+                        onOpenPerm = if (d.readOnly && canWrite.not() && connected)
+                            ({ dialog.value = DialogKind.PermLevels }) else null,
                         onDismiss = { dialog.value = null },
                         onWrite = { raw ->
                             io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交参数写入：${d.item.name} = $raw ${d.item.unit}")
@@ -371,34 +391,62 @@ fun ScreenScaffold(
 /* ---------- 危险确认弹窗（S04） ---------- */
 
 @Composable
-fun ControlConfirmDialog(command: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit = {}) {
+fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Unit = {}) {
+    val name = io.github.lswlc33.maibms.protocol.ControlCmd.name(cmd)
+    val dangerous = io.github.lswlc33.maibms.protocol.ControlCmd.isDangerous(cmd)
+    val warning = io.github.lswlc33.maibms.protocol.ControlCmd.warning(cmd)
+    // 最高危的四个要手输「确认」：误触一次就会关机或抹掉配置，普通点一下不够
+    val typed = io.github.lswlc33.maibms.protocol.ControlCmd.requiresTypedConfirm(cmd)
+    var input by remember(cmd) { mutableStateOf("") }
+    val confirmed = !typed || input.trim().let { it == "确认" || it.equals("ok", ignoreCase = true) }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
-            Text(command + "？", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+            Text(name + "？", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold,
+                color = if (dangerous) BmsColors.BadRed else MaterialTheme.colorScheme.onSurface)
             Text(
                 "将向设备发送对应控制命令（0x51）。执行期间自动暂停实时轮询，完成后恢复。",
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 6.dp)
             )
+            warning?.let {
+                Box(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.errorContainer.copy(alpha = .55f)).padding(10.dp)
+                ) {
+                    Text(it, fontSize = 11.5.sp, color = MaterialTheme.colorScheme.onSurface)
+                }
+                Spacer(Modifier.height(6.dp))
+            }
             Box(
                 Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant).padding(10.dp)
             ) {
+                // 直接显示这条命令的真实报文，排查时对得上日志
                 Text(
-                    "7E A1 51 ·· ·· ·· ·· AA 55",
+                    io.github.lswlc33.maibms.data.BmsLog.hex(
+                        io.github.lswlc33.maibms.protocol.Frame.control(cmd)
+                    ),
                     fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (typed) {
+                OutlinedTextField(
+                    value = input, onValueChange = { input = it },
+                    label = { Text("输入「确认」以执行") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
             }
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) { Text("取消", color = MaterialTheme.colorScheme.primary) }
                 Spacer(Modifier.width(4.dp))
                 Button(
-                    onClick = { onConfirm(command); onDismiss() },
+                    enabled = confirmed,
+                    onClick = { onConfirm(cmd); onDismiss() },
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (command.contains("恢复") || command.contains("关闭")) BmsColors.BadRed else MaterialTheme.colorScheme.primary
+                        containerColor = if (dangerous) BmsColors.BadRed else MaterialTheme.colorScheme.primary
                     )
                 ) { Text("执行") }
             }
@@ -417,6 +465,7 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
     val canAuth = linkState.value == io.github.lswlc33.maibms.transport.LinkState.Connected
     var editingLevel by remember { mutableStateOf<Int?>(null) }
     var input by remember { mutableStateOf("") }
+    var pwError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -451,7 +500,7 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
                                 }
                             } else {
                                 io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户输入 ${pw.level} 级密码")
-                                editingLevel = pw.level; input = ""
+                                editingLevel = pw.level; input = ""; pwError = null
                             }
                         }
                         .padding(vertical = 9.dp)
@@ -465,22 +514,29 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
                 if (editingLevel == pw.level) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
                         OutlinedTextField(
-                            value = input, onValueChange = { input = it },
-                            label = { Text("输入 ${pw.level} 级密码") }, singleLine = true,
+                            value = input, onValueChange = { input = it; pwError = null },
+                            label = { Text(if (pw.level == 9) "点分十进制（12 段）" else "输入 ${pw.level} 级密码（槽 ${io.github.lswlc33.maibms.protocol.ParamTable.slotLen(pw.level)} 字节）") },
+                            singleLine = true, isError = pwError != null,
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(6.dp))
                         Button(onClick = {
                             val lv = pw.level
+                            val bad = io.github.lswlc33.maibms.protocol.PasswordCodec.validate(lv, input.trim())
+                            if (bad != null) { pwError = bad; return@Button }
                             io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交 $lv 级新密码，保存并校验")
-                            MockBms.plainPasswords.value = plain + (lv to input)
+                            MockBms.plainPasswords.value = plain + (lv to input.trim())
                             MockBms.passwords.value = MockBms.passwords.value.map {
                                 if (it.level == lv) it.copy(masked = "••••••••") else it
                             }
                             scope.launch {
-                                if (io.github.lswlc33.maibms.data.Bms.repository.auth(lv, input) > 0) onDismiss()
+                                if (io.github.lswlc33.maibms.data.Bms.repository.auth(lv, input.trim()) > 0) onDismiss()
                             }
                         }) { Text("校验") }
+                    }
+                    pwError?.let {
+                        Text(it, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(bottom = 8.dp))
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

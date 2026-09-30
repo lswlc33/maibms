@@ -28,7 +28,10 @@ fun DashboardScreen(
     onOpenScan: () -> Unit,
     onOpenProtect: () -> Unit,
     onOpenPerm: () -> Unit = {},
-    onControlConfirm: (String) -> Unit,
+    /** 运行权限是否够执行控制命令（≥3 级且已连接）：不够时只提示、不发帧 */
+    canWrite: Boolean = true,
+    permissionLevel: Int = 0,
+    onControlConfirm: (Int) -> Unit,
     onForceCharge: () -> Unit,
 ) {
     val liveStatus by MockBms.status.collectAsState()
@@ -41,6 +44,8 @@ fun DashboardScreen(
     val ctrlResult by MockBms.lastControlResult.collectAsState()
     val chargeOn by MockBms.chargeSwitch.collectAsState()
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
+    /** 权限不够时点控制按钮的一次性说明（点掉即清） */
+    var permDenied by remember { mutableStateOf<String?>(null) }
 
     /** 链路三态：正常 / 失联（GATT 在但数据停流）/ 断开（含未连接、连接中失败） */
     val linkLost = link == io.github.lswlc33.maibms.transport.LinkState.Connected && stalled
@@ -121,11 +126,29 @@ fun DashboardScreen(
                     ControlButtonsRow(
                         chargeOn = chargeOn,
                         dischargeOn = dischargeOn,
-                        onCharge = { onControlConfirm("充电开关") },
-                        onDischarge = { onControlConfirm("放电开关") },
-                        onForce = onForceCharge,
+                        onCharge = {
+                            if (canWrite) onControlConfirm(
+                                if (chargeOn) io.github.lswlc33.maibms.protocol.ControlCmd.CHARGE_OFF
+                                else io.github.lswlc33.maibms.protocol.ControlCmd.CHARGE_ON
+                            ) else permDenied = "充电开关：需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 $permissionLevel 级）"
+                        },
+                        onDischarge = {
+                            if (canWrite) onControlConfirm(
+                                if (dischargeOn) io.github.lswlc33.maibms.protocol.ControlCmd.DISCHARGE_OFF
+                                else io.github.lswlc33.maibms.protocol.ControlCmd.DISCHARGE_ON
+                            ) else permDenied = "放电开关：需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 $permissionLevel 级）"
+                        },
+                        onForce = {
+                            if (canWrite) onForceCharge()
+                            else permDenied = "强制充电：需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 $permissionLevel 级）"
+                        },
                         enabled = link == io.github.lswlc33.maibms.transport.LinkState.Connected,
                     )
+                    // 权限不够时点了不是没反应，而是当场说明原因（点横幅右侧可直接去校验）
+                    permDenied?.let {
+                        Spacer(Modifier.height(6.dp))
+                        InfoBanner(it, kind = "warn", action = "去校验", onAction = { permDenied = null; onOpenPerm() })
+                    }
                     // 命令结果就地回显（0x61 码表），否则按了开关看不出成没成
                     ctrlResult?.let { (cmd, code) ->
                         Spacer(Modifier.height(6.dp))
@@ -275,13 +298,16 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
             Row {
                 Text("告警详情", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                 Spacer(Modifier.weight(1f))
-                Text("位域 12~19", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("实时帧偏移 4~11 保护 / 12~19 告警", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(8.dp))
             if (!status.hasData) {
                 Text("未连接 · 无数据（连接保护板后此处显示位置位详情）",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 10.dp))
+            }
+            if (status.alarmPairs.isNotEmpty()) {
+                Text("告警", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             status.alarmPairs.forEach { (bit, a) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
@@ -290,6 +316,10 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
                     Text("bit $bit", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            if (status.protectPairs.isNotEmpty()) {
+                Text("保护", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = if (status.alarmPairs.isNotEmpty()) 6.dp else 0.dp))
             }
             status.protectPairs.forEach { (bit, p) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {

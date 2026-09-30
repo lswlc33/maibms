@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
+import io.github.lswlc33.maibms.protocol.WriteAccess
 import io.github.lswlc33.maibms.ui.BmsColors
 
 /* ---------- 通用小组件 ---------- */
@@ -185,6 +186,37 @@ fun PermissionBadge(level: Int, onClick: () -> Unit = {}) {
     ) {
         Text(level.toString(), fontSize = 12.5.sp, fontWeight = FontWeight.Bold,
             color = fg, fontFamily = FontFamily.Monospace)
+    }
+}
+
+/**
+ * 顶栏右侧的写权限状态指示（放在权限数字徽标左边）：
+ * 可编辑=主色 / 只读=琥珀 / 权限不足=灰。点它等同点权限徽标，直接进换级弹窗。
+ */
+@Composable
+fun WriteAccessChip(access: WriteAccess, onClick: () -> Unit = {}) {
+    val (bg, fg) = when (access) {
+        WriteAccess.EDIT -> if (isDarkScheme()) BmsColors.Primary.copy(alpha = .22f) to Color(0xFF8FE39A)
+                            else BmsColors.PrimaryContainer to BmsColors.OnPrimaryContainer
+        WriteAccess.READ_ONLY -> warnPair()
+        WriteAccess.DENIED -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        Modifier.height(20.dp).clip(RoundedCornerShape(7.dp)).background(bg)
+            .clickable { onClick() }.padding(horizontal = 7.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(access.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = fg, maxLines = 1)
+    }
+}
+
+/** 顶栏右侧的「写权限状态 + 权限等级徽标」组合（配置类页面统一用这个） */
+@Composable
+fun WriteAccessTrailing(level: Int, access: WriteAccess, onClick: () -> Unit = {}) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        WriteAccessChip(access, onClick)
+        Spacer(Modifier.width(6.dp))
+        PermissionBadge(level, onClick)
     }
 }
 

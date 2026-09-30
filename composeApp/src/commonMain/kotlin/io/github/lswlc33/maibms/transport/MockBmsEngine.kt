@@ -134,16 +134,24 @@ class MockBmsEngine(private val scope: CoroutineScope) {
                 val raw = (frame.data.getOrNull(0)?.toInt()?.and(0xFF) ?: 0) or
                           ((frame.data.getOrNull(1)?.toInt()?.and(0xFF) ?: 0) shl 8)
                 val def = ParamTable.byAddr(addr)
+                // u32 容量类要连写两帧（低字 @addr、高字 @addr+2），单帧里只是半个值：
+                // 按整值范围校验的话低字必然「小于最小值」，所以这两格不做范围判断，
+                // 写入正确性由客户端的回读校验（4 字节拼 u32）兜住
+                val isU32Half = addr in ParamTable.u32Addrs || ParamTable.u32Addrs.any { it + 2 == addr }
                 // 与真机一致：写被拒时 0x42 照样回显参数块，结论在同帧追加的 0xFF 段里
                 val (code, limit) = when {
                     currentPermission < 3 -> 1 to 0                       // 权限不够
-                    def == null -> { storeRaw(addr, raw); 10 to 0 }
+                    def == null || isU32Half -> { storeRaw(addr, raw); 10 to 0 }
                     raw < (def.min * def.scale).toInt() -> 2 to (def.min * def.scale).toInt()
                     raw > (def.max * def.scale).toInt() -> 3 to (def.max * def.scale).toInt()
                     else -> { storeRaw(addr, raw); 10 to 0 }
                 }
                 if (code == 10) {
-                    if (addr == 162) totalCapAh = raw / 1_000_000.0
+                    // 容量：任一半字落地后按两格拼出整值（0x22 一次只写 2 字节）
+                    if (addr == 162 || addr == 164) {
+                        val v = (((paramStore[164] ?: 0).toLong() shl 16) or ((paramStore[162] ?: 0).toLong() and 0xFFFF)) and 0xFFFFFFFFL
+                        totalCapAh = v / 1_000_000.0
+                    }
                     if (addr == 154) { /* 串数变更演示 */ }
                 }
                 val echo = raw.takeIf { code == 10 } ?: (paramStore[addr] ?: 0)

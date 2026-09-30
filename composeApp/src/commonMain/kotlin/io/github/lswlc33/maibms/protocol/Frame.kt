@@ -89,11 +89,17 @@ object Frame {
     fun control(cmd: Int, addr: Byte = Proto.ADDR_MAIN) =
         build(addr, Proto.FC_CONTROL, cmd, ByteArray(0), 0)
 
-    /** 密码校验（23 + 槽地址小端 + ASCII 密码，不足补 0x00） */
-    fun auth(slotAddr: Int, password: String, addr: Byte = Proto.ADDR_MAIN): ByteArray {
-        val pw = password.toByteArray(Charsets.US_ASCII).copyOf(8)  // 一~四级 8 字节
-        return build(addr, Proto.FC_AUTH, slotAddr, pw, 8)
-    }
+    /**
+     * 密码校验（23 + 槽地址小端 + 密码字节，不足补 0x00）。
+     * 槽长由调用方按等级给出（一~四级 8 字节、五级与管理员 12 字节，见 ParamTable.slotLen）——
+     * 曾写死 8 字节，导致 5 级槽（@362）与管理员槽（@374）发出的帧长度不对，永远校验不过。
+     */
+    fun auth(slotAddr: Int, payload: ByteArray, addr: Byte = Proto.ADDR_MAIN): ByteArray =
+        build(addr, Proto.FC_AUTH, slotAddr, payload, payload.size)
+
+    /** 密码校验（按等级编码：五级/管理员槽 12 字节，管理员用点分十进制） */
+    fun auth(level: Int, password: String, addr: Byte = Proto.ADDR_MAIN): ByteArray =
+        auth(ParamTable.slotAddr(level), PasswordCodec.encode(level, password), addr)
 
     /** 保存应用参数（51/07） */
     fun saveParams(addr: Byte = Proto.ADDR_MAIN) = control(7, addr)
