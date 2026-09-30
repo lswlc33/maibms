@@ -105,7 +105,8 @@ jobs:
             exit 1
           fi
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
-          echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/maibms-release.jks" >> "$GITHUB_ENV"
+          # 必须 export：$GITHUB_ENV 只对后续步骤生效，同一步里 gradle 读不到
+          export SIGNING_KEYSTORE_FILE="$RUNNER_TEMP/maibms-release.jks"
 
           chmod +x ./gradlew
           ./gradlew --no-daemon :composeApp:assembleRelease
