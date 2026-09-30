@@ -67,12 +67,13 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           set -e
-          if [ -n "$SIGNING_KEYSTORE_BASE64" ]; then
-            printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
-            echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/maibms-release.jks" >> "$GITHUB_ENV"
-          else
-            echo "::warning::未配置签名 secrets，本次用 debug 签名，无法覆盖安装正式版"
+          # 必须用发布密钥：debug 签名的包装不上正式版，发布出去只会让人白装一次
+          if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 SIGNING_KEYSTORE_BASE64 —— 请先配置签名 secrets，否则构建出的包无法覆盖安装正式版"
+            exit 1
           fi
+          printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
+          echo "SIGNING_KEYSTORE_FILE=$RUNNER_TEMP/maibms-release.jks" >> "$GITHUB_ENV"
 
           chmod +x ./gradlew
           ./gradlew --no-daemon :composeApp:assembleRelease
@@ -82,6 +83,9 @@ jobs:
           OUT="maibms-${{ steps.version.outputs.name }}.apk"
           cp "$SRC" "$OUT"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
+
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort | tail -1)"
+          "$APKSIGNER" verify --print-certs "$OUT" | head -4
           echo "built: $OUT"
 
       - name: Upload build artifact
