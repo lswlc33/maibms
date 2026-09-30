@@ -240,6 +240,7 @@ fun App(
                         d.command,
                         onDismiss = { dialog.value = null },
                         onConfirm = { name ->
+                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户确认执行：$name")
                             cmdFor(name)?.let { cmd ->
                                 scope.launch {
                                     val code = io.github.lswlc33.maibms.data.Bms.repository.control(cmd)
@@ -251,6 +252,7 @@ fun App(
                         d.item,
                         onDismiss = { dialog.value = null },
                         onWrite = { raw ->
+                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交参数写入：${d.item.name} = $raw ${d.item.unit}")
                             scope.launch {
                                 val addr = d.item.addr.removePrefix("0x").removePrefix("0X").toIntOrNull(16) ?: 0
                                 MockBms.lastWriteResult.value = io.github.lswlc33.maibms.data.Bms.repository.writeParam(addr, raw)
@@ -442,11 +444,15 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
                                 return@clickable
                             }
                             if (saved != null) {
+                                io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户点已记住的 ${pw.level} 级直接校验")
                                 scope.launch {
                                     val lvl = io.github.lswlc33.maibms.data.Bms.repository.auth(pw.level, saved)
                                     if (lvl > 0) onDismiss()
                                 }
-                            } else { editingLevel = pw.level; input = "" }
+                            } else {
+                                io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户输入 ${pw.level} 级密码")
+                                editingLevel = pw.level; input = ""
+                            }
                         }
                         .padding(vertical = 9.dp)
                 ) {
@@ -466,6 +472,7 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
                         Spacer(Modifier.width(6.dp))
                         Button(onClick = {
                             val lv = pw.level
+                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交 $lv 级新密码，保存并校验")
                             MockBms.plainPasswords.value = plain + (lv to input)
                             MockBms.passwords.value = MockBms.passwords.value.map {
                                 if (it.level == lv) it.copy(masked = "••••••••") else it

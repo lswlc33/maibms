@@ -106,6 +106,27 @@ private fun seedUi() {
             .forEach { MockBms.updateFromRealtime(RealtimeDecoder.decode(it.data)) }
     }
     MockBms.connected.value = true
+    seedLogs()
+}
+
+/** 开发者页截图用：注入各级别示例日志（走真实 BmsLog 管线） */
+private fun seedLogs() {
+    val log = io.github.lswlc33.maibms.data.BmsLog
+    log.i("APP", "应用启动（Android BLE）")
+    log.i("APP", "记忆设备：ANT@BLE24CBUB-3547 (F9:99:1B:2B:1B:70)")
+    log.i("CONN", "发起连接 → F9:99:1B:2B:1B:70（自动重连）")
+    log.d("BLE", "scan 发现 ANT@BLE24CBUB-3547 F9:99:1B:2B:1B:70 rssi=-58")
+    log.i("CONN", "选择设备 ANT@BLE24CBUB-3547 (F9:99:1B:2B:1B:70)")
+    log.i("BLE", "连接尝试 #1")
+    log.i("BLE", "链路就绪（MTU 512）")
+    log.i("AUTH", "自动升权成功：2 级")
+    log.d("TX", "7E A1 01 00 00 F5 58 62 AA 55")
+    log.d("RX", "func=11 reg=0 len=168 02 03 04 14 00 00 00 00 …")
+    log.i("PARAM", "参数区读回 208 项，身份区 5 项")
+    log.i("CTRL", "控制命令成功：充电开关")
+    log.w("LINK", "实时帧停流 7200ms，判定失联（链路保持，继续轮询）")
+    log.e("WRITE", "参数写入失败：权限不足（0x0）")
+    log.i("AUTH", "权限回落，已静默重升到 2 级")
 }
 
 private class Shot(

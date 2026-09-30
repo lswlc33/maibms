@@ -77,7 +77,11 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     /** 已就绪后的掉线信号 */
     private var dropSignal: CompletableDeferred<Unit>? = null
 
-    private fun log(msg: String) = io.github.lswlc33.maibms.data.BmsLog.add("BLE", msg)
+    private val LOG = io.github.lswlc33.maibms.data.BmsLog
+    private fun logI(msg: String) = LOG.i("BLE", msg)
+    private fun logW(msg: String) = LOG.w("BLE", msg)
+    private fun logE(msg: String) = LOG.e("BLE", msg)
+    private fun logD(msg: String) = LOG.d("BLE", msg)
 
     private fun hex(b: ByteArray) = b.joinToString(" ") { "%02X".format(it) }
 
@@ -106,18 +110,18 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 val name = result.device.name ?: return
                 if (!name.startsWith("ANT", ignoreCase = true)) return
-                log("scan 发现 $name ${result.device.address} rssi=${result.rssi}")
+                logD("scan 发现 $name ${result.device.address} rssi=${result.rssi}")
                 onFound(ScanDevice(name, result.device.address, result.rssi))
             }
 
             override fun onScanFailed(errorCode: Int) {
-                log("scan 失败 errorCode=$errorCode")
+                logE("扫描失败 errorCode=$errorCode")
             }
         }
         scanCallback = cb
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         // 名称前缀过滤在回调内做（不同 ROM 对硬件过滤支持不一）
-        log("scan 开始")
+        logI("开始扫描 ANT 设备")
         scanner.startScan(emptyList<ScanFilter>(), settings, cb)
     }
 
@@ -148,7 +152,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         desiredAddress = device.address
         _linkState.value = LinkState.Connecting
         _connectHint.value = "正在连接 ${(device.name ?: device.address).trim()}…"
-        log("connect -> ${device.name} ${device.address}")
+        logI("连接目标 ${device.name} ${device.address}")
         stopScan()
         loopJob?.cancel()
         loopJob = scope.launch {
@@ -168,7 +172,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             // 每第 4 次改用等待式连接：direct connect 在弱信号下会立刻失败，而等待式能等到设备广播
             val useAuto = attempt % 4 == 0
             if (attempt > 1) _connectHint.value = "第 $attempt 次尝试${if (useAuto) "（等待设备广播）" else ""}…"
-            log("尝试连接 #$attempt autoConnect=$useAuto")
+            logI("连接尝试 #$attempt${if (useAuto) "（等待广播）" else ""}")
             _linkState.value = LinkState.Connecting
 
             val ready = CompletableDeferred<Boolean>()
@@ -182,7 +186,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 if (outcome == true) {
                     _connectHint.value = null
                     _linkState.value = LinkState.Connected
-                    log("链路就绪，等待掉线事件")
+                    logI("链路就绪（MTU ${mtu}）")
                     val dropped = CompletableDeferred<Unit>()
                     dropSignal = dropped
                     val connectedAt = System.currentTimeMillis()
@@ -227,7 +231,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             } else {
                 device.connectGatt(context, autoConnect, callback)
             }
-        }.onFailure { log("connectGatt 抛异常: $it") }.getOrNull()
+        }.onFailure { logE("connectGatt 异常：$it") }.getOrNull()
         gatt = g
         return g != null
     }
@@ -250,12 +254,12 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             if (g !== gatt) { runCatching { g.close() }; return }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    log("连接状态 status=$status newState=2 (${statusText(status)})")
+                    logD("GATT 已连接 status=${statusText(status)}")
                     runCatching { g.discoverServices() }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     lastDisconnectStatus = status
-                    log("连接状态 status=$status newState=0 (${statusText(status)})")
+                    logW("GATT 断开：${statusText(status)}")
                     closeGatt()
                     _linkState.value = LinkState.Disconnected
                     readySignal?.complete(false)
@@ -268,14 +272,14 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
             if (g !== gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                log("发现服务失败 status=$status (${statusText(status)})")
+                logE("发现服务失败：${statusText(status)}")
                 readySignal?.complete(false)
                 runCatching { g.disconnect() }
                 return
             }
-            log("服务: " + g.services.joinToString { it.uuid.toString().substring(4, 8) })
+            logD("服务列表: " + g.services.joinToString { it.uuid.toString().substring(4, 8) })
             val service = g.getService(SERVICE) ?: run {
-                log("没有 FFE0 服务")
+                logE("设备没有 FFE0 服务（不是 ANT 保护板？）")
                 readySignal?.complete(false)
                 runCatching { g.disconnect() }
                 return
@@ -287,12 +291,12 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 if (wc != null && nc != null) { writeChar = wc; notifyChar = nc; break }
             }
             val wc = writeChar ?: run {
-                log("FFE0 下没有可用通道")
+                logE("FFE0 下没有可用的写/通知通道")
                 readySignal?.complete(false)
                 runCatching { g.disconnect() }
                 return
             }
-            log("通道选中 写=${wc.uuid.toString().substring(4, 8)} 通知=${notifyChar?.uuid?.toString()?.substring(4, 8)}")
+            logI("通道选中 写=%04X 通知=%04X".format(wc.uuid.toString().substring(4, 8).toInt(16), notifyChar!!.uuid.toString().substring(4, 8).toInt(16)))
             // 先订阅通知（docs 硬性顺序）
             runCatching { g.setCharacteristicNotification(notifyChar, true) }
             val desc = notifyChar?.getDescriptor(CCCD)
@@ -313,12 +317,12 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            log("MTU=$mtu status=$status")
+            logD("MTU 协商=$mtu status=$status")
             if (g === gatt) this@AndroidBleTransport.mtu = mtu
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            log("CCCD 写入 status=$status")
+            logD("CCCD 写入 status=$status")
             // 订阅已落地：即使服务发现回调里来不及标记，这里也补一次
             if (g === gatt && writeChar != null) {
                 _linkState.value = LinkState.Connected
@@ -329,14 +333,14 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
             val data = c.value ?: return
-            log("← ${hex(data)}")
+            logD("← ${hex(data)}")
             _incoming.tryEmit(data.copyOf())
         }
 
         override fun onCharacteristicChanged(
             g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray
         ) {
-            log("← ${hex(value)}")
+            logD("← ${hex(value)}")
             _incoming.tryEmit(value.copyOf())
         }
     }
@@ -345,10 +349,10 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
 
     @SuppressLint("MissingPermission")
     override suspend fun write(frame: ByteArray) {
-        val g = gatt ?: run { log("write: 未连接"); return }
-        val wc = writeChar ?: run { log("write: 无写通道"); return }
-        if (_linkState.value != LinkState.Connected) { log("write: 链路未就绪，丢弃本帧"); return }
-        log("→ ${hex(frame)}")
+        val g = gatt ?: run { logW("写入被丢弃：未连接"); return }
+        val wc = writeChar ?: run { logW("写入被丢弃：无写通道"); return }
+        if (_linkState.value != LinkState.Connected) { logW("写入被丢弃：链路未就绪"); return }
+        logD("→ ${hex(frame)}")
         val chunk = minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)
         var offset = 0
         while (offset < frame.size) {

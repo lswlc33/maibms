@@ -273,52 +273,128 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
 
 /* ---------- S15 开发者 ---------- */
 
+/** 级别在日志行里的着色（深底终端风） */
+private fun levelColor(level: io.github.lswlc33.maibms.data.BmsLog.Level): androidx.compose.ui.graphics.Color = when (level) {
+    io.github.lswlc33.maibms.data.BmsLog.Level.ERROR -> androidx.compose.ui.graphics.Color(0xFFFF7B72)
+    io.github.lswlc33.maibms.data.BmsLog.Level.WARN -> androidx.compose.ui.graphics.Color(0xFFE3B341)
+    io.github.lswlc33.maibms.data.BmsLog.Level.INFO -> androidx.compose.ui.graphics.Color(0xFF9BE8C4)
+    io.github.lswlc33.maibms.data.BmsLog.Level.DEBUG -> androidx.compose.ui.graphics.Color(0xFF6E8A7C)
+}
+
 @Composable
 fun DeveloperScreen(onBack: () -> Unit) {
     val logOn by io.github.lswlc33.maibms.data.BmsLog.frameLogOn.collectAsState()
-    val lines by io.github.lswlc33.maibms.data.BmsLog.lines.collectAsState()
+    val entries by io.github.lswlc33.maibms.data.BmsLog.entries.collectAsState()
+    val minLevel by io.github.lswlc33.maibms.data.BmsLog.minLevel.collectAsState()
+    var levelMenu by remember { mutableStateOf(false) }
+    var actionNote by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(actionNote) {
+        if (actionNote != null) { kotlinx.coroutines.delay(2000); actionNote = null }
+    }
     ScreenScaffold(title = "开发者", onBack = onBack) {
         SectionCard {
-            SettingRow(title = "报文调试日志",
+            SettingRow(
+                title = "帧级日志（TX/RX 报文）",
+                inlineValue = if (logOn) "开启" else "关闭",
                 trailing = { AppSwitch(logOn) { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = it } },
-                onClick = { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = !logOn })
+                onClick = { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = !logOn },
+            )
+            SettingRow(
+                title = "显示级别",
+                inlineValue = when (minLevel) {
+                    io.github.lswlc33.maibms.data.BmsLog.Level.DEBUG -> "全部（含帧）"
+                    io.github.lswlc33.maibms.data.BmsLog.Level.INFO -> "普通+"
+                    io.github.lswlc33.maibms.data.BmsLog.Level.WARN -> "仅警告+"
+                    io.github.lswlc33.maibms.data.BmsLog.Level.ERROR -> "仅错误"
+                },
+                trailing = { Text("⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                onClick = { levelMenu = true },
+            )
+            Box {
+                DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
+                    listOf(
+                        "全部（含帧）" to io.github.lswlc33.maibms.data.BmsLog.Level.DEBUG,
+                        "普通+" to io.github.lswlc33.maibms.data.BmsLog.Level.INFO,
+                        "仅警告+" to io.github.lswlc33.maibms.data.BmsLog.Level.WARN,
+                        "仅错误" to io.github.lswlc33.maibms.data.BmsLog.Level.ERROR,
+                    ).forEach { (label, lv) ->
+                        DropdownMenuItem(
+                            text = { Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface) },
+                            onClick = {
+                                io.github.lswlc33.maibms.data.BmsLog.minLevel.value = lv
+                                levelMenu = false
+                            },
+                        )
+                    }
+                }
+            }
         }
-        // 操作行放在日志框「上面」：日志满 300 行时有近六屏高，放下面根本够不着
+        // 操作行放在日志框「上面」：日志满时日志框近六屏高，放下面够不着
         SectionCard {
-            SettingRow(title = "清空日志", trailing = { Chevron() }, onClick = { io.github.lswlc33.maibms.data.BmsLog.clear() })
-            // 原来这行只有 Chevron 没有 onClick（点了没反应）。改为真的复制到剪贴板并给回执
+            SettingRow(
+                title = "清空日志",
+                trailing = { Chevron() },
+                onClick = {
+                    io.github.lswlc33.maibms.data.BmsLog.clear()
+                    actionNote = "日志已清空"
+                },
+            )
             val copy = rememberClipboardWriter()
             var copied by remember { mutableStateOf(false) }
             LaunchedEffect(copied) {
                 if (copied) { kotlinx.coroutines.delay(1600); copied = false }
             }
             SettingRow(
-                title = "复制全部日志",
-                inlineValue = if (lines.isEmpty()) "暂无记录" else "${lines.size} 行",
+                title = "复制日志",
+                inlineValue = if (entries.isEmpty()) "暂无记录" else "${entries.size} 条",
                 trailing = {
                     if (copied) Text("已复制", fontSize = 10.5.sp, fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary)
                     else Chevron()
                 },
-                onClick = { if (lines.isNotEmpty()) copied = copy(lines.joinToString("\n")) },
+                onClick = {
+                    if (entries.isNotEmpty()) {
+                        copied = copy(io.github.lswlc33.maibms.data.BmsLog.exportText())
+                    }
+                },
             )
+            val export = rememberLogExporter()
+            SettingRow(
+                title = "导出日志文件",
+                inlineValue = "txt",
+                trailing = { Chevron() },
+                onClick = {
+                    val path = export(io.github.lswlc33.maibms.data.BmsLog.exportText())
+                    actionNote = if (path != null) "已导出：$path" else "导出失败"
+                    io.github.lswlc33.maibms.data.BmsLog.i("UI", "导出日志文件 → " + (path ?: "失败"))
+                },
+            )
+            actionNote?.let {
+                Text(it, fontSize = 10.5.sp, fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 2.dp))
+            }
         }
         Column(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                 .background(androidx.compose.ui.graphics.Color(0xFF0C100F)).padding(11.dp)
         ) {
-            if (lines.isEmpty()) {
+            val shown = entries.filter { it.level.ordinal >= minLevel.ordinal }
+            if (shown.isEmpty()) {
                 Text(
-                    "（暂无记录：连接保护板后此处显示收发帧）",
+                    "（暂无记录：连接保护板后此处显示收发帧与操作记录）",
                     fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,
                     color = androidx.compose.ui.graphics.Color(0xFF6E8A7C),
                     modifier = Modifier.padding(vertical = 1.dp)
                 )
             }
-            lines.forEach { line ->
+            shown.forEach { e ->
+                val sec = e.atMs / 1000
+                val ms = e.atMs % 1000
                 Text(
-                    line, fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,
-                    color = androidx.compose.ui.graphics.Color(0xFF9BE8C4),
+                    "%02d:%02d:%02d.%03d".format(sec / 3600, sec % 3600 / 60, sec % 60, ms) + " " + e.render(),
+                    fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,
+                    color = levelColor(e.level),
                     modifier = Modifier.padding(vertical = 1.dp)
                 )
             }

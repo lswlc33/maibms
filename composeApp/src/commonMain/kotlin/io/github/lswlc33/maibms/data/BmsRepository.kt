@@ -70,6 +70,7 @@ class BmsRepository(
 
     fun start() {
         if (collectorJob != null) return
+        BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
         // 冷启动：恢复记忆设备并自动重连（设备地址 + 密码库都落在本地）
         val saved = AppStore.savedAddress
         MockBms.savedAddress = saved
@@ -77,9 +78,10 @@ class BmsRepository(
         restorePasswords(saved)
         MockBms.autoUpgradeLevel.value = AppStore.autoUpgradeTarget
         MockBms.usingRealBle.value = realTransport != null
+        if (saved != null) BmsLog.i("APP", "记忆设备：${AppStore.savedDeviceName ?: "未命名"} ($saved)")
         if (realTransport == null) {
             // 桌面端等没有 BLE 后端的环境：停在这里，界面显示「未连接」
-            println("[ANTBMS] 当前平台无 BLE 后端，等待扫描/连接动作")
+            BmsLog.w("APP", "当前平台无 BLE 后端，等待扫描/连接动作")
             return
         }
         val real = realTransport!!
@@ -146,9 +148,9 @@ class BmsRepository(
                 MockBms.autoUpgradeLevel.value = best
                 AppStore.autoUpgradeTarget = best
             }
-            println("[ANTBMS] 自动升权到 $best 级")
+            BmsLog.i("AUTH", "自动升权成功：$best 级")
         } else {
-            println("[ANTBMS] 自动升权失败：本地密码均未通过")
+            BmsLog.w("AUTH", "自动升权失败：本地密码均未通过")
         }
     }
 
@@ -164,7 +166,7 @@ class BmsRepository(
     suspend fun startScan() {
         val real = realTransport
         if (real == null || !real.supportsScan) {
-            println("[ANTBMS] 当前平台不支持真实扫描")
+            BmsLog.w("SCAN", "当前平台不支持真实扫描")
             _scanError.value = "当前平台没有蓝牙后端"
             return
         }
@@ -178,7 +180,7 @@ class BmsRepository(
             delay(SCAN_WINDOW_MS)
             if (_scanning.value) {
                 stopScan()
-                println("[ANTBMS] 扫描窗口 ${SCAN_WINDOW_MS}ms 到，自动停止（发现 ${_scanResults.value.size} 台）")
+                BmsLog.i("SCAN", "扫描窗口到，自动停止，发现 ${_scanResults.value.size} 台")
             }
         }
         val ok = runCatching {
@@ -189,7 +191,7 @@ class BmsRepository(
         }
         if (ok.isFailure) {
             val e = ok.exceptionOrNull()
-            println("[ANTBMS] 扫描失败: $e")
+            BmsLog.e("SCAN", "扫描失败：$e")
             _scanError.value = when (e) {
                 is SecurityException -> "缺少蓝牙权限，请在系统设置中允许本应用使用附近的设备"
                 is IllegalStateException -> e.message
@@ -208,6 +210,7 @@ class BmsRepository(
     /** 连接指定设备（按下即记住地址，供下次自动重连） */
     suspend fun connectTo(address: String) {
         val name = _scanResults.value.firstOrNull { it.address == address }?.name?.trim()
+        BmsLog.i("CONN", "选择设备 $name ($address)")
         MockBms.savedAddress = address
         MockBms.connectedDeviceName.value = name
         AppStore.savedAddress = address
@@ -218,6 +221,7 @@ class BmsRepository(
     }
 
     suspend fun connect(address: String? = null) {
+        BmsLog.i("CONN", "发起连接" + (address?.let { " → $it" } ?: "") + if (AppStore.autoReconnect) "（自动重连）" else "（手动）")
         manualDisconnect.value = false
         AppStore.autoReconnect = true
         resetSessionState()
@@ -231,17 +235,20 @@ class BmsRepository(
                 if (_linkState.value == LinkState.Connected) {
                     try {
                         requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
-                    } catch (_: Exception) { }
+                    } catch (e: Exception) {
+                        // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
+                        BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
+                    }
                     // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
                     val since = System.currentTimeMillis() - lastFrameAt
                     if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
                         if (!_stalled.value) {
                             _stalled.value = true
-                            println("[ANTBMS] 实时帧停流 ${since}ms，判定失联（链路保持，继续轮询）")
+                            BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（链路保持，继续轮询）")
                         }
                     } else if (_stalled.value) {
                         _stalled.value = false
-                        println("[ANTBMS] 实时帧恢复")
+                        BmsLog.i("LINK", "实时帧恢复")
                     }
                 }
                 delay(900)
@@ -251,6 +258,7 @@ class BmsRepository(
     }
 
     suspend fun disconnect() {
+        BmsLog.i("CONN", "主动断开连接")
         manualDisconnect.value = true
         AppStore.autoReconnect = false   // 记住这次主动断开，重启后不要自动连
         pollJob?.cancel(); pollJob = null
@@ -279,7 +287,7 @@ class BmsRepository(
     }
 
     private suspend fun handleFrame(f: ParsedFrame) {
-        BmsLog.add("RX", "func=%02X reg=%d len=%d %s".format(f.func, f.reg, f.data.size, BmsLog.hex(f.data.take(24).toByteArray())))
+        BmsLog.d("RX", "func=%02X reg=%d len=%d %s".format(f.func, f.reg, f.data.size, BmsLog.hex(f.data.take(24).toByteArray())))
         when (f.func) {
             Proto.RSP_REALTIME -> {
                 runCatching { RealtimeDecoder.decode(f.data) }.onSuccess { r ->
@@ -290,11 +298,12 @@ class BmsRepository(
                     refreshParams()
                     // 设备闲置会把权限退回低等级（实测约 5 分钟）：掉下来就静默重升
                     ensurePermission(r.permission)
-                }
+                }.onFailure { BmsLog.e("RX", "实时帧解码失败：$it") }
             }
             Proto.RSP_AUTH -> {
                 if (f.data.size >= 2) {
                     val level = (f.data[0].toInt() and 0xFF) or ((f.data[1].toInt() and 0xFF) shl 8)
+                    BmsLog.i("AUTH", "设备应答当前权限 $level 级")
                     MockBms.applyPermission(level)
                     // 升权后参数区可读范围可能变化，强制重读
                     if (level > 0) refreshParams(force = true)
@@ -309,13 +318,22 @@ class BmsRepository(
                     patch[f.reg + k] = (f.data[k].toInt() and 0xFF) or ((f.data[k + 1].toInt() and 0xFF) shl 8)
                     k += 2
                 }
-                if (patch.isNotEmpty()) MockBms.liveParams.value = MockBms.liveParams.value + patch
+                if (patch.isNotEmpty()) {
+                    BmsLog.d("WRITE", "回显 ${patch.size} 项 @0x${"%X".format(f.reg)}")
+                    MockBms.liveParams.value = MockBms.liveParams.value + patch
+                }
             }
             Proto.RSP_CONTROL -> {
                 if (f.data.isNotEmpty()) {
                     val code = f.data[0].toInt() and 0xFF
                     MockBms.lastControlResult.value = f.reg to code
-                    if (code == 1) applyControlToUi(f.reg)
+                    val cmdName = ControlCmd.name(f.reg)
+                    if (code == 1) {
+                        BmsLog.i("CTRL", "控制命令成功：$cmdName")
+                        applyControlToUi(f.reg)
+                    } else {
+                        BmsLog.e("CTRL", "控制命令被拒：$cmdName（结果码 $code）")
+                    }
                 }
             }
             Proto.FC_WRITE_STATUS -> {
@@ -336,6 +354,10 @@ class BmsRepository(
                         )
                     } else "参数 0x%X 限值 %d".format(addr, limit)
                 } else null
+                val ok = ResultCodes.writeOk(code)
+                val detail = MockBms.lastWriteDetail.value
+                if (ok) BmsLog.i("WRITE", "参数写入成功（0x${"%X".format(f.reg)}）")
+                else BmsLog.e("WRITE", "参数写入失败：${ResultCodes.writeResult(code)}（0x${"%X".format(f.reg)}）" + (detail?.let { " · $it" } ?: ""))
                 }
             }
         }
@@ -361,10 +383,13 @@ class BmsRepository(
             awaiting = d
             expectFunc = expectedFunc
             expectReg = expectedReg
-            BmsLog.add("TX", BmsLog.hex(frame))
+            BmsLog.d("TX", BmsLog.hex(frame))
             transport.write(frame)
             val r = withTimeoutOrNull(timeoutMs) { d.await() }
             awaiting = null; expectFunc = -1; expectReg = null
+            if (r == null && !fromPoll) {
+                BmsLog.w("TX", "命令无应答 func=%02X reg=%d（${timeoutMs}ms 超时）".format(respondFunc, expectedReg ?: -1))
+            }
             r
         }
     }
@@ -379,18 +404,25 @@ class BmsRepository(
      */
     suspend fun auth(level: Int, password: String): Int {
         val addr = ParamTable.slotAddr(level)
+        BmsLog.i("AUTH", "校验 $level 级密码（寄存器 $addr）")
         lastAuthAt = System.currentTimeMillis()
         // 弱信号下 0x43 可能 2s 后才回（真机实测），给足 4s
-        val r = requestAndAwait(Frame.auth(addr, password), Proto.RSP_AUTH, expectedReg = addr, timeoutMs = 4000) ?: return 0
+        val r = requestAndAwait(Frame.auth(addr, password), Proto.RSP_AUTH, expectedReg = addr, timeoutMs = 4000)
+        if (r == null) {
+            BmsLog.w("AUTH", "$level 级校验无应答")
+            return 0
+        }
         if (r.data.size < 2) return 0
         val got = (r.data[0].toInt() and 0xFF) or ((r.data[1].toInt() and 0xFF) shl 8)
         val dev = MockBms.savedAddress
         return if (got >= level && got > 0) {
+            BmsLog.i("AUTH", "$level 级密码校验通过（设备权限 $got 级），已记住")
             if (dev != null) AppStore.savePassword(dev, level, password)
             MockBms.plainPasswords.value = MockBms.plainPasswords.value + (level to password)
             MockBms.markPasswordSaved(level, true)
             level
         } else {
+            BmsLog.w("AUTH", "$level 级密码校验失败（设备权限 $got 级），已从密码库移除")
             if (dev != null) AppStore.removePassword(dev, level)
             MockBms.plainPasswords.value = MockBms.plainPasswords.value - level
             MockBms.markPasswordSaved(level, false)
@@ -400,6 +432,7 @@ class BmsRepository(
 
     /** 只存本地不校验（未连接时也能先把密码记上，连接后自动升权会用到） */
     fun savePassword(level: Int, password: String) {
+        BmsLog.i("AUTH", "离线保存 $level 级密码（未向设备校验）")
         MockBms.savedAddress?.let { AppStore.savePassword(it, level, password) }
         MockBms.plainPasswords.value = MockBms.plainPasswords.value + (level to password)
         MockBms.markPasswordSaved(level, true)
@@ -407,6 +440,7 @@ class BmsRepository(
 
     /** 清除某一级已记住的密码 */
     fun forgetPassword(level: Int) {
+        BmsLog.i("AUTH", "清除 $level 级已记住的密码")
         MockBms.savedAddress?.let { AppStore.removePassword(it, level) }
         MockBms.plainPasswords.value = MockBms.plainPasswords.value - level
         MockBms.markPasswordSaved(level, false)
@@ -439,11 +473,11 @@ class BmsRepository(
             val lv = runCatching { auth(target, pw) }.getOrDefault(0)
             if (lv > 0) {
                 MockBms.applyPermission(lv)
-                BmsLog.add("SYS", "权限回落，已静默重升到 $lv 级")
-                println("[ANTBMS] 权限回落，已静默重升到 $lv 级")
+                BmsLog.i("AUTH", "权限回落，已静默重升到 $lv 级")
+                BmsLog.i("AUTH", "权限回落，已静默重升到 $lv 级")
             } else {
-                BmsLog.add("SYS", "权限回落重升失败（$target 级密码未通过，已从密码库移除）")
-                println("[ANTBMS] 权限回落重升失败（$target 级）")
+                BmsLog.w("AUTH", "权限回落重升失败（$target 级密码未通过，已从密码库移除）")
+                BmsLog.w("AUTH", "权限回落重升失败（$target 级密码未通过）")
             }
         }
     }
@@ -499,7 +533,7 @@ class BmsRepository(
                     delay(120)
                 }
                 MockBms.identity.value = id
-                println("[ANTBMS] 参数区读回 ${acc.size} 项，身份区 ${id.size} 项")
+                BmsLog.i("PARAM", "参数区读回 ${acc.size} 项，身份区 ${id.size} 项")
             } finally {
                 MockBms.paramsReading.value = false
             }
@@ -519,12 +553,18 @@ class BmsRepository(
 
     /** 控制命令（返回结果码，1=成功） */
     suspend fun control(cmd: Int): Int {
-        val r = requestAndAwait(Frame.control(cmd), Proto.RSP_CONTROL, expectedReg = cmd) ?: return 0
+        BmsLog.i("CTRL", "发送控制命令：${ControlCmd.name(cmd)}（0x%02X）".format(cmd))
+        val r = requestAndAwait(Frame.control(cmd), Proto.RSP_CONTROL, expectedReg = cmd)
+        if (r == null) {
+            BmsLog.e("CTRL", "控制命令无应答：${ControlCmd.name(cmd)}")
+            return 0
+        }
         return if (r.data.isNotEmpty()) r.data[0].toInt() and 0xFF else 0
     }
 
     /** 保存应用参数（0x51/07）：把临时区固化到 flash，结果码进 lastControlResult 供界面回显 */
     suspend fun saveAllParams(): Int {
+        BmsLog.i("PARAM", "保存应用参数（0x51/07）")
         val code = control(ControlCmd.SAVE_PARAMS)
         MockBms.lastControlResult.value = ControlCmd.SAVE_PARAMS to code
         return code
@@ -538,11 +578,14 @@ class BmsRepository(
      * @return 0xFF 段结果码；-1 = 无应答
      */
     suspend fun writeParam(addr: Int, rawValue: Int): Int {
+        val def = ParamTable.byAddr(addr)
+        BmsLog.i("WRITE", "写参数 0x${"%X".format(addr)}" + (def?.let { "（${it.name}）" } ?: "") + " = $rawValue")
         MockBms.lastWriteResult.value = -1
         MockBms.lastWriteDetail.value = null
         // 容量类是 u32（低字 @addr、高字 @addr+2）：0x22 一次只写 2 字节，必须连写两帧，
         // 否则 113.0Ah 这种值会被截成低 16 位，设备拿到一个错得离谱的容量
         val writes: List<Pair<Int, ByteArray>> = if (addr in ParamTable.u32Addrs) {
+            BmsLog.d("WRITE", "u32 参数，拆两帧写入")
             listOf(
                 (addr to Frame.writeParam(addr, rawValue and 0xFFFF)),
                 (addr + 2 to Frame.writeParam(addr + 2, (rawValue ushr 16) and 0xFFFF)),
@@ -558,6 +601,7 @@ class BmsRepository(
         if (!ok) {
             MockBms.lastWriteResult.value = -2
             MockBms.lastWriteDetail.value = "设备未应答（链路差或参数不可写），本次未保存"
+            BmsLog.e("WRITE", "写参数 0x${"%X".format(addr)} 失败：设备未应答")
             return -2
         }
         val code = MockBms.lastWriteResult.value
