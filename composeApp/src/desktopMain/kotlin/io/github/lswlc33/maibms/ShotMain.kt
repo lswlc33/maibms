@@ -30,8 +30,9 @@ private const val DENSITY = 2f
 /**
  * QA 数据：按 docs/05-实时数据.md 的字节布局拼一帧 0x11 应答（真机 ANT@BLE24CBUB-3547 的实测值：
  * 20 串三元锂 113Ah、单体 ~4.26V、MOS/均衡 22℃）。只用于离屏渲染，不进 Android 包。
+ * [powerW] 默认真机实测的 8W；卡3 背景进度条验收时由调用方抬到可见档位的功率。
  */
-private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int): ByteArray {
+private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int, powerW: Int = 8): ByteArray {
     val n = 20; val m = 4
     val t0 = 28 + 2 * n + 2 * m
     val d = ByteArray(t0 + 78 + 24)
@@ -58,7 +59,7 @@ private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int): ByteArray {
     u32(t0 + 16, 113_000_000L)                      // 物理容量 113.0Ah
     u32(t0 + 20, 112_999_861L)                      // 剩余容量
     u32(t0 + 24, 4_644_008L)                        // 累计循环容量（/1000 => 4644Ah）
-    u32(t0 + 28, 8L)                                // 功率 8W
+    u32(t0 + 28, powerW.toLong())                   // 功率（W）
     u32(t0 + 32, 35_520_078L)                       // 运行时间 9:52
     u32(t0 + 36, 0L)                                // 均衡位图
     // 最高/最低/压差/平均按上面生成的单体算，图里高亮格才与数值自洽
@@ -122,7 +123,8 @@ private fun seedUi() {
     io.github.lswlc33.maibms.data.Bms.repository.setRealTransport(ShotTransport())
     kotlinx.coroutines.runBlocking { io.github.lswlc33.maibms.data.Bms.repository.connect("F9:99:1B:2B:1B:70") }
     seedParamsAndIdentity()
-    listOf(seedFrame(0, 0) to 0, seedFrame(1, 3) to 1).forEach { (bytes, _) ->
+    // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子
+    listOf(seedFrame(0, 0) to 0, seedFrame(1, 175, powerW = 1500) to 1).forEach { (bytes, _) ->
         FrameParser().feed(bytes).filter { it.func == Proto.RSP_REALTIME }
             .forEach { MockBms.updateFromRealtime(RealtimeDecoder.decode(it.data)) }
     }
@@ -206,9 +208,20 @@ private fun paramItem(name: String): io.github.lswlc33.maibms.data.ParamItem {
     )
 }
 
+/**
+ * 卡3 背景进度条：固定配一套 1/2/3kW 阶梯并确保开启——否则卡面只有「双击关闭」提示、
+ * 验收看不到换挡形态；空态截图（SHOT_SEED=0）也要能看出未连接时的中性灰格子。
+ * 只在截图进程内存里改（ShotMain 不注入落盘 store），不影响桌面端真实偏好。
+ */
+private fun seedGaugePrefs() {
+    io.github.lswlc33.maibms.data.AppStore.powerStagesW = listOf(1000, 2000, 3000)
+    io.github.lswlc33.maibms.data.AppStore.powerGaugeEnabled = true
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 private fun shoot(shot: Shot, outDir: File) {
     if (withData) runCatching { seedUi() }.onFailure { println("seed failed: $it") }
+    seedGaugePrefs()
     shot.prelude()
     val scene = ImageComposeScene(
         width = (shotW * DENSITY).toInt(),

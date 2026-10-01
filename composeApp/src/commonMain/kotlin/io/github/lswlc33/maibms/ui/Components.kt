@@ -441,14 +441,15 @@ private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = 
     }
 }
 
-/* ---------- 卡3：电流/功率（换挡进度条）+ 其余指标网格 ---------- */
+/* ---------- 卡3：电流/功率（背景换挡进度条） ---------- */
 
 data class Metric(val label: String, val value: String, val unit: String)
 
 /**
- * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下，
- * 功率下方保留变速箱式换挡进度条（设 N 个阶梯串 N 条轨道，走满一条进下一条）。
- * **双击卡片**开/关进度条（Toast 提示开/关成功）；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
+ * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下。
+ * 进度条即**卡片背景本身**：按功率阶梯把卡面竖切成 1~3 个档位格（格宽=各档区间占比），
+ * 功率在所在档的格子里从左往右推进、走满进下一格，末档蓝=红区；底行给当前功率/顶格与档位。
+ * **双击卡片**开/关（Toast 提示开/关成功）；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
  * 其余指标（总压/循环/平均/最高/最低/压差）已由别的卡片展示，这里不再重复。
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -464,7 +465,7 @@ fun MetricGridCard(
     var editing by remember { mutableStateOf(false) }
     // 双击开关进度条（用户要求双击 + 开关提示）；长按设阶梯。
     // combinedClickable 的双击重载要求同时给 onClick（给空实现，单击不占任何行为）
-    val gaugeClickable = Modifier.combinedClickable(
+    val cardClickable = Modifier.combinedClickable(
         onClick = {},
         onDoubleClick = {
             gaugeOn = !gaugeOn
@@ -473,30 +474,45 @@ fun MetricGridCard(
         },
         onLongClick = { editing = true },
     )
+    /** 背景进度条是否在画：关了或没设阶梯都不占背景（只留读数） */
+    val bgOn = gaugeOn && stages.isNotEmpty()
+    // 进度条作底时文字换用 onSurface 系：onSurfaceVariant 的灰在色块上对比度不足
+    val labelColor = if (bgOn) MaterialTheme.colorScheme.onSurface.copy(alpha = .72f)
+                     else MaterialTheme.colorScheme.onSurfaceVariant
 
-    SectionCard(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            val current = metrics.firstOrNull { it.label == "电流" }
-            val power = metrics.firstOrNull { it.label == "功率" }
-            Row(
-                modifier = Modifier.fillMaxWidth().then(gaugeClickable).padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
+    Column(
+        modifier.fillMaxWidth().clip(CardShape)
+            .background(MaterialTheme.colorScheme.surface)   // 档位格之间的分档缝就是这层底
+            .then(cardClickable)
+    ) {
+        Box(Modifier.fillMaxWidth()) {
+            if (bgOn) PowerGaugeBackground(powerW, stages, hasData, Modifier.matchParentSize())
+            Column(
+                Modifier.fillMaxWidth().padding(CardPadding),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                CenterMetric(current, Modifier.weight(1f))
-                // 中缝细分隔线：两块读数各占一半
-                Box(Modifier.width(1.dp).height(34.dp)
-                    .clip(RoundedCornerShape(1.dp))
-                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)))
-                CenterMetric(power, Modifier.weight(1f))
-            }
-            if (gaugeOn && powerW != null && stages.isNotEmpty()) {
-                PowerGauge(powerW, stages, hasData)
-            } else if (gaugeOn && stages.isEmpty()) {
-                Text(
-                    "双击卡片可关闭 · 长按设置功率阶梯",
-                    fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth().then(gaugeClickable), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
+                val current = metrics.firstOrNull { it.label == "电流" }
+                val power = metrics.firstOrNull { it.label == "功率" }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CenterMetric(current, labelColor, Modifier.weight(1f))
+                    // 中缝细分隔线：两块读数各占一半
+                    Box(Modifier.width(1.dp).height(34.dp)
+                        .clip(RoundedCornerShape(1.dp))
+                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)))
+                    CenterMetric(power, labelColor, Modifier.weight(1f))
+                }
+                if (bgOn) {
+                    PowerGaugeCaption(powerW, stages, hasData, labelColor)
+                } else if (gaugeOn) {
+                    Text(
+                        "双击卡片可关闭 · 长按设置功率阶梯",
+                        fontSize = 9.sp, color = labelColor,
+                        modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
             }
         }
     }
@@ -512,68 +528,75 @@ fun MetricGridCard(
     }
 }
 
-/** 居中大读数（卡3 用）：label 小字加粗居上，数值大字居中在下 */
+/** 居中大读数（卡3 用）：label 小字加粗居上，数值大字居中在下；大字固定 onSurface（色块上仍够对比） */
 @Composable
-private fun CenterMetric(m: Metric?, modifier: Modifier = Modifier) {
+private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         if (m == null) {
-            Text("--", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("--", fontSize = 10.sp, color = labelColor)
             return@Column
         }
-        Text(m.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(m.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor)
         Row(verticalAlignment = Alignment.Bottom) {
             Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                  color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-            Text(m.unit, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Text(m.unit, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor,
                  modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
         }
     }
 }
 
-/** 变速箱式功率条：每档一条圆角轨道，走满进下一档；未连接时整组淡显。 */
+/**
+ * 全卡背景进度条（换挡制）：把卡面竖切成 stages.size 个档位格，格宽 = 该档区间（上限差）
+ * 占比，格与格的 3dp 缝就是分档刻线；每格在自己的区间内从左往右填充，末档（红区）用图表蓝。
+ * 未连接/无数据整组中性灰——空态别看着像低电/告警。
+ */
 @Composable
-private fun PowerGauge(powerW: Int, stages: List<Int>, hasData: Boolean) {
-    val total = stages.sum()
-    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        var acc = 0
+private fun PowerGaugeBackground(powerW: Int?, stages: List<Int>, hasData: Boolean, modifier: Modifier = Modifier) {
+    val dark = isDarkScheme()
+    val fracs = if (hasData && powerW != null) powerGaugeFracs(powerW, stages)
+                else List(stages.size) { 0f }
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+        var prev = 0
         stages.forEachIndexed { i, cap ->
-            val start = acc; acc += cap
-            // 本档进度：未进档=0，已走过=1，正在本档内=比例
-            val frac = when {
-                !hasData -> 0f
-                powerW >= acc -> 1f
-                powerW <= start -> 0f
-                else -> (powerW - start).toFloat() / cap
+            val width = (cap - prev).coerceAtLeast(1); prev = cap
+            val base = when {
+                !hasData -> BmsColors.OffGray
+                i == stages.lastIndex -> BmsColors.ChartBlue
+                else -> BmsColors.GreenFill
             }
-            Box(Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(99.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)) {
+            Box(
+                Modifier.weight(width.toFloat()).fillMaxHeight()
+                    .background(base.copy(alpha = if (dark) .22f else .18f))   // 轨道=同色淡底
+            ) {
+                val frac = fracs.getOrElse(i) { 0f }
                 if (frac > 0f) Box(
                     Modifier.fillMaxHeight().fillMaxWidth(frac.coerceIn(0f, 1f))
-                        .clip(RoundedCornerShape(99.dp))
-                        .background(if (i == stages.lastIndex) BmsColors.ChartBlue else BmsColors.Primary)
+                        .background(base.copy(alpha = if (dark) .92f else 1f))
                 )
             }
-        }
-        Row {
-            Text(
-                (if (hasData) "${powerW.coerceAtLeast(0)} W" else "-- W") + " / 共 ${total} W",
-                fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.weight(1f))
-            // 当前档位提示（负功率=充电不计量，显示待机）
-            val gearNo = if (!hasData || powerW < 0) null
-                         else stages.indexOfFirst { powerW < it }.let { if (it < 0) stages.size else it + 1 }
-            Text(
-                if (gearNo == null) "待机" else "挡位 $gearNo/${stages.size}",
-                fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
 
-/** 功率阶梯设置弹窗：3 个输入位，第 1 档必填，2/3 档留空即不设；非空必须为正整数 */
+/** 进度条底行：当前功率/顶格功率 + 当前档位；负功率=充电不计量，未连接/无数据也显示待机 */
+@Composable
+private fun PowerGaugeCaption(powerW: Int?, stages: List<Int>, hasData: Boolean, color: Color) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            (if (hasData && powerW != null) "${powerW.coerceAtLeast(0)} W" else "-- W") + " / 最高 ${stages.last()} W",
+            fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = color,
+        )
+        Spacer(Modifier.weight(1f))
+        val gearNo = if (!hasData || powerW == null || powerW < 0) null else powerGearNo(powerW, stages)
+        Text(
+            if (gearNo == null) "待机" else "挡位 $gearNo/${stages.size}",
+            fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = color,
+        )
+    }
+}
+
+/** 功率阶梯设置弹窗：3 个输入位放各档的**上限**（W），第 1 档必填，2/3 档留空即不设；非空必须为正整数 */
 @Composable
 private fun PowerStageDialog(
     initial: List<Int>,
@@ -595,7 +618,7 @@ private fun PowerStageDialog(
         }
         return out
     }
-    val fields = listOf("第 1 档（W）" to s1, "第 2 档（W，可选）" to s2, "第 3 档（W，可选）" to s3)
+    val fields = listOf("第 1 档上限（W）" to s1, "第 2 档上限（W，可选）" to s2, "第 3 档上限（W，可选）" to s3)
     val setters = listOf<(String) -> Unit>(
         { s1 = it; error = null }, { s2 = it; error = null }, { s3 = it; error = null },
     )
@@ -605,8 +628,8 @@ private fun PowerStageDialog(
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
             Text("功率阶梯（换挡进度条）", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-            Text("第 1 档必填，后两档可留空；功率走满一档再进下一档", fontSize = 10.5.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            Text("每个数字是该档上限（W）：功率升到上限就换下一档。第 1 档必填，后两档可留空（如 1000/2000/3000）",
+                fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
             fields.forEachIndexed { i, (label, value) ->
                 OutlinedTextField(
                     value = value,
@@ -625,7 +648,7 @@ private fun PowerStageDialog(
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = {
                     val v = parsed()
-                    if (v == null) error = "第 1 档必填且所有填写的档位须为正整数（W）"
+                    if (v == null) error = "第 1 档必填，且填写的档位都须为正整数（W）"
                     else onConfirm(v)
                 }) { Text("确定", fontWeight = FontWeight.Bold) }
             }

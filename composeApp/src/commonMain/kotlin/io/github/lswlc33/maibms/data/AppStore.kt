@@ -156,14 +156,15 @@ object AppStore {
         set(v) = put(KEY_POWER_GAUGE, if (v) "1" else "0")
 
     /**
-     * 功率阶梯（W），逗号分隔，1~3 个：第一个必填，后两个可选；不填 = 不设阶梯。
-     * 形似变速箱换挡：功率走满第 1 档后进入第 2 档，以此类推。读取时强制升序，
-     * 保证换挡进度条的数学与输入顺序无关。
+     * 功率阶梯（W），逗号分隔，1~3 个，每个数是**该档的上限**（第 1 档必填，后两个可选；
+     * 不填 = 不设阶梯）。形似变速箱换挡：功率升到第 1 档上限换第 2 档，以此类推。
+     * 读取时过滤非正数、去重、强制升序：换挡进度条的数学与输入顺序/重复输入无关
+     * （重复值会画出 0 宽度的档位格）。
      */
     var powerStagesW: List<Int>
         get() = get(KEY_POWER_STAGES)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
-            ?.filter { it > 0 }?.sorted()?.take(3) ?: emptyList()
-        set(v) = put(KEY_POWER_STAGES, v.filter { it > 0 }.take(3).joinToString(",").ifBlank { null })
+            ?.filter { it > 0 }?.distinct()?.sorted()?.take(3) ?: emptyList()
+        set(v) = put(KEY_POWER_STAGES, v.filter { it > 0 }.distinct().take(3).joinToString(",").ifBlank { null })
 
     private const val KEY_POWER_GAUGE = "ui.powerGauge"
     private const val KEY_POWER_STAGES = "ui.powerStagesW"
