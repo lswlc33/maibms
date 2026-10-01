@@ -64,6 +64,7 @@ fun DashboardScreen(
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
     val previewing by repo.previewActive.collectAsState()
     val previewLabel by repo.previewLabel.collectAsState()
+    val scope = rememberCoroutineScope()
     /** 权限不够时点控制按钮的一次性说明（点掉即清） */
     var permDenied by remember { mutableStateOf<String?>(null) }
 
@@ -89,7 +90,10 @@ fun DashboardScreen(
                 }
             }
             // 卡1：电池大卡置顶固定（用户要求：始终显示，不随列表滚动）
-            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp)) {
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 BatteryCard(
                     status = status,
                     connLabel = when {
@@ -103,8 +107,12 @@ fun DashboardScreen(
                 )
                 // 链路状态横幅也跟着固定：它是卡1状态的直接延续，不该滚走
                 when {
-                    previewing ->
-                        InfoBanner("正在预览快照 · ${previewLabel ?: ""} · 自动连接已停用，重启应用恢复", kind = "info")
+                    previewing -> InfoBanner(
+                        "正在预览快照 · ${previewLabel ?: ""} · 自动连接已停用，重启应用恢复",
+                        kind = "info",
+                        action = "退出快照",
+                        onAction = { scope.launch { repo.exitPreview() } },
+                    )
                     manual && !status.connected ->
                         InfoBanner("已断开连接 · 点右上角「＋」重新选择设备", kind = "info")
                     linkDown && connectHint != null -> InfoBanner(connectHint!!, kind = "warn")

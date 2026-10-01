@@ -79,6 +79,18 @@ class BmsRepository(
         MockBms.restoreSnapshot(s)
     }
 
+    /**
+     * 退出快照预览：清掉预览态回到未连接空态。自动连接依旧停用（与进入预览时的承诺一致，
+     * 重启才恢复）；恢复连接走界面右上角「＋」或历史设备，跟普通未连接一个路径。
+     */
+    suspend fun exitPreview() {
+        if (!previewActive.value) return
+        BmsLog.i("SNAP", "退出快照预览，回到未连接空态")
+        previewActive.value = false   // 先撤防护再清数据，顺序与 enterPreview 相反
+        previewLabel.value = null
+        MockBms.clearForRealDevice()
+    }
+
     /** 当前平台能否真机扫描（桌面端 / 演示模式为 false） */
     val canScan: Boolean get() = realTransport?.supportsScan == true
 

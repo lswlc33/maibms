@@ -151,11 +151,13 @@ object MockBms {
     /**
      * 切到真机前清空上一台设备的数据：设备身份/版本来自参数区（0x02 的 528/620/636），
      * 趋势曲线目前只有 Mock 会生成——留着上一条假曲线会让人把假数据当真数据。
+     * 退出快照预览也走这里：连预览里回填的设备名一起清，否则大卡仍显示快照设备。
      */
     fun clearForRealDevice() {
         liveParams.value = emptyMap()
         identity.value = emptyMap()
         paramsFromCache.value = false   // 会话数据已清空，「缓存」标记自然也不成立
+        connectedDeviceName.value = null
         clearTrend()
         _status.value = BmsStatus(
             deviceName = "--", runtime = "--", swVersion = "--", hwVersion = "--",
