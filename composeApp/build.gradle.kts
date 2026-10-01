@@ -40,6 +40,8 @@ kotlin {
     }
     jvm("desktop")
 
+    // 把 versionName/versionCode 注入 BuildConfig，应用内「关于/检查更新」读取
+    // （Release 工作流自增 versionName 后，这里与代码不用再同步）
     sourceSets {
         val commonMain by getting {
             dependencies {
@@ -76,8 +78,16 @@ android {
         applicationId = "io.github.lswlc33.maibms"
         minSdk = 26
         targetSdk = 35
+        // CI 的 Release 工作流按「文件里第一处 versionCode/versionName」grep 自增——
+        // 保持数字字面量写法，别改成变量引用（会打断自动发版）
         versionCode = 2
         versionName = "0.1.1"
+        // 供给应用内「关于/检查更新」读取（commonMain 无法直接读 android.defaultConfig）
+        buildConfigField("String", "APP_VERSION_NAME", "\"$versionName\"")
+        buildConfigField("int", "APP_VERSION_CODE", "$versionCode")
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -129,4 +139,31 @@ tasks.register<JavaExec>("shot") {
     mainClass.set("io.github.lswlc33.maibms.ShotMainKt")
     classpath = files(desktopMainCompilation.output.allOutputs, desktopMainCompilation.runtimeDependencyFiles)
     args = listOf(layout.buildDirectory.dir("shots").get().asFile.absolutePath)
+}
+
+// 桌面端没有 AGP 的 BuildConfig：生成一个 Version.kt，让 AppVersion.actual 与 Android 同源。
+// 版本值从上面 defaultConfig 的字面量解析（grep 同款正则），避免两处手改不同步
+val desktopVersionName = file("build.gradle.kts").readText()
+    .let { Regex("versionName = \"([^\"]*)\"").find(it)!!.groupValues[1] }
+val desktopVersionCode = file("build.gradle.kts").readText()
+    .let { Regex("versionCode = ([0-9]+)").find(it)!!.groupValues[1].toInt() }
+val generateDesktopVersion by tasks.registering {
+    val outDir = layout.buildDirectory.dir("generated/desktopVersion")
+    outputs.dir(outDir)
+    doLast {
+        val dir = outDir.get().asFile.resolve("io/github/lswlc33/maibms/data")
+        dir.mkdirs()
+        dir.resolve("Version.kt").writeText(
+            """
+            |package io.github.lswlc33.maibms.data
+            |
+            |internal const val DESKTOP_VERSION_NAME = "$desktopVersionName"
+            |internal const val DESKTOP_VERSION_CODE = $desktopVersionCode
+            """.trimMargin()
+        )
+    }
+}
+kotlin.sourceSets.getByName("desktopMain") { kotlin.srcDir(generateDesktopVersion.map { it.outputs.files.first() }) }
+tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.configureEach {
+    dependsOn(generateDesktopVersion)
 }

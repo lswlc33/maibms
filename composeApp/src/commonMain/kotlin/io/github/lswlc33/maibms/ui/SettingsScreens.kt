@@ -130,6 +130,65 @@ fun SettingsHomeScreen(
             SettingRow(title = "蓝牙名称", inlineValue = (bleName ?: status.deviceName).trim())
             SettingRow(title = "蓝牙地址", inlineValue = MockBms.savedAddress ?: "--")
         }
+        AboutAppCard()
+    }
+}
+
+/** 设置页结尾的「关于本软件」卡：仓库地址 / 应用版本 / 检查更新（GitHub → 国内镜像回退） */
+@Composable
+private fun AboutAppCard() {
+    val scope = rememberCoroutineScope()
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+    var checking by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<io.github.lswlc33.maibms.data.UpdateChecker.Result?>(null) }
+
+    SectionCard {
+        SectionHeader("关于本软件", tail = "MIT · 开源")
+        SettingRow(
+            title = "项目仓库",
+            inlineValue = "GitHub · lswlc33/maibms",
+            trailing = { Chevron() },
+            onClick = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL) } },
+        )
+        SettingRow(title = "当前版本", inlineValue = io.github.lswlc33.maibms.data.AppVersion.name)
+        SettingRow(
+            title = "检查更新",
+            inlineValue = when (val r = result) {
+                null -> null
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.UpToDate -> "已是最新"
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update -> "发现新版 v${r.latest}"
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> "检查失败"
+            },
+            trailing = {
+                if (checking) Text("检查中…", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                else Chevron()
+            },
+            onClick = {
+                if (!checking) {
+                    checking = true; result = null
+                    scope.launch {
+                        result = io.github.lswlc33.maibms.data.UpdateChecker.check()
+                        checking = false
+                    }
+                }
+            },
+        )
+        when (val r = result) {
+            is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update -> InfoBanner(
+                "发现新版本 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 点这里去下载",
+                kind = "info",
+                action = "去下载",
+                onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
+            )
+            is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> InfoBanner(
+                "更新检查失败（网络不可达或被拦截）· 可直接到仓库 Releases 页查看",
+                kind = "warn",
+                action = "去 Releases",
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases") } },
+            )
+            else -> {}
+        }
+        InfoBanner("应用只与保护板通信；检查更新时仅访问 GitHub/镜像的公开接口", kind = "info", action = "了解")
     }
 }
 

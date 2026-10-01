@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- 检查更新（GitHub Releases，走国内镜像回退）：仅读公开 API，不采集不发送任何数据 -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <!-- 蓝牙权限：API 31+ 用 BLUETOOTH_SCAN/CONNECT；≤30 用旧权限 + 定位 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
