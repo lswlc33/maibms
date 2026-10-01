@@ -148,6 +148,21 @@ object AppStore {
         get() = get(KEY_THEME) ?: "system"
         set(v) = put(KEY_THEME, v)
 
+    // ---- 开发者日志偏好（BmsLog 启动时读回，设置页修改即落盘） ----
+
+    /** 帧级日志（TX/RX 报文）开关 */
+    var logFrameOn: Boolean
+        get() = get(KEY_LOG_FRAME) == "1"
+        set(v) = put(KEY_LOG_FRAME, if (v) "1" else "0")
+
+    /** 最低显示级别："D" / "I" / "W" / "E"（非法值回退 INFO） */
+    var logMinLevel: String
+        get() = get(KEY_LOG_LEVEL) ?: "I"
+        set(v) = put(KEY_LOG_LEVEL, v)
+
+    private const val KEY_LOG_FRAME = "log.frameOn"
+    private const val KEY_LOG_LEVEL = "log.minLevel"
+
     // ---- 功率换挡进度条（仪表盘卡3，纯展示的情绪价值） ----
 
     /** 换挡进度条开关（点击卡3切换，默认开） */

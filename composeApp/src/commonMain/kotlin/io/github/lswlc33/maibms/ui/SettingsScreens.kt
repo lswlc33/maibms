@@ -473,8 +473,8 @@ fun DeveloperScreen(onBack: () -> Unit) {
             SettingRow(
                 title = "帧级日志（TX/RX 报文）",
                 inlineValue = if (logOn) "开启" else "关闭",
-                trailing = { AppSwitch(logOn) { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = it } },
-                onClick = { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = !logOn },
+                trailing = { AppSwitch(logOn) { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = it; AppStore.logFrameOn = it } },
+                onClick = { val v = !logOn; io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = v; AppStore.logFrameOn = v },
             )
             SettingRow(
                 title = "显示级别",
@@ -499,6 +499,7 @@ fun DeveloperScreen(onBack: () -> Unit) {
                             text = { Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface) },
                             onClick = {
                                 io.github.lswlc33.maibms.data.BmsLog.minLevel.value = lv
+                                AppStore.logMinLevel = lv.name.first().toString()
                                 levelMenu = false
                             },
                         )
@@ -566,10 +567,11 @@ fun DeveloperScreen(onBack: () -> Unit) {
                 )
             }
             shown.forEach { e ->
-                val sec = e.atMs / 1000
-                val ms = e.atMs % 1000
+                // 墙钟时间：日志跨会话保留（按天文件、最多 3 天），相对毫秒已无法对齐两次启动
+                val clock = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
+                    .format(java.util.Date(e.atMs))
                 Text(
-                    "%02d:%02d:%02d.%03d".format(sec / 3600, sec % 3600 / 60, sec % 60, ms) + " " + e.render(),
+                    "$clock " + e.render(),
                     fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,
                     color = levelColor(e.level),
                     modifier = Modifier.padding(vertical = 1.dp)

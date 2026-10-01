@@ -8,6 +8,7 @@ import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.KeyValueStore
 import io.github.lswlc33.maibms.transport.AndroidBleTransport
 import io.github.lswlc33.maibms.transport.canAutoConnect
+import java.io.File
 
 /** 进程级 ApplicationContext：权限检查与 Toast 都要用（由 [MaibmsApp] 注入） */
 object AndroidApp {
@@ -33,6 +34,18 @@ class MaibmsApp : Application() {
                 sp.edit().apply { if (value == null) remove(key) else putString(key, value) }.apply()
             }
         }
+        runCatching {
+            // 日志落盘：外部存储应用私有目录（用户可从文件管理器查看，卸载才删），
+            // 启动即读回上次运行的日志（按天文件，只留最近 3 天）
+            io.github.lswlc33.maibms.data.LogFileStore.dir =
+                File(getExternalFilesDir(null), "maibms/logs")
+            io.github.lswlc33.maibms.data.BmsLog.restore()
+            // 上次选择的日志级别与帧级开关也一起恢复（与设置页写入的 AppStore 对应）
+            io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = AppStore.logFrameOn
+            io.github.lswlc33.maibms.data.BmsLog.minLevel.value =
+                io.github.lswlc33.maibms.data.BmsLog.Level.entries.firstOrNull { it.tag == AppStore.logMinLevel }
+                    ?: io.github.lswlc33.maibms.data.BmsLog.Level.INFO
+        }.onFailure { println("[ANTBMS/APP] E 日志文件初始化失败：$it") }
         runCatching {
             Bms.repository.setRealTransport(AndroidBleTransport(applicationContext))
         }.onFailure { BmsLog.e("APP", "BLE 传输初始化失败：$it") }
