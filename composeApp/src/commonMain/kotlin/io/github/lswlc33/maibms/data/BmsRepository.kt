@@ -53,6 +53,29 @@ class BmsRepository(
     /** 用户主动断开（区别于掉线）：置位后不再自动重连，界面也不再显示「正在重连」 */
     val manualDisconnect = MutableStateFlow(false)
 
+    // ---- 快照预览模式：载入快照后置位，进程存活期间不解除（重启后自动连接按原状态恢复） ----
+
+    /** 预览激活中：连接/轮询/帧回灌全部被挡（见 connect/start 的防护口） */
+    val previewActive = MutableStateFlow(false)
+
+    /** 预览中的快照标签（设备名 · 记录时刻），横幅展示用 */
+    val previewLabel = MutableStateFlow<String?>(null)
+
+    /** 本会话已记录的快照 id；0 = 本次连接还没记过（同会话重读参数时覆盖同一张） */
+    private var sessionSnapshotId = 0L
+
+    /** 载入快照进入预览：停连接、停轮询，之后任何帧都进不来（防护口见各挂点） */
+    suspend fun enterPreview(s: BmsSnapshot) {
+        BmsLog.i("SNAP", "进入快照预览：${s.deviceName}（${s.timeLabel}），自动连接停用直到重启")
+        previewActive.value = true   // 先置位再动手，挡住断开过程中的一切回灌
+        previewLabel.value = s.deviceName.ifBlank { null }?.let { "$it · ${s.timeLabel}" } ?: s.timeLabel
+        pollJob?.cancel(); pollJob = null
+        transport.disconnect()
+        manualDisconnect.value = true
+        // 刻意不写 AppStore.autoReconnect=false：重启后要不要自动连回设备，按用户原来的开关状态来
+        MockBms.restoreSnapshot(s)
+    }
+
     /** 当前平台能否真机扫描（桌面端 / 演示模式为 false） */
     val canScan: Boolean get() = realTransport?.supportsScan == true
 
@@ -78,14 +101,23 @@ class BmsRepository(
     fun start() {
         if (collectorJob != null) return
         BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
-        // 冷启动：恢复记忆设备并自动重连（设备地址 + 密码库都落在本地）
+        // 自动重连目标：历史列表里显式指定的设备优先，否则默认上次连接；
+        // 被指定的设备若已从历史删除，回退到上次连接
+        val target = AppStore.autoConnectAddress
+            ?.takeIf { addr -> DeviceProfiles.all().any { it.address == addr } }
+            ?: AppStore.savedAddress
+        // 冷启动：恢复记忆设备并自动重连（设备档案 + 密码库都落在本地）
         val saved = AppStore.savedAddress
-        MockBms.savedAddress = saved
-        MockBms.connectedDeviceName.value = AppStore.savedDeviceName
-        restorePasswords(saved)
+        MockBms.savedAddress = target
+        val targetProfile = DeviceProfiles.find(target)
+        MockBms.connectedDeviceName.value = targetProfile?.displayName ?: AppStore.savedDeviceName
+        restorePasswords(target)
         MockBms.autoUpgradeLevel.value = AppStore.autoUpgradeTarget
         MockBms.usingRealBle.value = realTransport != null
-        if (saved != null) BmsLog.i("APP", "记忆设备：${AppStore.savedDeviceName ?: "未命名"} ($saved)")
+        if (target != null) {
+            BmsLog.i("APP", "记忆设备：${targetProfile?.displayName ?: AppStore.savedDeviceName ?: "未命名"} ($target)" +
+                if (AppStore.autoConnectAddress != null && AppStore.autoConnectAddress != saved) "（指定的重连目标）" else "")
+        }
         if (realTransport == null) {
             // 桌面端等没有 BLE 后端的环境：停在这里，界面显示「未连接」
             BmsLog.w("APP", "当前平台无 BLE 后端，等待扫描/连接动作")
@@ -96,16 +128,21 @@ class BmsRepository(
             real.linkState.collect { st ->
                 _linkState.value = st
                 if (st == LinkState.Connected) {
+                    // 建链成功即刷新档案的最近连接时间（扫描直连与自动重连都会走到这里）
+                    DeviceProfiles.touch(MockBms.savedAddress)
                     autoUpgradePermission()
                 } else {
                     // 掉线后自动重连回来时要重新升权：不清标志的话重连后权限停在 0 级
                     if (st == LinkState.Disconnected || st == LinkState.Idle) autoUpgraded = false
-                    MockBms.markDisconnected()
+                    // 预览中不抹状态：markDisconnected 会把快照的 battState 改成「等待数据…」
+                    if (!previewActive.value) MockBms.markDisconnected()
                 }
             }
         }
         scope.launch {
             real.incoming.collect { bytes ->
+                // 预览中丢弃一切残余帧：断开瞬间在途的报文不得覆盖快照数据
+                if (previewActive.value) return@collect
                 for (f in parser.feed(bytes)) handleFrame(f)
             }
         }
@@ -113,7 +150,7 @@ class BmsRepository(
             real.connectHint.collect { _connectHint.value = it }
         }
         // 用户上次是主动断开的话，就别自作主张再连上（但记忆设备仍然保留）
-        if (saved != null && AppStore.autoReconnect) scope.launch { connect(saved) }
+        if (target != null && AppStore.autoReconnect && !previewActive.value) scope.launch { connect(target) }
     }
 
     /** 从本地密码库恢复该设备的已记住密码等级（按设备地址分槽） */
@@ -165,9 +202,30 @@ class BmsRepository(
     private fun resetSessionState() {
         autoUpgraded = false
         paramsAttempted = false
+        sessionSnapshotId = 0L   // 新连接 = 新快照（旧快照保留在库里，不删）
         MockBms.applyPermission(0)
         MockBms.clearForRealDevice()
     }
+
+    /**
+     * 冻结当前数据为一张快照并落盘（开关关闭/预览中/无数据时不记）。
+     * 同一会话重复记录覆盖同一张：权限升上去后 force 重读的参数区更全，替换掉先前的残缺版。
+     */
+    private fun recordSnapshot() {
+        if (!AppStore.snapshotEnabled || previewActive.value) return
+        val status = MockBms.status.value
+        if (!status.hasData) return
+        val id = if (sessionSnapshotId != 0L) sessionSnapshotId else System.currentTimeMillis()
+        sessionSnapshotId = id
+        val snap = MockBms.captureSnapshot(id, timeLabel(System.currentTimeMillis()))
+        runCatching { AppStore.saveSnapshotJson(id, SnapshotCodec.encode(snap)) }
+            .onSuccess { BmsLog.i("SNAP", "已记录快照：${snap.deviceName}（${snap.timeLabel}），参数 ${snap.liveParams.size} 项") }
+            .onFailure { BmsLog.e("SNAP", "快照写入失败：$it") }
+    }
+
+    /** 记录时刻的可读标签（两目标都是 JVM，直接用 SimpleDateFormat） */
+    private fun timeLabel(epochMs: Long): String =
+        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(epochMs))
 
     /** 扫描附近的真实 BMS */
     suspend fun startScan() {
@@ -214,20 +272,56 @@ class BmsRepository(
         realTransport?.stopScan()
     }
 
-    /** 连接指定设备（按下即记住地址，供下次自动重连） */
+    /**
+     * 连接指定设备（扫描列表或历史快速连接入口）。
+     * 名称解析：先看本轮扫描结果，扫不到（如直接从历史列表回连）用档案里的显示名；
+     * 同时把设备写进历史档案（新设备在此自动入列，已有设备刷新最近连接时间）。
+     */
     suspend fun connectTo(address: String) {
         val name = _scanResults.value.firstOrNull { it.address == address }?.name?.trim()
+            ?: DeviceProfiles.find(address)?.displayName
         BmsLog.i("CONN", "选择设备 $name ($address)")
         MockBms.savedAddress = address
         MockBms.connectedDeviceName.value = name
         AppStore.savedAddress = address
-        AppStore.savedDeviceName = name
+        if (name != null) AppStore.savedDeviceName = name
+        val prev = DeviceProfiles.find(address)
+        DeviceProfiles.upsert(DeviceProfile(
+            address = address,
+            name = name ?: prev?.name.orEmpty(),
+            alias = prev?.alias,
+            lastConnectedAt = System.currentTimeMillis(),
+            passwords = prev?.passwords ?: emptyMap(),
+        ))
         restorePasswords(address)
         stopScan()
         connect(address)
     }
 
+    /**
+     * 删除历史设备：档案连同其全部密码一并移除，名下的数据快照级联删除；
+     * 若它是显式指定的自动重连目标，清除指定并回退「上次连接」；
+     * 若它就是上次连接的设备（savedAddress），一并忘记——否则重启还会对它无密码自动重连。
+     */
+    fun deleteDevice(address: String) {
+        val p = DeviceProfiles.find(address)
+        DeviceProfiles.remove(address)
+        AppStore.deleteSnapshotsForDevice(address)
+        if (AppStore.autoConnectAddress == address) AppStore.autoConnectAddress = null
+        if (AppStore.savedAddress == address) {
+            AppStore.savedAddress = null
+            AppStore.savedDeviceName = null
+        }
+        BmsLog.i("DEV", "已删除历史设备 ${p?.displayName ?: address}（密码 ${p?.passwords?.size ?: 0} 级与快照一并清除）")
+    }
+
     suspend fun connect(address: String? = null) {
+        // 预览保护口：快照一旦载入，本进程内不再发起任何连接（含扫描列表手动连）
+        if (previewActive.value) {
+            BmsLog.w("CONN", "快照预览中，连接请求被忽略（重启应用后才能重新连接）")
+            _connectHint.value = "正在预览快照，自动连接已停用（重启应用恢复）"
+            return
+        }
         BmsLog.i("CONN", "发起连接" + (address?.let { " → $it" } ?: "") + if (AppStore.autoReconnect) "（自动重连）" else "（手动）")
         manualDisconnect.value = false
         AppStore.autoReconnect = true
@@ -265,6 +359,9 @@ class BmsRepository(
     }
 
     suspend fun disconnect() {
+        // 兜底快照：本会话见过实时数据但参数区一直没读成（如权限卡在 0 级），
+        // 趁状态还在先补一张仅实时帧的快照，别让这次连接什么都不留
+        if (lastFrameAt > 0 && sessionSnapshotId == 0L) recordSnapshot()
         BmsLog.i("CONN", "主动断开连接")
         manualDisconnect.value = true
         AppStore.autoReconnect = false   // 记住这次主动断开，重启后不要自动连
@@ -541,6 +638,8 @@ class BmsRepository(
                 }
                 MockBms.identity.value = id
                 BmsLog.i("PARAM", "参数区读回 ${acc.size} 项，身份区 ${id.size} 项")
+                // 全量同步完成：实时帧已在流上、参数区/身份区刚刚落定——此刻冻结快照最全
+                if (acc.isNotEmpty() || id.isNotEmpty()) recordSnapshot()
             } finally {
                 MockBms.paramsReading.value = false
             }

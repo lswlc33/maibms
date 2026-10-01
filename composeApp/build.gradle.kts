@@ -5,6 +5,7 @@ import java.util.Properties
 plugins {
     id("org.jetbrains.kotlin.multiplatform")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.compose")
     id("com.android.application")
 }
@@ -47,6 +48,7 @@ kotlin {
                 implementation(compose.material3)
                 implementation(compose.animation)
                 implementation(compose.components.resources)
+                implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
             }
         }
         val androidMain by getting {

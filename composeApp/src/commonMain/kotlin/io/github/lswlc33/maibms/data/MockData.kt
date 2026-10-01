@@ -2,12 +2,15 @@ package io.github.lswlc33.maibms.data
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.serialization.Serializable
 
 /** 单体电压格 */
+@Serializable
 data class CellV(val index: Int, val volt: Double, val isMax: Boolean = false, val isMin: Boolean = false, val balancing: Boolean = false)
 
 /** 实时数据（全部来自 Mock，模拟 0x11 解码结果） */
-/** 实时数据（全部来自 0x11 解码回填；默认即「未连接」空态，不含任何演示数据） */
+/** 实时数据（全部来自 0x11 解码回填；默认即「未连接」空态，不含任何演示数据）。可整体冻结进快照 */
+@Serializable
 data class BmsStatus(
     val deviceName: String = "--",
     val runtime: String = "--",
@@ -106,6 +109,29 @@ object MockBms {
         if (_status.value.connected) {
             _status.value = _status.value.copy(connected = false, battState = "等待数据…")
         }
+    }
+
+    /** 冻结当前全部数据为一张快照（connected 强制为 false：快照天然离线）。 */
+    fun captureSnapshot(id: Long, timeLabel: String): BmsSnapshot = BmsSnapshot(
+        id = id,
+        deviceAddress = savedAddress,
+        deviceName = connectedDeviceName.value ?: "--",
+        timeLabel = timeLabel,
+        status = _status.value.copy(connected = false),
+        liveParams = liveParams.value,
+        identity = identity.value,
+    )
+
+    /**
+     * 载入快照供预览：回填 status/liveParams/identity/设备名。
+     * 刻意不碰 connected 流与三个控制开关——预览是纯展示态，
+     * 连接标志仍为 false，配置页/控制按钮走既有的「未连接只读」路径。
+     */
+    fun restoreSnapshot(s: BmsSnapshot) {
+        liveParams.value = s.liveParams
+        identity.value = s.identity
+        connectedDeviceName.value = s.deviceName.ifBlank { null }
+        _status.value = s.status
     }
 
     /**

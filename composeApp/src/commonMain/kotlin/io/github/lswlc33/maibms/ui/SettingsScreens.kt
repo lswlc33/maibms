@@ -16,10 +16,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
+import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.MockBms
 import kotlinx.coroutines.launch
 
 /* ---------- S10 设置主页（外观/连接/关于 的设置项平铺在本页，不再进二级页） ---------- */
+
+/** 历史设备入口的摘要：台数 + 生效中的重连目标名 */
+private fun DeviceEntrySummary(): String {
+    val profiles = io.github.lswlc33.maibms.data.DeviceProfiles.all()
+    if (profiles.isEmpty()) return "无"
+    val auto = AppStore.autoConnectAddress
+    val target = auto?.takeIf { addr -> profiles.any { it.address == addr } }
+        ?: AppStore.savedAddress
+    val targetName = profiles.firstOrNull { it.address == target }?.displayName
+    return "${profiles.size} 台 · 重连 " + (targetName ?: "上次连接")
+}
 
 @Composable
 fun SettingsHomeScreen(
@@ -71,10 +83,12 @@ fun SettingsHomeScreen(
                     else -> "未连接"
                 },
             )
-            // 纯信息行：不加 Chevron，免得看着能点却点不动
+            // 历史设备入口：列表/备注/密码/删除/自动重连目标都在二级页管理
             SettingRow(
-                title = "记忆设备",
-                inlineValue = (MockBms.savedAddress?.let { "${MockBms.deviceLabel} · $it" }) ?: "无",
+                title = "历史设备",
+                inlineValue = DeviceEntrySummary(),
+                trailing = { Chevron() },
+                onClick = { onOpen(Route.Devices) },
             )
             SettingRow(title = "重新扫描连接", trailing = { Chevron() }, onClick = onOpenScan)
             if (connected) {
@@ -85,6 +99,15 @@ fun SettingsHomeScreen(
             hint?.let { InfoBanner(it, kind = "warn") }
         }
         SectionCard {
+            SettingRow(
+                title = "快照",
+                inlineValue = if (io.github.lswlc33.maibms.data.Bms.repository.previewActive.value) "预览中" else {
+                    val n = io.github.lswlc33.maibms.data.AppStore.snapshotIds().size
+                    if (n > 0) "$n 张" else null
+                },
+                trailing = { Chevron() },
+                onClick = { onOpen(Route.Snapshots) },
+            )
             SettingRow(
                 title = "权限与密码",
                 inlineValue = if (saved.isEmpty()) "未设置" else "已记住 " + saved.keys.sorted().joinToString("/") + " 级",
@@ -196,16 +219,23 @@ fun PasswordScreen(onBack: () -> Unit) {
         }
         InfoBanner("密码为明文存储，勿共用设备", kind = "err", action = "了解")
     }
-    editing?.let { lv -> PasswordEditDialog(lv, onDismiss = { editing = null }) }
+    editing?.let { lv -> MockBms.savedAddress?.let { addr ->
+        PasswordEditDialog(addr, lv, onDismiss = { editing = null })
+    } }
 }
 
-/** 某一级的密码设置弹窗：保存（连上时顺带校验，成功即升权）/ 清除 */
+/**
+ * 某一级的密码设置弹窗：保存（连上时顺带校验，成功即升权）/ 清除。
+ * @param address 密码归属的历史设备地址；当前连接/记忆设备走会话校验路径，其余设备离线写入档案
+ */
 @Composable
-private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
+internal fun PasswordEditDialog(address: String, level: Int, onDismiss: () -> Unit) {
     val saved by MockBms.plainPasswords.collectAsState()
     val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
-    val existing = saved[level]
+    // 当前会话设备：可向设备校验，明文从会话流取；其他设备：离线写入档案
+    val sessionDevice = address == MockBms.savedAddress
+    val existing = if (sessionDevice) saved[level] else AppStore.loadPassword(address, level)
     // 已记住的直接带出来，省得重打一遍（本机就是明文存的，页脚也声明了）
     var input by remember { mutableStateOf(existing ?: "") }
     var busy by remember { mutableStateOf(false) }
@@ -224,7 +254,8 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
                 fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                "该设备的密码库 · 寄存器 $slot" + if (connected) " · 保存时向设备校验" else " · 未连接，仅存本地",
+                "该设备的密码库 · 寄存器 $slot" +
+                    if (connected && sessionDevice) " · 保存时向设备校验" else " · 离线写入设备档案",
                 fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 4.dp),
             )
@@ -241,7 +272,8 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (existing != null) {
                     TextButton(enabled = !busy, onClick = {
-                        io.github.lswlc33.maibms.data.Bms.repository.forgetPassword(level)
+                        if (sessionDevice) io.github.lswlc33.maibms.data.Bms.repository.forgetPassword(level)
+                        else AppStore.removePassword(address, level)
                         onDismiss()
                     }) { Text("清除", color = BmsColors.BadRed) }
                 }
@@ -259,19 +291,20 @@ private fun PasswordEditDialog(level: Int, onDismiss: () -> Unit) {
                         scope.launch {
                             busy = true
                             val repo = io.github.lswlc33.maibms.data.Bms.repository
-                            if (connected) {
+                            if (connected && sessionDevice) {
                                 // 校验失败不存：错密码留在库里只会让每次连接都白试
                                 val lv = repo.auth(level, pw)
                                 busy = false
                                 if (lv > 0) onDismiss() else error = "密码不正确 · 未保存"
                             } else {
-                                repo.savePassword(level, pw)
+                                if (sessionDevice) repo.savePassword(level, pw)
+                                else AppStore.savePassword(address, level, pw)
                                 busy = false
                                 onDismiss()
                             }
                         }
                     },
-                ) { Text(if (busy) "校验中…" else if (connected) "保存并校验" else "保存") }
+                ) { Text(if (busy) "校验中…" else if (connected && sessionDevice) "保存并校验" else "保存") }
             }
         }
     }

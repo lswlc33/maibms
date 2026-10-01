@@ -3,12 +3,15 @@ package io.github.lswlc33.maibms.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,11 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
 import io.github.lswlc33.maibms.protocol.WriteAccess
@@ -300,16 +305,38 @@ fun BatteryCard(
             )
         }
         // 右缘电池极头已去掉：在扁平进度卡上就是一根莫名其妙的竖条
+        // 左侧：电压大标题（小 desc 紧跟其后）→ 设备名 → 循环 · 运行时间。
+        // 软/硬件版本移到 设置 → 关于（身份区），首页大卡不重复展示
         Row(
             modifier = Modifier.padding(CardPadding).fillMaxWidth().height(IntrinsicSize.Min),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                KvRow("设备名称:", status.deviceName, onFill, onFillLabel)
-                KvRow("运行时间:", status.runtime, onFill, onFillLabel)
-                KvRow("软件版本:", status.swVersion, onFill, onFillLabel)
-                KvRow("硬件版本:", status.hwVersion, onFill, onFillLabel)
-                KvRow("电池类型:", status.batteryType, onFill, onFillLabel)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        if (status.hasData) "%.2f".format(status.totalVoltage) else "--",
+                        fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+                        color = onFill ?: MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        " V · 当前电压",
+                        fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                        color = onFillLabel ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 3.dp, bottom = 5.dp),
+                    )
+                }
+                Text(
+                    status.deviceName,
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                    color = onFill ?: MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+                Text(
+                    "${status.totalCycleAh}Ah 循环 · ${status.runtime}",
+                    fontSize = 10.sp,
+                    color = onFillLabel ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
             }
             Column(
                 Modifier.fillMaxHeight(),
@@ -360,18 +387,6 @@ fun SmallChip(text: String) {
     ) { Text(text, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
 }
 
-@Composable
-private fun KvRow(k: String, v: String, valueColor: Color?, labelColor: Color?) {
-    Row(modifier = Modifier.padding(vertical = 0.dp)) {
-        Text(k, fontSize = 10.5.sp,
-             color = labelColor ?: MaterialTheme.colorScheme.onSurfaceVariant,
-             modifier = Modifier.width(64.dp))
-        Text(v, fontSize = 10.5.sp, fontWeight = FontWeight.Bold,
-             color = valueColor ?: MaterialTheme.colorScheme.onSurface,
-             fontFamily = FontFamily.Monospace, maxLines = 1)
-    }
-}
-
 /* ---------- 卡2：状态 + 容量 ---------- */
 
 @Composable
@@ -418,15 +433,45 @@ private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = 
     }
 }
 
-/* ---------- 卡3：4×2 彩色图标网格 ---------- */
+/* ---------- 卡3：电流/功率（换挡进度条）+ 其余指标网格 ---------- */
 
 data class Metric(val label: String, val value: String, val unit: String)
 
+/**
+ * 卡3：第一行左「电流」右「功率」；功率下方是变速箱式换挡进度条——
+ * 设了 N 个功率阶梯（W）就串 N 条轨道，功率走满一条再进下一条。
+ * 点击卡片开/关进度条；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
+ */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-fun MetricGridCard(metrics: List<Metric>, modifier: Modifier = Modifier) {
+fun MetricGridCard(
+    metrics: List<Metric>,
+    modifier: Modifier = Modifier,
+    powerW: Int? = null,
+    hasData: Boolean = false,
+) {
+    var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
+    var stages by remember { mutableStateOf(AppStore.powerStagesW) }
+    var editing by remember { mutableStateOf(false) }
+    // 点击/长按挂在整行读数上（需求原文「点击本卡片」）：点击开关进度条，长按设阶梯；
+    // 下方的其余指标网格不挂手势，避免滚动误触
+    val gaugeClickable = Modifier.combinedClickable(
+        onClick = { gaugeOn = !gaugeOn; AppStore.powerGaugeEnabled = gaugeOn },
+        onLongClick = { editing = true },
+    )
+
     SectionCard(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            metrics.chunked(4).forEach { row ->
+            val current = metrics.firstOrNull { it.label == "电流" }
+            val power = metrics.firstOrNull { it.label == "功率" }
+            Row(modifier = Modifier.fillMaxWidth().then(gaugeClickable), verticalAlignment = Alignment.CenterVertically) {
+                BigMetric(current, Modifier.weight(1f))
+                BigMetric(power, Modifier.weight(1f))
+            }
+            if (gaugeOn && powerW != null && stages.isNotEmpty()) {
+                PowerGauge(powerW, stages, hasData)
+            }
+            metrics.filter { it.label != "电流" && it.label != "功率" }.chunked(4).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                     row.forEach { m ->
                         Row(
@@ -443,6 +488,132 @@ fun MetricGridCard(metrics: List<Metric>, modifier: Modifier = Modifier) {
                     }
                     repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                 }
+            }
+        }
+    }
+    if (editing) {
+        PowerStageDialog(
+            initial = stages,
+            onDismiss = { editing = false },
+            onConfirm = { v -> stages = v; AppStore.powerStagesW = v; editing = false },
+        )
+    }
+}
+
+/** 大号读数（卡3 第一行用）：label 小字在上，数值大字在下 */
+@Composable
+private fun BigMetric(m: Metric?, modifier: Modifier = Modifier) {
+    if (m == null) { Box(modifier); return }
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Text(m.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.weight(1f))
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text(m.value, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+            Text(m.unit, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.padding(start = 2.dp, bottom = 2.dp))
+        }
+    }
+}
+
+/** 变速箱式功率条：每档一条圆角轨道，走满进下一档；未连接时整组淡显。 */
+@Composable
+private fun PowerGauge(powerW: Int, stages: List<Int>, hasData: Boolean) {
+    val total = stages.sum()
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        var acc = 0
+        stages.forEachIndexed { i, cap ->
+            val start = acc; acc += cap
+            // 本档进度：未进档=0，已走过=1，正在本档内=比例
+            val frac = when {
+                !hasData -> 0f
+                powerW >= acc -> 1f
+                powerW <= start -> 0f
+                else -> (powerW - start).toFloat() / cap
+            }
+            Box(Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(99.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)) {
+                if (frac > 0f) Box(
+                    Modifier.fillMaxHeight().fillMaxWidth(frac.coerceIn(0f, 1f))
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(if (i == stages.lastIndex) BmsColors.ChartBlue else BmsColors.Primary)
+                )
+            }
+        }
+        Row {
+            Text(
+                (if (hasData) "${powerW.coerceAtLeast(0)} W" else "-- W") + " / 共 ${total} W",
+                fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            // 当前档位提示（负功率=充电不计量，显示待机）
+            val gearNo = if (!hasData || powerW < 0) null
+                         else stages.indexOfFirst { powerW < it }.let { if (it < 0) stages.size else it + 1 }
+            Text(
+                if (gearNo == null) "待机" else "挡位 $gearNo/${stages.size}",
+                fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 功率阶梯设置弹窗：3 个输入位，第 1 档必填，2/3 档留空即不设；非空必须为正整数 */
+@Composable
+private fun PowerStageDialog(
+    initial: List<Int>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<Int>) -> Unit,
+) {
+    var s1 by remember { mutableStateOf(initial.getOrNull(0)?.toString() ?: "1000") }
+    var s2 by remember { mutableStateOf(initial.getOrNull(1)?.toString() ?: "") }
+    var s3 by remember { mutableStateOf(initial.getOrNull(2)?.toString() ?: "") }
+    var error by remember { mutableStateOf<String?>(null) }
+    fun parsed(): List<Int>? {
+        val out = mutableListOf<Int>()
+        listOf(s1, s2, s3).forEachIndexed { i, t ->
+            val trimmed = t.trim()
+            if (trimmed.isEmpty()) { if (i == 0) return null; return@forEachIndexed }
+            val v = trimmed.toIntOrNull() ?: return null
+            if (v <= 0) return null
+            out.add(v)
+        }
+        return out
+    }
+    val fields = listOf("第 1 档（W）" to s1, "第 2 档（W，可选）" to s2, "第 3 档（W，可选）" to s3)
+    val setters = listOf<(String) -> Unit>(
+        { s1 = it; error = null }, { s2 = it; error = null }, { s3 = it; error = null },
+    )
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
+        ) {
+            Text("功率阶梯（换挡进度条）", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+            Text("第 1 档必填，后两档可留空；功率走满一档再进下一档", fontSize = 10.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            fields.forEachIndexed { i, (label, value) ->
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { setters[i](it.filter { ch -> ch.isDigit() }.take(6)) },
+                    label = { Text(label, fontSize = 11.sp) },
+                    singleLine = true,
+                    textStyle = TextStyle(
+                        fontFamily = FontFamily.Monospace, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                )
+            }
+            error?.let { Text(it, fontSize = 10.sp, color = BmsColors.BadRed, modifier = Modifier.padding(top = 6.dp)) }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                TextButton(onClick = {
+                    val v = parsed()
+                    if (v == null) error = "第 1 档必填且所有填写的档位须为正整数（W）"
+                    else onConfirm(v)
+                }) { Text("确定", fontWeight = FontWeight.Bold) }
             }
         }
     }
@@ -564,13 +735,18 @@ private fun TempBox(label: String, value: Double?, modifier: Modifier = Modifier
 /* ---------- 单体电压网格 ---------- */
 
 @Composable
-fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier) {
+fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
+                 avgCell: String = "--", deltaCell: String = "--") {
     SectionCard(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
             Text(if (cells.isEmpty()) "单体电压" else "单体电压 × ${cells.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.weight(1f))
             if (cells.isNotEmpty()) {
-                Text("黄=最高 蓝=最低 ●=均衡", fontSize = 8.5.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                // 正经字体 + 语义标注：平均/压差紧跟标题（图例说明见卡片底部的小字）
+                Text(
+                    "平均：${avgCell}V  压差：${deltaCell}V",
+                    fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         if (cells.isEmpty()) {
@@ -587,6 +763,12 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier) {
                 }
             }
         }
+        // 颜色图例移到网格下方小字（原先挤在标题行，换成了平均/压差）
+        Text(
+            "黄=最高 蓝=最低 ●=均衡",
+            fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 3.dp),
+        )
     }
 }
 

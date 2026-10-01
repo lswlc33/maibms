@@ -44,6 +44,8 @@ fun DashboardScreen(
     val ctrlResult by MockBms.lastControlResult.collectAsState()
     val chargeOn by MockBms.chargeSwitch.collectAsState()
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
+    val previewing by repo.previewActive.collectAsState()
+    val previewLabel by repo.previewLabel.collectAsState()
     /** 权限不够时点控制按钮的一次性说明（点掉即清） */
     var permDenied by remember { mutableStateOf<String?>(null) }
 
@@ -73,10 +75,11 @@ fun DashboardScreen(
                     .padding(horizontal = 12.dp).padding(top = 8.dp, bottom = bottomPadding),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 卡1：电池大卡（手动断开时不要写成「重连中」）
+                // 卡1：电池大卡（预览/手动断开时不要写成「重连中」——快照不是实时数据，要诚实标注）
                 BatteryCard(
                     status = status,
                     connLabel = when {
+                        previewing -> "快照预览"
                         manual -> "未连接"
                         status.connected -> "已连接"
                         status.deviceName != "--" -> "重连中"
@@ -84,8 +87,10 @@ fun DashboardScreen(
                     },
                     onPermClick = onOpenPerm,
                 )
-                // 链路状态横幅：手动断开 / 未连接 / 掉线重连 / 失联 分开提示
+                // 链路状态横幅：预览 / 手动断开 / 未连接 / 掉线重连 / 失联 分开提示（预览优先级最高）
                 when {
+                    previewing ->
+                        InfoBanner("正在预览快照 · ${previewLabel ?: ""} · 自动连接已停用，重启应用恢复", kind = "info")
                     manual && !status.connected ->
                         InfoBanner("已断开连接 · 点右上角「＋」重新选择设备", kind = "info")
                     linkDown && connectHint != null -> InfoBanner(connectHint!!, kind = "warn")
@@ -101,13 +106,13 @@ fun DashboardScreen(
                 // 卡3：4×2 图标网格
                 // 断开时保留最后已知值（整屏一致），时效性由上面的横幅声明；
                 // 从未收到数据时 metrics 自身会返回 "--"
-                MetricGridCard(status.metrics())
+                MetricGridCard(status.metrics(), powerW = status.power, hasData = status.hasData)
                 // 保护/告警双卡
                 ProtectAlarmCards(status, onSeeAll = onOpenProtect)
                 // 温度
                 TempCard(status.temps)
                 // 单体电压
-                CellGridCard(status.cells)
+                CellGridCard(status.cells, avgCell = status.avgCell, deltaCell = status.deltaCell)
                 // 趋势 + 控制
                 SectionCard {
                     SectionHeader("趋势 · 近 1 分钟", tail = "— 电流 ─ 电压")
@@ -253,6 +258,28 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                 Text("未发现 ANT 开头的设备。确认保护板已上电、手机蓝牙已打开且在附近。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 6.dp))
+            }
+            // 历史设备快速连接：不用等扫描，点一下直接回连（回连也走扫描不到的等待式建链路径）
+            val history = remember { io.github.lswlc33.maibms.data.DeviceProfiles.all()
+                .sortedByDescending { it.lastConnectedAt } }
+            if (history.isNotEmpty()) {
+                Text("历史设备", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 2.dp))
+                history.forEach { p ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                            .clickable { onConnect(p.address) }
+                            .padding(vertical = 6.dp)
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(p.displayName, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text(p.address, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text("连接 ›", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 6.dp))
             }
             results.forEach { d ->
                 Row(

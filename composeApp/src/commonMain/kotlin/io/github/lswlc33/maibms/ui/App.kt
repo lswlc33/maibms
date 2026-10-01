@@ -42,6 +42,8 @@ sealed class Route(val key: String) {
     data object ControlTools : Route("control")      // S08
     data object Password : Route("password")         // S13
     data object Developer : Route("developer")       // S15
+    data object Snapshots : Route("snapshots")       // S16 快照管理与预览
+    data object Devices : Route("devices")           // S17 历史设备（档案/密码/自动重连目标）
 }
 
 /** 弹窗种类 */
@@ -222,6 +224,11 @@ fun App(
                                 )
                                 Route.Password -> PasswordScreen(onBack = popBack)
                                 Route.Developer -> DeveloperScreen(onBack = popBack)
+                                Route.Devices -> DeviceScreen(onBack = popBack)
+                                Route.Snapshots -> SnapshotScreen(
+                                    onBack = popBack,
+                                    onPreviewed = { currentTab.value = Route.Dashboard; backStack.clear() },
+                                )
                             }
                         }
                     }
