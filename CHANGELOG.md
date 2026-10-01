@@ -17,7 +17,9 @@
 
 ### 变更
 - **设置页结尾新增「关于本软件」卡**：项目仓库地址（点击打开 GitHub）、当前应用版本号、
-  **检查更新**——读取 GitHub Releases 最新版本并语义化比较（预发布版不提示正式版用户）；
+  **检查更新**——语义化比较 GitHub Releases 与本机版本；
+  **更新渠道可选**：稳定版=正式 Release（默认），预览版=含 Prerelease 的最近一次发布
+  （抢先体验，横幅会标注「预览版可能不稳定」），切换渠道自动重查；
   GitHub 连不上时自动回退 ghproxy / gh-proxy 等国内镜像逐个重试（每个源 5 秒超时），
   全部失败给出「去 Releases 页」的直达入口。为此新增 INTERNET 权限（仅读公开接口，
   不采集不发送任何数据）；版本号由 Gradle 注入（Android BuildConfig / 桌面生成 Version.kt），

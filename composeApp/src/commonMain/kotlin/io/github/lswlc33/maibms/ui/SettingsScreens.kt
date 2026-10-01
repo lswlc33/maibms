@@ -134,13 +134,26 @@ fun SettingsHomeScreen(
     }
 }
 
-/** 设置页结尾的「关于本软件」卡：仓库地址 / 应用版本 / 检查更新（GitHub → 国内镜像回退） */
+/** 设置页结尾的「关于本软件」卡：仓库地址 / 应用版本 / 更新渠道 / 检查更新（GitHub → 国内镜像回退） */
 @Composable
 private fun AboutAppCard() {
     val scope = rememberCoroutineScope()
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<io.github.lswlc33.maibms.data.UpdateChecker.Result?>(null) }
+    var channelMenu by remember { mutableStateOf(false) }
+    var channel by remember {
+        mutableStateOf(io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.fromKey(AppStore.updateChannel))
+    }
+
+    fun runCheck(ch: io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel) {
+        if (checking) return
+        checking = true; result = null
+        scope.launch {
+            result = io.github.lswlc33.maibms.data.UpdateChecker.check(ch)
+            checking = false
+        }
+    }
 
     SectionCard {
         SectionHeader("关于本软件", tail = "MIT · 开源")
@@ -151,31 +164,67 @@ private fun AboutAppCard() {
             onClick = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL) } },
         )
         SettingRow(title = "当前版本", inlineValue = io.github.lswlc33.maibms.data.AppVersion.name)
+        // 更新渠道：稳定版=正式 Release；预览版=含 Prerelease 的最近一次发布
+        Box {
+            SettingRow(
+                title = "更新渠道",
+                inlineValue = channel.label,
+                trailing = { Text("⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                onClick = { channelMenu = true },
+            )
+            DropdownMenu(expanded = channelMenu, onDismissRequest = { channelMenu = false }) {
+                io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.entries.forEach { ch ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(ch.label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(
+                                    when (ch) {
+                                        io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.STABLE -> "正式 Release · 适合日常使用"
+                                        io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.PREVIEW -> "含 Prerelease · 抢先体验新功能"
+                                    },
+                                    fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        trailingIcon = {
+                            if (ch == channel) Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary)
+                        },
+                        onClick = {
+                            channelMenu = false
+                            if (ch != channel) {
+                                channel = ch
+                                AppStore.updateChannel = ch.key
+                                result = null
+                                runCheck(ch)   // 切渠道自动重查一次，省得用户再点
+                            }
+                        },
+                    )
+                }
+            }
+        }
         SettingRow(
             title = "检查更新",
             inlineValue = when (val r = result) {
                 null -> null
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.UpToDate -> "已是最新"
-                is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update -> "发现新版 v${r.latest}"
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update ->
+                    if (r.info.prerelease) "发现预览版 v${r.latest}" else "发现新版 v${r.latest}"
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> "检查失败"
             },
             trailing = {
                 if (checking) Text("检查中…", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else Chevron()
             },
-            onClick = {
-                if (!checking) {
-                    checking = true; result = null
-                    scope.launch {
-                        result = io.github.lswlc33.maibms.data.UpdateChecker.check()
-                        checking = false
-                    }
-                }
-            },
+            onClick = { runCheck(channel) },
         )
         when (val r = result) {
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update -> InfoBanner(
-                "发现新版本 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 点这里去下载",
+                if (r.info.prerelease)
+                    "发现预览版 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 预览版可能不稳定"
+                else
+                    "发现新版本 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 点这里去下载",
                 kind = "info",
                 action = "去下载",
                 onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },

@@ -51,6 +51,11 @@ object AppStore {
         get() = get(KEY_AUTOCONNECT)?.takeIf { it.isNotBlank() }
         set(v) = put(KEY_AUTOCONNECT, v?.takeIf { it.isNotBlank() })
 
+    /** 更新渠道：stable=稳定版（正式 Release，默认）；preview=预览版（含 Prerelease） */
+    var updateChannel: String
+        get() = get(KEY_UPDATE_CHANNEL) ?: "stable"
+        set(v) = put(KEY_UPDATE_CHANNEL, v)
+
     /** 是否允许「启动即自动重连」：用户主动断开后置 false，重新选设备后置 true */
     var autoReconnect: Boolean
         get() = get(KEY_AUTOCONN) != "0"
@@ -138,6 +143,7 @@ object AppStore {
     internal const val KEY_PROFILES_V1 = "device.profiles.v1"   // 历史设备档案 JSON（DeviceProfiles 读写）
     internal const val KEY_PW = "device.passwords"              // 旧格式密码串：仅供 DeviceProfiles 迁移读取
     private const val KEY_AUTOCONNECT = "device.autoConnect"    // 自动重连显式目标（空=上次连接）
+    private const val KEY_UPDATE_CHANNEL = "ui.updateChannel"   // 更新渠道：stable / preview
     private const val KEY_SNAP_ENABLED = "snapshot.enabled"
     private const val KEY_SNAP_INDEX = "snapshot.index"
     private const val KEY_THEME = "ui.theme"
