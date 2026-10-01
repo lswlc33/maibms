@@ -286,12 +286,13 @@ fun BatteryCard(
     }
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.4f
     val track = fill.copy(alpha = if (dark) .22f else .18f)
-    // 卡内文字取「填充色的前景」——但只有填充真的铺到文字下面才成立：
-    // SOC 低时填充只占左边一小条，文字实际落在淡色轨道上，再用白字就看不见了
-    val fillUnderText = status.soc >= 55
-    val onFill: Color? = if (!fillUnderText) null
-        else if (fill.luminance() > 0.5f) Color(0xFF0C3D14) else Color.White
-    val onFillLabel: Color? = onFill?.copy(alpha = .78f)
+    // 卡内左侧文字的反色策略：填充与轨道是同色不同透明度，填充边界（SOC 55% 前后）会扫过文字，
+    // 固定前景色在边界两侧对比度会突变（深字骑深填充 / 白字骑淡轨道都不可读）。
+    // 解法：给文字垫一个不透明底衬胶囊（与右上角权限徽章、右下连接态胶囊同一套视觉语言），
+    // 文字对比度只取决于底衬色，与底下是填充还是轨道彻底解耦。
+    val chipBg = MaterialTheme.colorScheme.surface
+    val onChip = MaterialTheme.colorScheme.onSurface
+    val onChipLabel = MaterialTheme.colorScheme.onSurfaceVariant
     Box(
         modifier
             .fillMaxWidth()
@@ -306,36 +307,41 @@ fun BatteryCard(
         }
         // 右缘电池极头已去掉：在扁平进度卡上就是一根莫名其妙的竖条
         // 左侧：电压大标题（小 desc 紧跟其后）→ 设备名 → 循环 · 运行时间。
-        // 软/硬件版本移到 设置 → 关于（身份区），首页大卡不重复展示
+        // 三行都垫 surface 底衬胶囊：填充边界扫过时文字对比度不变（见上方 chipBg 注释）
         Row(
             modifier = Modifier.padding(CardPadding).fillMaxWidth().height(IntrinsicSize.Min),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.Bottom) {
+                Row(
+                    verticalAlignment = Alignment.Bottom,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
+                ) {
                     Text(
                         if (status.hasData) "%.2f".format(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                        color = onFill ?: MaterialTheme.colorScheme.onSurface,
+                        color = onChip,
                     )
                     Text(
                         " V · 当前电压",
                         fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        color = onFillLabel ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = onChipLabel,
                         modifier = Modifier.padding(start = 3.dp, bottom = 5.dp),
                     )
                 }
                 Text(
                     status.deviceName,
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                    color = onFill ?: MaterialTheme.colorScheme.onSurface,
+                    color = onChip,
                     maxLines = 1,
+                    modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
                 )
                 Text(
                     "${status.totalCycleAh}Ah 循环 · ${status.runtime}",
                     fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                    color = onFillLabel ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = onChipLabel,
                     maxLines = 1,
+                    modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
                 )
             }
             Column(
