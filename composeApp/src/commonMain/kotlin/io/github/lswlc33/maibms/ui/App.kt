@@ -13,6 +13,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -299,9 +300,9 @@ private fun androidx.compose.runtime.snapshots.SnapshotStateList<Route>.pop() {
     if (isNotEmpty()) removeAt(lastIndex)
 }
 
-/** 底栏占位高度：悬浮条 56dp + 底部外边距 10dp + 系统导航条 + 与内容之间 8dp 气口 */
+/** 底栏占位高度：悬浮条 64dp + 底部外边距 10dp + 系统导航条 + 与内容之间 8dp 气口 */
 val BottomNavHeight: Dp
-    @Composable get() = 74.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    @Composable get() = 82.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
 /**
  * 悬浮大圆角底栏：左右留 16dp 边、底部让开系统导航条，白卡浮在页面上（带阴影）。
@@ -316,12 +317,12 @@ fun BottomNav(current: Route, onSelect: (Route) -> Unit, modifier: Modifier = Mo
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, bottom = inset + 10.dp)
+            .padding(start = 28.dp, end = 28.dp, bottom = inset + 10.dp)
             .shadow(16.dp, RoundedCornerShape(28.dp))
             .clip(RoundedCornerShape(28.dp))
             .background(barColor)
             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(28.dp))
-            .height(56.dp),
+            .height(64.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         listOf(
@@ -331,8 +332,11 @@ fun BottomNav(current: Route, onSelect: (Route) -> Unit, modifier: Modifier = Mo
         ).forEach { (r, label, icon) ->
             val selected = current::class == r::class
             val tint = if (selected) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+            // 整块底栏不响应点击高亮：只有图标药丸自己随选中态变色，点按不再泛起水波纹
+            val noRipple = remember { MutableInteractionSource() }
             Column(
-                Modifier.weight(1f).fillMaxHeight().clickable { onSelect(r) },
+                Modifier.weight(1f).fillMaxHeight()
+                    .clickable(interactionSource = noRipple, indication = null) { onSelect(r) },
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
