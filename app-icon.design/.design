@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "createdAt": "2026-10-01T03:06:00.000Z",
+  "updatedAt": "2026-10-01T03:06:00.000Z",
+  "config": {
+    "title": "App Icon Preview",
+    "canvas": {
+      "width": 1800,
+      "height": 600
+    }
+  },
+  "data": {
+    "nodes": [
+      {
+        "id": "image-001",
+        "type": "image",
+        "title": "source",
+        "createdAt": "2026-10-01T03:06:00.000Z",
+        "canvasData": {
+          "x": 0,
+          "y": 0,
+          "width": 512,
+          "height": 512
+        },
+        "devMetadata": {
+          "imageSrc": "assets/source.jpg"
+        },
+        "version": 1
+      },
+      {
+        "id": "image-002",
+        "type": "image",
+        "title": "app-icon-new",
+        "createdAt": "2026-10-01T03:06:00.000Z",
+        "canvasData": {
+          "x": 600,
+          "y": 0,
+          "width": 512,
+          "height": 512
+        },
+        "devMetadata": {
+          "imageSrc": "assets/app-icon-512.png"
+        },
+        "version": 1
+      },
+      {
+        "id": "image-003",
+        "type": "image",
+        "title": "preview",
+        "createdAt": "2026-10-01T03:06:00.000Z",
+        "canvasData": {
+          "x": 1200,
+          "y": 0,
+          "width": 512,
+          "height": 288
+        },
+        "devMetadata": {
+          "imageSrc": "assets/preview.png"
+        },
+        "version": 1
+      }
+    ]
+  }
+}
