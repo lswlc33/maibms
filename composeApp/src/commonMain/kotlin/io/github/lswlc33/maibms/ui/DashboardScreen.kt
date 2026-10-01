@@ -20,6 +20,14 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.launch
 import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.data.BmsLog
+import io.github.lswlc33.maibms.data.StartupTrace
+
+/**
+ * 首屏耗时 Toast 的上限：只有 20s 内出数才弹。
+ * 设备长时间不在时，几分钟后突然冒出一个「首屏 300s」会莫名其妙——那种数字留在日志里就够了。
+ */
+private const val FIRST_SCREEN_TOAST_LIMIT_MS = 20_000L
 
 @Composable
 fun DashboardScreen(
@@ -36,6 +44,16 @@ fun DashboardScreen(
 ) {
     val liveStatus by MockBms.status.collectAsState()
     val status = liveStatus
+    // 冷启动首屏耗时：第一次带着实时数据完成组合时上报一次（此刻数值已经画上屏），
+    // 20s 内出数再弹个系统 Toast 把秒数直接摆出来。每进程只会上报一次，重连反复不影响。
+    LaunchedEffect(status.hasData) {
+        if (status.hasData) {
+            StartupTrace.elapsedToFirstScreenMs()?.let { ms ->
+                BmsLog.i("APP", "启动→上屏 ${ms}ms" + if (StartupTrace.usedProcessStart) "" else "（无进程起点，从发起连接算起）")
+                if (ms <= FIRST_SCREEN_TOAST_LIMIT_MS) showSystemToast("首屏 %.1fs".format(ms / 1000.0))
+            }
+        }
+    }
     val repo = io.github.lswlc33.maibms.data.Bms.repository
     val link by repo.linkState.collectAsState()
     val connectHint by repo.connectHint.collectAsState()

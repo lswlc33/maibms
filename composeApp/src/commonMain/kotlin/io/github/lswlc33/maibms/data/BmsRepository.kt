@@ -3,6 +3,7 @@ package io.github.lswlc33.maibms.data
 import io.github.lswlc33.maibms.protocol.*
 import io.github.lswlc33.maibms.transport.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -70,6 +71,8 @@ class BmsRepository(
         previewActive.value = true   // 先置位再动手，挡住断开过程中的一切回灌
         previewLabel.value = s.deviceName.ifBlank { null }?.let { "$it · ${s.timeLabel}" } ?: s.timeLabel
         pollJob?.cancel(); pollJob = null
+        postConnectJob?.cancel(); postConnectJob = null
+        firstFrameSignal = null
         transport.disconnect()
         manualDisconnect.value = true
         // 刻意不写 AppStore.autoReconnect=false：重启后要不要自动连回设备，按用户原来的开关状态来
@@ -97,6 +100,15 @@ class BmsRepository(
     private var pollJob: Job? = null
     private var collectorJob: Job? = null
     private var stateJob: Job? = null
+
+    /** 链路就绪时的轮询唤醒：首拍立刻发，不等 900ms 相位（CONFLATED：最多积一次，不会空转） */
+    private val pollWake = Channel<Unit>(Channel.CONFLATED)
+
+    /** 本次连接「首帧已到」信号：连后序列（升权 → 参数区读回）排在它后面 */
+    private var firstFrameSignal: CompletableDeferred<Unit>? = null
+
+    /** 连后序列协程：换连接 / 主动断开 / 进快照预览都要取消 */
+    private var postConnectJob: Job? = null
 
     fun start() {
         if (collectorJob != null) return
@@ -130,7 +142,14 @@ class BmsRepository(
                 if (st == LinkState.Connected) {
                     // 建链成功即刷新档案的最近连接时间（扫描直连与自动重连都会走到这里）
                     DeviceProfiles.touch(MockBms.savedAddress)
-                    autoUpgradePermission()
+                    // 连后序列：首帧 → 升权 → 参数区读回。必须放独立协程跑——
+                    // 以前直接在收集器里 await 升权，0x43 弱信号下 2s 才回，这段
+                    // 时间链路状态镜像被卡住，掉线了界面还显示「已连接」
+                    firstFrameSignal = CompletableDeferred()
+                    postConnectJob?.cancel()
+                    postConnectJob = scope.launch { postConnectFlow() }
+                    // 唤醒轮询立刻发首拍。放在最后：首帧信号已就位，不会漏接
+                    pollWake.trySend(Unit)
                 } else {
                     // 掉线后自动重连回来时要重新升权：不清标志的话重连后权限停在 0 级
                     if (st == LinkState.Disconnected || st == LinkState.Idle) autoUpgraded = false
@@ -150,7 +169,15 @@ class BmsRepository(
             real.connectHint.collect { _connectHint.value = it }
         }
         // 用户上次是主动断开的话，就别自作主张再连上（但记忆设备仍然保留）
-        if (target != null && AppStore.autoReconnect && !previewActive.value) scope.launch { connect(target) }
+        val wantAuto = target != null && AppStore.autoReconnect && !previewActive.value
+        if (wantAuto && !canAutoConnect()) {
+            // 连接到界面前发起，权限对话框可能还没点：这时候碰蓝牙栈会抛 SecurityException。
+            // 记一笔就停手，用户授权后从扫描列表/历史设备手动连接
+            BmsLog.i("APP", "缺少蓝牙权限，本次不自动重连（授权后手动连接）")
+        } else if (wantAuto) {
+            StartupTrace.arm()   // 首屏计时只统计"启动即自动重连"这条路径
+            scope.launch { connect(target) }
+        }
     }
 
     /** 从本地密码库恢复该设备的已记住密码等级（按设备地址分槽） */
@@ -169,6 +196,9 @@ class BmsRepository(
     /**
      * 连接后自动升权：优先目标等级，其次逐级向下，只用本地已记住的密码。
      * 这是「打开就能改参数」的关键——否则每次连接都要手点权限徽章重新输密码。
+     *
+     * 调用方是[postConnectFlow]，它已经等到了首个实时帧，链路与通知订阅都确认落地，
+     * 所以这里**不再**盲等固定 600ms（那是"首帧前立刻发 0x23 容易无应答"的旧规避手段）。
      * 真机注意：弱信号下 0x43 应答可能 >2s 才回来（实测 2 级那次就超时了），
      * 所以每条给 4s，并让返回值（设备当前权限）而不是循环变量进日志。
      */
@@ -176,7 +206,6 @@ class BmsRepository(
         if (autoUpgraded) return
         autoUpgraded = true
         if (MockBms.plainPasswords.value.isEmpty()) return
-        delay(600)   // 等链路/通知订阅稳定，真机实测首帧前立刻发 0x23 容易无应答
         val target = MockBms.autoUpgradeLevel.value
         val order = (listOf(target) + listOf(5, 4, 3, 2, 1)).distinct()
         val best = order.mapNotNull { lv ->
@@ -196,6 +225,30 @@ class BmsRepository(
         } else {
             BmsLog.w("AUTH", "自动升权失败：本地密码均未通过")
         }
+    }
+
+    /**
+     * 连后序列：**首帧 → 升权 → 参数区/身份区读一次**。
+     *
+     * 顺序是刻意的：首页要看的（电压/电流/单体/温度/保护告警）全在第一条 0x11 实时帧里，
+     * 所以首帧优先级最高——升权（0x23，弱信号下独占应答槽可达数秒）与 14 条参数区读回
+     * 全部排到它后面。代价是"能改参数"比原先晚约半秒到一秒，这是明确接受的取舍。
+     *
+     * 参数区只读一遍：不再"等级 0 先读一遍、升权后再读一遍"。升权成功时 RSP_AUTH 分支
+     * 已经触发了一轮 force 重读，这里再调一次会被 refreshParams 里的 readJob.isActive
+     * 去重挡掉（不是靠运气，是那次调用的显式守卫）。
+     */
+    private suspend fun postConnectFlow() {
+        val firstFrame = firstFrameSignal ?: return
+        if (withTimeoutOrNull(FIRST_FRAME_WAIT_MS) { firstFrame.await() } == null) {
+            // 连上了却一直不吐数据（走远/被占用）：升权与参数区读回都没有意义，别去刷 14 条注定超时的命令
+            BmsLog.w("CONN", "首个实时帧 ${FIRST_FRAME_WAIT_MS}ms 未到，跳过升权与参数区读回")
+            return
+        }
+        if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
+        autoUpgradePermission()
+        if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
+        refreshParams(force = true)
     }
 
     /** 幂等：换设备/重连前先清掉上一台的假数据与权限状态 */
@@ -327,11 +380,15 @@ class BmsRepository(
         AppStore.autoReconnect = true
         resetSessionState()
         lastFrameAt = 0L
+        postConnectJob?.cancel()
+        postConnectJob = null
+        firstFrameSignal = null
         transport.connect(address)
         if (pollJob?.isActive != true) {
         pollJob = scope.launch {
             // 无条件常驻：连接态在每拍内部判断（避免链路态镜像延迟导致首拍误判退出）
-            // 节奏 900ms：真机弱信号下 500ms 一轮会持续占满连接间隔，反而拖低成功率
+            // 节奏 900ms：真机弱信号下 500ms 一轮会持续占满连接间隔，反而拖低成功率；
+            // 但链路刚就绪时会被 pollWake 立刻唤醒一次——首帧不用白等这个相位
             while (isActive) {
                 if (_linkState.value == LinkState.Connected) {
                     try {
@@ -352,7 +409,8 @@ class BmsRepository(
                         BmsLog.i("LINK", "实时帧恢复")
                     }
                 }
-                delay(900)
+                // 正常按 900ms 走；链路刚就绪会提前唤醒（见 pollWake）
+                withTimeoutOrNull(POLL_INTERVAL_MS) { pollWake.receive() }
             }
         }
         }
@@ -366,6 +424,8 @@ class BmsRepository(
         manualDisconnect.value = true
         AppStore.autoReconnect = false   // 记住这次主动断开，重启后不要自动连
         pollJob?.cancel(); pollJob = null
+        postConnectJob?.cancel(); postConnectJob = null
+        firstFrameSignal = null
         transport.disconnect()
         _connectHint.value = null
         _stalled.value = false
@@ -384,6 +444,10 @@ class BmsRepository(
 
     companion object {
         const val STALL_MS = 7_000L
+        /** 轮询节奏：真机弱信号下 500ms 会占满连接间隔，900ms 是实测稳定的值 */
+        const val POLL_INTERVAL_MS = 900L
+        /** 连后序列等首个实时帧的上限；等不到就跳过升权与参数区读回 */
+        const val FIRST_FRAME_WAIT_MS = 10_000L
         /** BLE 扫描窗口：够扫到弱信号设备，又不至于让用户干等 */
         const val SCAN_WINDOW_MS = 20_000L
         /** 两条校验命令的最小间隔，防链路抖动时反复发 0x23 */
@@ -400,8 +464,10 @@ class BmsRepository(
                     lastFrameAt = System.currentTimeMillis()
                     MockBms.updateFromRealtime(r)
                     MockBms.connected.value = true
-                    // 首帧到达即拉一次参数区/身份区（等级 0 也可读，失败只记一次）
-                    refreshParams()
+                    // 首帧到达：唤醒连后序列（升权 → 参数区读回排在它后面）。
+                    // 这里以前直接 refreshParams()，导致"等级 0 先读一遍、升权后再读一遍"，
+                    // 而且 14 条参数命令会跟升权抢应答槽，把首帧之后的刷新拖成一顿一顿
+                    firstFrameSignal?.complete(Unit)
                     // 设备闲置会把权限退回低等级（实测约 5 分钟）：掉下来就静默重升
                     ensurePermission(r.permission)
                 }.onFailure { BmsLog.e("RX", "实时帧解码失败：$it") }

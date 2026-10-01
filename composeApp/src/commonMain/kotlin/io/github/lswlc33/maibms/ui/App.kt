@@ -87,7 +87,9 @@ fun App(
     deepDialog: DialogKind? = null,
     forceDark: Boolean? = null,
 ) {
-    // 启动数据管线：真机 BLE（无记忆设备时停在未连接态等待扫描）
+    // 兜底启动数据管线：Android 那边已经在 MaibmsApp.onCreate 里启动过了（与界面首帧并行，
+    // 不再是"等组合完才开始连"）；这里保证桌面端与离屏截图工具也能挂上收集器。
+    // start() 幂等：重复调用直接返回，不会双挂收集器
     LaunchedEffect(Unit) { io.github.lswlc33.maibms.data.Bms.repository.start() }
     BmsTheme {
         val initial = deepLink ?: Route.Dashboard

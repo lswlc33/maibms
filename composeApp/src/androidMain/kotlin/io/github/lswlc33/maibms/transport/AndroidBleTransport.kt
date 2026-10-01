@@ -47,6 +47,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         const val CONNECT_TIMEOUT_MS = 12_000L
         /** 等待式连接（autoConnect）走广播窗口，给更长超时 */
         const val CONNECT_TIMEOUT_AUTO_MS = 25_000L
+        /** 就绪兜底：个别 ROM 不回调 onDescriptorWrite，超过这个时间就按「订阅已发出」继续 */
+        const val READY_FALLBACK_MS = 250L
     }
 
     private val _linkState = MutableStateFlow(LinkState.Idle)
@@ -101,6 +103,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
 
     private var scanCallback: ScanCallback? = null
 
+    /** 最近一次**真的停掉扫描**的时刻（uptime）；0 = 本次进程没扫过。见 connect() 里的静默等待 */
+    @Volatile private var scanStoppedAt = 0L
+
     @SuppressLint("MissingPermission")
     override suspend fun scan(onFound: (ScanDevice) -> Unit) {
         val scanner = manager?.adapter?.bluetoothLeScanner
@@ -127,8 +132,18 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
 
     @SuppressLint("MissingPermission")
     override fun stopScan() {
-        scanCallback?.let { runCatching { manager?.adapter?.bluetoothLeScanner?.stopScan(it) } }
+        val cb = scanCallback ?: return
+        runCatching { manager?.adapter?.bluetoothLeScanner?.stopScan(cb) }
         scanCallback = null
+        scanStoppedAt = android.os.SystemClock.uptimeMillis()
+    }
+
+    /** 建链前还要等多久的「扫描静默」；本次进程没扫过就是 0（冷启动直连不必白等 450ms） */
+    private fun settleWaitMs(): Long {
+        val stopped = scanStoppedAt
+        if (stopped == 0L) return 0L
+        return (SCAN_SETTLE_MS - (android.os.SystemClock.uptimeMillis() - stopped))
+            .coerceIn(0L, SCAN_SETTLE_MS)
     }
 
     // ---------------- 连接 ----------------
@@ -142,7 +157,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             return
         }
         val device = address?.let { runCatching { adapter.getRemoteDevice(it) }.getOrNull() }
-            ?: adapter.bondedDevices?.firstOrNull { it.name?.startsWith("ANT", true) == true }
+            // 没指定地址就退回已配对的 ANT 设备；读 bondedDevices 要权限，缺权限时不能把协程掀掉
+            ?: runCatching { adapter.bondedDevices?.firstOrNull { it.name?.startsWith("ANT", true) == true } }.getOrNull()
             ?: run {
                 _connectHint.value = "没有指定设备，也没有已配对的 ANT 设备"
                 _linkState.value = LinkState.Disconnected
@@ -155,8 +171,12 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         logI("连接目标 ${device.name} ${device.address}")
         stopScan()
         loopJob?.cancel()
+        // 扫描刚停就直连会报 0x3E（真机实测），所以要等控制器静默；
+        // 但冷启动根本没扫过，等这 450ms 就是纯粹白等——按"距上次真正停扫过了多久"来算。
+        val settle = settleWaitMs()
+        if (settle > 0) logD("停扫描后等静默 ${settle}ms 再建链")
         loopJob = scope.launch {
-            delay(SCAN_SETTLE_MS)
+            if (settle > 0) delay(settle)
             connectionLoop(device)
         }
     }
@@ -300,20 +320,45 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             // 先订阅通知（docs 硬性顺序）
             runCatching { g.setCharacteristicNotification(notifyChar, true) }
             val desc = notifyChar?.getDescriptor(CCCD)
-            if (desc != null) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    runCatching { g.writeDescriptor(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) }
-                } else {
-                    @Suppress("DEPRECATION")
-                    desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                    @Suppress("DEPRECATION")
-                    runCatching { g.writeDescriptor(desc) }
-                }
+            if (desc == null) {
+                logW("通知特征上没有 CCCD 描述符，无法确认订阅（按旧行为继续）")
+                completeReady(g)
+                return
             }
-            // MTU 只影响写分片，异步协商，不阻塞「可用」判定
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                runCatching { g.writeDescriptor(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) }
+            } else {
+                @Suppress("DEPRECATION")
+                desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                @Suppress("DEPRECATION")
+                runCatching { g.writeDescriptor(desc) }
+            }
+            // MTU 只影响写分片，异步协商；连接间隔提到最高档，命令往返能少几十毫秒
             runCatching { g.requestMtu(MTU_TARGET) }
+            runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
+            // ★ 「就绪」要等订阅落地，不在这里置位：轮询已改成"就绪即发首拍"，
+            //   早置位会让第一条读命令撞上还没写完的 CCCD（正是 docs 说的"命令发出去没应答"）。
+            //   改由 onDescriptorWrite 完成，个别 ROM 不回调则由 250ms 兜底放行。
+            armReadyFallback(g)
+        }
+
+        /** 标记链路就绪：置连接态并唤醒等待中的重连循环。只在 g 仍是当前 GATT 时生效（丢弃迟到回调） */
+        private fun completeReady(g: BluetoothGatt) {
+            if (g !== gatt) return
             _linkState.value = LinkState.Connected
             readySignal?.complete(true)
+        }
+
+        /** CCCD 写回调个别 ROM 不给：超时兜底放行，绝不因为等不到回调把连接卡死 */
+        private fun armReadyFallback(g: BluetoothGatt) {
+            scope.launch {
+                delay(READY_FALLBACK_MS)
+                val s = readySignal
+                if (g === gatt && s != null && !s.isCompleted) {
+                    logW("CCCD 写回调 ${READY_FALLBACK_MS}ms 未到，按「订阅已发出」继续（兜底）")
+                    completeReady(g)
+                }
+            }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
@@ -322,12 +367,16 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            logD("CCCD 写入 status=$status")
-            // 订阅已落地：即使服务发现回调里来不及标记，这里也补一次
-            if (g === gatt && writeChar != null) {
-                _linkState.value = LinkState.Connected
-                readySignal?.complete(true)
+            if (g !== gatt || d.uuid != CCCD) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                // 订阅没落地 = 设备不会主动上报，链路"通着"也收不到任何帧：直接按本轮失败重试
+                logE("CCCD 写入失败：${statusText(status)}（订阅未落地，本轮按失败重连）")
+                readySignal?.complete(false)
+                runCatching { g.disconnect() }
+                return
             }
+            logD("CCCD 写入成功，订阅已落地")
+            completeReady(g)
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
