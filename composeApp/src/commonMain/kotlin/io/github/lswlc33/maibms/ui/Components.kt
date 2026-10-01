@@ -672,6 +672,8 @@ fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
 
 @Composable
 fun ProtectAlarmCards(status: BmsStatus, onSeeAll: () -> Unit, modifier: Modifier = Modifier) {
+    // 连接后两卡都空 → 整块隐藏（父列 spacedBy(8dp) 自动吸收间距）；未连接保留占位
+    if (status.hasData && status.protectList.isEmpty() && status.alarmList.isEmpty()) return
     // IntrinsicSize.Min：两卡按内容较多的一侧撑齐高度（一侧空一侧有条目时不再一高一低）
     Row(
         modifier.fillMaxWidth().height(IntrinsicSize.Min),

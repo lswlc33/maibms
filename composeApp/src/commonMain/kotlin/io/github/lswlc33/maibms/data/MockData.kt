@@ -234,7 +234,7 @@ object MockBms {
             disMos = if (r.disMos == 1) "开启" else "关闭",
             balance = if (r.balanceState != 0) "均衡中" else "关闭",
             protectList = io.github.lswlc33.maibms.protocol.BitDict.decode(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
-            alarmList = io.github.lswlc33.maibms.protocol.BitDict.decodeForDisplay(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
+            alarmList = io.github.lswlc33.maibms.protocol.BitDict.displayAlarmList(r.warnBits, r.chMos == 1, r.disMos == 1),
             protectPairs = io.github.lswlc33.maibms.protocol.BitDict.decodePairs(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
             alarmPairs = io.github.lswlc33.maibms.protocol.BitDict.decodeForDisplayPairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
             temps = listOf("MOS" to r.mosTemp, "均衡" to r.balanceTemp) +

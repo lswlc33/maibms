@@ -56,13 +56,13 @@ object BitDict {
         dict.filter { (bits shr it.key) and 1UL == 1UL }.map { it.key to it.value }.sortedBy { it.first }
 
     /**
-     * 告警域里的「状态类」位（docs/13.2 注意项：17 起多为运行状态）：不进告警卡。
-     * **bit23/24（充电/放电 MOS 开）刻意保留展示**：参考实现（官方小程序）不过滤任何位，
-     * 实测这两位在运行中常驻置位、官方 UI 把它们当「重要提示」摆在告警卡里——
-     * 滤掉会与参考实现不一致（用户实测对比：官方显示两条，本应用显示 0）。
+     * 告警域里的「状态类」位（docs/13.2 注意项：17 起多为运行状态）：不进告警列表。
+     * bit23/24（充电/放电 MOS 开）也在内：MOS 开是常态，2026-10-01 用户决定
+     * 开=不显示、关=提示（见 mosClosedHints）。告警卡与详情弹窗共用这一过滤；
+     * decodePairs 是不过滤的原始位视图（保护域无状态位，回归测试用它锁位号）。
      */
     private val stateBits = setOf(
-        17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30,
+        17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
         35, 36, 37, 39, 40, 41, 42, 45, 48, 50, 51, 52,
     )
     fun decodeForDisplay(bits: ULong, dict: Map<Int, String>): List<String> =
@@ -71,4 +71,21 @@ object BitDict {
     /** 同上但带位号，供详情弹窗逐条列出 */
     fun decodeForDisplayPairs(bits: ULong, dict: Map<Int, String>): List<Pair<Int, String>> =
         decodePairs(bits, dict).filter { it.first !in stateBits }
+
+    /**
+     * MOS 关提示：告警位 23/24 只有「开」的表达，关时位为 0，位域里无信息——
+     * 由实时帧尾部状态字节（偏移 12 放电 / 13 充电，1=开）取反合成。MOS 开时返回不含对应项。
+     */
+    fun mosClosedHints(chMosOn: Boolean, disMosOn: Boolean): List<String> = buildList {
+        if (!chMosOn) add("充电MOS关")
+        if (!disMosOn) add("放电MOS关")
+    }
+
+    /**
+     * 告警卡最终列表 = 真实告警在前 + MOS 关提示殿后。
+     * 卡片只显前 3 条，提示是状态信息、必须排在真告警之后，否则放电时常态的
+     * 「充电MOS关」会把严重告警挤出首屏（2026-10-01 复查修正）。
+     */
+    fun displayAlarmList(bits: ULong, chMosOn: Boolean, disMosOn: Boolean): List<String> =
+        decodeForDisplay(bits, warnNames) + mosClosedHints(chMosOn, disMosOn)
 }
