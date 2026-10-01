@@ -124,6 +124,7 @@ class BmsRepository(
         val targetProfile = DeviceProfiles.find(target)
         MockBms.connectedDeviceName.value = targetProfile?.displayName ?: AppStore.savedDeviceName
         restorePasswords(target)
+        loadParamsCacheIntoSession(target)   // 未连接/连接中时，配置页先显示该设备的配置缓存
         MockBms.autoUpgradeLevel.value = AppStore.autoUpgradeTarget
         MockBms.usingRealBle.value = realTransport != null
         if (target != null) {
@@ -280,6 +281,33 @@ class BmsRepository(
     private fun timeLabel(epochMs: Long): String =
         java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(epochMs))
 
+    // ---- 配置缓存（≠ 快照）：自动重连设备「上次成功连接」的设置项，不含任何实时数据 ----
+
+    /** 未连接时把某设备的配置缓存灌进会话，配置页/关于页才有内容可看；无缓存则保持空态 */
+    private fun loadParamsCacheIntoSession(address: String?) {
+        val cache = address?.let { AppStore.loadParamsCache(it) } ?: return
+        MockBms.loadParamsCache(cache)
+        BmsLog.i("CACHE", "已载入配置缓存：${DeviceProfiles.find(address)?.displayName ?: address}（${cache.params.size} 项，记录于 ${timeLabel(cache.savedAt)}）")
+    }
+
+    /**
+     * 把当前会话的设置项（参数区 + 身份区）落成该设备的配置缓存。
+     * 只在「成功读到设置项」后调用（参数区读回完成 / 写参数成功回显）——实时数据不进缓存。
+     */
+    private fun persistParamsCache() {
+        val addr = MockBms.savedAddress ?: return
+        val params = MockBms.liveParams.value
+        if (params.isEmpty()) return
+        runCatching {
+            AppStore.saveParamsCache(addr, AppStore.ParamsCache(
+                savedAt = System.currentTimeMillis(),
+                params = params,
+                identity = MockBms.identity.value,
+            ))
+        }.onSuccess { BmsLog.d("CACHE", "配置缓存已更新：$addr（${params.size} 项）") }
+            .onFailure { BmsLog.e("CACHE", "配置缓存写入失败：$it") }
+    }
+
     /** 扫描附近的真实 BMS */
     suspend fun startScan() {
         val real = realTransport
@@ -360,6 +388,7 @@ class BmsRepository(
         val p = DeviceProfiles.find(address)
         DeviceProfiles.remove(address)
         AppStore.deleteSnapshotsForDevice(address)
+        AppStore.deleteParamsCache(address)   // 配置缓存也是该设备的数据，一并清除
         if (AppStore.autoConnectAddress == address) AppStore.autoConnectAddress = null
         if (AppStore.savedAddress == address) {
             AppStore.savedAddress = null
@@ -379,6 +408,9 @@ class BmsRepository(
         manualDisconnect.value = false
         AppStore.autoReconnect = true
         resetSessionState()
+        // 清空会话后立刻回灌该设备的配置缓存：连接期间配置页不至于从有值闪回空值，
+        // 连接失败（板子不在）时也还留着上次成功连接的设置项可看
+        loadParamsCacheIntoSession(address ?: MockBms.savedAddress)
         lastFrameAt = 0L
         postConnectJob?.cancel()
         postConnectJob = null
@@ -692,7 +724,8 @@ class BmsRepository(
                     }
                     delay(120)
                 }
-                MockBms.liveParams.value = acc
+                // 读空（全部超时）时不覆盖：配置页宁可显示上次成功的缓存，也别闪回空值
+                if (acc.isNotEmpty()) MockBms.liveParams.value = acc
                 val id = HashMap<String, String>()
                 for ((key, spec) in identityBlocks) {
                     val (addr, len) = spec
@@ -702,10 +735,15 @@ class BmsRepository(
                     }
                     delay(120)
                 }
-                MockBms.identity.value = id
+                if (id.isNotEmpty()) MockBms.identity.value = id
                 BmsLog.i("PARAM", "参数区读回 ${acc.size} 项，身份区 ${id.size} 项")
-                // 全量同步完成：实时帧已在流上、参数区/身份区刚刚落定——此刻冻结快照最全
-                if (acc.isNotEmpty() || id.isNotEmpty()) recordSnapshot()
+                if (acc.isNotEmpty() || id.isNotEmpty()) {
+                    // 全量同步完成：实时帧已在流上、参数区/身份区刚刚落定——此刻冻结快照最全
+                    recordSnapshot()
+                    // 设置项是最新的了：更新该设备的配置缓存（实时数据不进缓存），并摘掉「缓存」标记
+                    MockBms.paramsFromCache.value = false
+                    persistParamsCache()
+                }
             } finally {
                 MockBms.paramsReading.value = false
             }
@@ -815,6 +853,8 @@ class BmsRepository(
             BmsLog.i("WRITE", "写参数 $label 成功，自动保存（51/07）")
             // 保存的 0x61 应答由 handleFrame 记进 lastControlResult，控制页横幅直接读它
             requestAndAwait(Frame.saveParams(), Proto.RSP_CONTROL, expectedReg = ControlCmd.SAVE_PARAMS)
+            // 写入成功 = 设备的设置项变了：0x42 回显已更新会话 liveParams，这里同步刷新配置缓存
+            persistParamsCache()
         }
         return code
     }

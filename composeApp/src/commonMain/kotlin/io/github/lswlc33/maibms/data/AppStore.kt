@@ -1,5 +1,8 @@
 package io.github.lswlc33.maibms.data
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
 /**
  * 极简键值持久化：记住上次连接的设备与各设备密码（协议层无状态，这些必须落在本地）。
  * 平台在启动时注入实现（Android=SharedPreferences，桌面=用户目录文件），未注入时退化为内存。
@@ -55,6 +58,33 @@ object AppStore {
     var updateChannel: String
         get() = get(KEY_UPDATE_CHANNEL) ?: "stable"
         set(v) = put(KEY_UPDATE_CHANNEL, v)
+
+    // ---- 配置缓存（≠ 快照）：自动重连设备「上次成功连接」的设置项，仅供未连接时只读展示 ----
+
+    /**
+     * 每台设备一份配置缓存（设置项 + 身份区，不含任何实时数据）。
+     * 配置项不是实时数据、不常变动，缓存它让未连接时配置页/关于页仍有内容可看。
+     */
+    @Serializable
+    data class ParamsCache(
+        val savedAt: Long,
+        val params: Map<Int, Int>,
+        val identity: Map<String, String>,
+    )
+
+    fun saveParamsCache(address: String, cache: ParamsCache) {
+        put(paramsCacheKey(address), jsonForCache.encodeToString(ParamsCache.serializer(), cache))
+    }
+
+    fun loadParamsCache(address: String): ParamsCache? =
+        get(paramsCacheKey(address))?.let { text ->
+            runCatching { jsonForCache.decodeFromString(ParamsCache.serializer(), text) }.getOrNull()
+        }
+
+    fun deleteParamsCache(address: String) = put(paramsCacheKey(address), null)
+
+    private val jsonForCache = Json { ignoreUnknownKeys = true }
+    private fun paramsCacheKey(address: String) = "cache.params.$address"
 
     /** 是否允许「启动即自动重连」：用户主动断开后置 false，重新选设备后置 true */
     var autoReconnect: Boolean

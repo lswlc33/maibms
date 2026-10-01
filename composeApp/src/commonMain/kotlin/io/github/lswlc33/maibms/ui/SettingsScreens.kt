@@ -142,7 +142,8 @@ fun SettingsHomeScreen(
         SectionCard {
             SectionHeader("关于", tail = "身份区")
             if (reading) InfoBanner("身份区读取中…", kind = "info")
-            else if (!connected) InfoBanner("未连接保护板 · 连接后自动读取身份区", kind = "warn")
+            else if (!connected && id.isEmpty()) InfoBanner("未连接保护板 · 连接后自动读取身份区", kind = "warn")
+            else if (!connected) InfoBanner("未连接 · 以下为「${MockBms.deviceLabel}」上次成功连接的缓存", kind = "info")
             else if (id.isEmpty()) InfoBanner("身份区暂时读不到（权限不足或设备未就绪）", kind = "warn")
             SettingRow(title = "软件版本", inlineValue = v(id["swVersion"], status.swVersion))
             SettingRow(title = "硬件版本", inlineValue = v(id["hwVersion"], status.hwVersion))

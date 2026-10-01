@@ -131,7 +131,21 @@ object MockBms {
         liveParams.value = s.liveParams
         identity.value = s.identity
         connectedDeviceName.value = s.deviceName.ifBlank { null }
+        paramsFromCache.value = false   // 快照是快照：横幅走预览文案，不标「缓存」
         _status.value = s.status
+    }
+
+    /**
+     * 配置缓存标志：true = 当前 liveParams/identity 是自动重连设备「上次成功连接」的缓存
+     * （未连接时的离线展示），配置页据此显示缓存文案；实时读回/快照载入都会清掉它。
+     */
+    val paramsFromCache = MutableStateFlow(false)
+
+    /** 载入某设备的配置缓存到会话（未连接时的离线展示）；无缓存返回 false */
+    fun loadParamsCache(cache: AppStore.ParamsCache) {
+        liveParams.value = cache.params
+        identity.value = cache.identity
+        paramsFromCache.value = true
     }
 
     /**
@@ -141,6 +155,7 @@ object MockBms {
     fun clearForRealDevice() {
         liveParams.value = emptyMap()
         identity.value = emptyMap()
+        paramsFromCache.value = false   // 会话数据已清空，「缓存」标记自然也不成立
         clearTrend()
         _status.value = BmsStatus(
             deviceName = "--", runtime = "--", swVersion = "--", hwVersion = "--",

@@ -34,17 +34,25 @@ fun ConfigHomeScreen(
     val usingReal by MockBms.usingRealBle.collectAsState()
     val live by MockBms.liveParams.collectAsState()
     val reading by MockBms.paramsReading.collectAsState()
+    val fromCache by MockBms.paramsFromCache.collectAsState()
     val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
     ScreenScaffold(
         title = "配置",
-        // 读回进度放副标题，不再用常驻横幅占一整行
-        subtitle = if (live.isNotEmpty()) "保护板参数 · 已读回 ${live.size} 项" else "保护板参数 · 0x02 分块读回",
+        // 读回进度放副标题，不再用常驻横幅占一整行（缓存态注明来源）
+        subtitle = when {
+            live.isEmpty() -> "保护板参数 · 0x02 分块读回"
+            fromCache -> "保护板参数 · 缓存 ${live.size} 项（上次成功连接）"
+            else -> "保护板参数 · 已读回 ${live.size} 项"
+        },
         bottomPadding = bottomPadding,
         // 写权限状态 + 等级数字：等级不再单独挂横幅，点任一个都能换级
         trailing = { WriteAccessTrailing(status.permissionLevel, WriteAccess.of(status.permissionLevel, connected), onOpenPerm) },
     ) {
         when {
+            // 未连接但有缓存：配置项不是实时数据，显示上次成功连接的设置项（只读），横幅说清来源
+            !connected && fromCache && live.isNotEmpty() ->
+                InfoBanner("未连接保护板 · 以下为「${MockBms.deviceLabel}」上次成功连接的配置缓存（只读）", kind = "info")
             !connected -> InfoBanner("未连接保护板 · 点右上角「＋」扫描设备", kind = "warn")
             reading -> InfoBanner("正在读取参数区…", kind = "info")
             live.isEmpty() -> InfoBanner(
