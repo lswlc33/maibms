@@ -38,9 +38,17 @@ jobs:
         run: |
           set -euo pipefail
           echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          # pipefail 必须显式开：Actions 默认 bash -e 不含管道，sdkmanager 失败会被 tail 吞成绿
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" | tail -3
+          # sdkmanager 不在 runner 的 PATH 里（此前一直如此，旧管道把 127 吞成了假绿灯）。
+          # 用全路径调用；镜像上没有时直接跳过——ubuntu-latest 预装了常用组件，
+          # 缺的部分 AGP 会按已接受的许可证自动补齐，这里只是提前装好的兜底
+          SDKM="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            echo "::warning::cmdline-tools/sdkmanager 不可用，跳过显式安装（依赖镜像预装组件）"
+            exit 0
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          # pipefail 必须显式开：Actions 默认 bash -e 不含管道，安装失败会被 tail 吞成绿
+          "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" | tail -3
 
       - name: Tag the build as beta
         id: version
