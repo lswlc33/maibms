@@ -38,6 +38,7 @@ fun SnapshotScreen(onBack: () -> Unit, onPreviewed: () -> Unit) {
     // 快照列表存在 KV 里（JSON 文本），读一次进内存状态；删除/清空后刷新
     var snapshots by remember { mutableStateOf(AppStore.loadSnapshots()) }
     var pendingDelete by remember { mutableStateOf<BmsSnapshot?>(null) }
+    var pendingClear by remember { mutableStateOf(false) }
     var note by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -90,8 +91,9 @@ fun SnapshotScreen(onBack: () -> Unit, onPreviewed: () -> Unit) {
         }
         if (snapshots.isNotEmpty()) {
             SectionCard {
+                // 与单条删除一致走确认弹窗：一键抹掉全部快照不可恢复，不该点一下就执行
                 SettingRow(title = "清空全部快照", danger = true, trailing = { Chevron() }, onClick = {
-                    AppStore.clearSnapshots(); refresh(); note = "已清空全部快照"
+                    pendingClear = true
                 })
             }
         }
@@ -107,6 +109,19 @@ fun SnapshotScreen(onBack: () -> Unit, onPreviewed: () -> Unit) {
                 AppStore.deleteSnapshot(s.id); refresh()
                 note = "已删除快照（${s.timeLabel}）"
                 pendingDelete = null
+            },
+        )
+    }
+    if (pendingClear) {
+        ConfirmDialog(
+            title = "清空全部快照",
+            body = "将删除全部 ${snapshots.size} 张快照（含各设备的），删除后不可恢复。",
+            confirmText = "全部删除",
+            onDismiss = { pendingClear = false },
+            onConfirm = {
+                AppStore.clearSnapshots(); refresh()
+                note = "已清空全部快照"
+                pendingClear = false
             },
         )
     }
@@ -133,7 +148,9 @@ private fun SnapshotRow(snapshot: BmsSnapshot, onOpen: () -> Unit, onDelete: () 
         }
         Text(
             "删除",
-            fontSize = 10.sp, fontWeight = FontWeight.Bold, color = BmsColors.BadRed,
+            fontSize = 10.sp, fontWeight = FontWeight.Bold,
+            // 用主题 error 而非 BadRed：暗色下 BadRed(#D23B36) 压深灰卡面对比度不足
+            color = MaterialTheme.colorScheme.error,
             modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(onClick = onDelete).padding(horizontal = 8.dp, vertical = 5.dp),
         )
         Chevron()
@@ -160,7 +177,7 @@ private fun ConfirmDialog(
             Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = onConfirm) {
-                    Text(confirmText, color = BmsColors.BadRed, fontWeight = FontWeight.Bold)
+                    Text(confirmText, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                 }
             }
         }

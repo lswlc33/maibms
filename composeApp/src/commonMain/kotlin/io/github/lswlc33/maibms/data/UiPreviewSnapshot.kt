@@ -32,8 +32,11 @@ object UiPreview {
             soh = 98,
             cycles = 96,
             totalVoltage = 87.87,
-            current = -12.4,
-            power = -1090,
+            // 卡3 的口径：正=放电（进度条按放电功率推进）、负=充电（待机）。
+            // 预设是「放电中」，功率取正才能把换挡条画出来；早先配 -1090 会让进度条恒为 0，
+            // 与「放电」状态自相矛盾
+            current = 12.4,
+            power = 1090,
             maxCell = "4.212", minCell = "4.153", avgCell = "4.184", deltaCell = "0.059",
             totalCycleAh = 68,
             battState = "放电",

@@ -36,8 +36,10 @@ jobs:
 
       - name: Ensure Android platform and build-tools
         run: |
+          set -euo pipefail
           echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          # pipefail 必须显式开：Actions 默认 bash -e 不含管道，sdkmanager 失败会被 tail 吞成绿
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0" | tail -3
 
       - name: Tag the build as beta
@@ -68,12 +70,15 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          set -e
-          # 必须用发布密钥：debug 签名的包装不上正式版，发布出去只会让人白装一次
-          if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
-            echo "::error::缺少 SIGNING_KEYSTORE_BASE64 —— 请先配置签名 secrets，否则构建出的包无法覆盖安装正式版"
-            exit 1
-          fi
+          set -euo pipefail
+          # 四个 secret 缺一不可：Gradle 端 hasReleaseSigning 要求全部非空，否则会
+          # 静默退回 debug 签名并照常发布（debug 包装不上正式版，老用户覆盖安装必失败）
+          for v in SIGNING_KEYSTORE_BASE64 SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS SIGNING_KEY_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::缺少签名 secret $v —— 请先在仓库 Settings→Secrets 配齐 4 项签名变量"
+              exit 1
+            fi
+          done
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
           # 必须 export：$GITHUB_ENV 只对后续步骤生效，同一步里 gradle 读不到
           export SIGNING_KEYSTORE_FILE="$RUNNER_TEMP/maibms-release.jks"
@@ -87,8 +92,11 @@ jobs:
           cp "$SRC" "$OUT"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
 
-          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort | tail -1)"
-          "$APKSIGNER" verify --print-certs "$OUT" | head -4
+          # sort -V：build-tools 目录按版本号取最新（字典序会在 9.x/10.x 处选错）；
+          # 不接管道：find/verify 的失败必须让本步骤直接红，不能被 head 吞掉
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)"
+          test -n "$APKSIGNER" || { echo "::error::未找到 apksigner"; exit 1; }
+          "$APKSIGNER" verify --print-certs "$OUT"
           echo "built: $OUT"
 
       - name: Upload build artifact
@@ -104,15 +112,22 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
           VER: ${{ steps.version.outputs.name }}
         run: |
+          set -euo pipefail
           NOTES="预发布版 **${VER}**，由 \`${GITHUB_SHA:0:7}\` 自动构建，已签名可直接覆盖安装。
 
           Automated beta build **${VER}** from \`${GITHUB_SHA:0:7}\`. Signed, installs over the previous build."
-          gh release create "$TAG" \
-            --title "${VER}" \
-            --target "$GITHUB_SHA" \
-            --prerelease \
-            --notes "$NOTES"
-          gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+          # 重跑幂等：run_number 不变时 tag/release 可能已存在，此时复用而不是让本步骤失败
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "release $TAG 已存在（重跑），仅上传产物覆盖"
+            gh release upload "$TAG" "${{ steps.build.outputs.apk }}" --clobber
+          else
+            gh release create "$TAG" \
+              --title "${VER}" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --notes "$NOTES"
+            gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+          fi
           echo "published: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 
       - name: Prune old betas

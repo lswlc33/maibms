@@ -221,7 +221,8 @@ private fun DeviceDetailDialog(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("删除设备", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = BmsColors.BadRed,
+                Text("删除设备", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.clip(RoundedCornerShape(8.dp))
                         .clickable(onClick = onDeleteRequest).padding(horizontal = 6.dp, vertical = 4.dp))
                 Spacer(Modifier.weight(1f))
@@ -254,7 +255,7 @@ private fun ConfirmDialog(title: String, body: String, confirmText: String, onDi
             Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = onConfirm) {
-                    Text(confirmText, color = BmsColors.BadRed, fontWeight = FontWeight.Bold)
+                    Text(confirmText, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
                 }
             }
         }

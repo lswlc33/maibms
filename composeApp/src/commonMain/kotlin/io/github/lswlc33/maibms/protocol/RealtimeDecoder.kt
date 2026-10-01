@@ -68,6 +68,11 @@ object RealtimeDecoder {
 
         val t0 = 28 + 2 * n + 2 * m
         val hasExt = data.size > 106 + 2 * n + 2 * m
+        // 头部声明的串数/温度数可能大于实际数据区（截断帧/脏数据）：
+        // 只查 28 会在 t0+69 处越界，帧被 runCatching 静默吞掉；这里给出可排查的失败原因
+        require(data.size >= t0 + 70) {
+            "数据区截断：需 ${t0 + 70} 字节（$n 串 + $m 温度），实际 ${data.size}"
+        }
 
         // 单体电压：u16 & 0x1FFF / 1000
         val cells = (0 until n).map { (u16le(28 + 2 * it) and 0x1FFF) / 1000.0 }

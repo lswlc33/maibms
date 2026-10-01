@@ -207,7 +207,7 @@ fun ControlToolsScreen(
     // 只读时点了开关/命令不是静默无反应，而是当场说明原因
     var deniedNote by remember { mutableStateOf<String?>(null) }
 
-    /** 统一入口：权限不够只提示、不发帧；返回 true 才继续（调用方据此决定要不要改本地开关状态） */
+    /** 统一入口：权限不够只提示、不发帧；确认弹窗关掉后由 0x61 结果与实时帧驱动开关状态 */
     val fire: (Int) -> Boolean = { cmd ->
         if (!canWrite) {
             deniedNote = "${ControlCmd.name(cmd)} 需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 ${status.permissionLevel} 级）"
@@ -239,14 +239,16 @@ fun ControlToolsScreen(
             SectionHeader("开关控制", tail = "51/1·3·4·6·13·14·52")
             // 开关做小了，整行也做成可点，触摸目标才够（点哪都能切）。
             // 只读时不能只翻本地开关：设备没收到命令，界面却变了（实时帧下一拍会把它拨回来）
+            // 本地开关不乐观翻转：fire 只负责弹确认，真正的状态变化由设备 0x61 结果 +
+            // 下一拍实时帧驱动（确认弹窗还开着时先翻状态，取消后要等一拍才被拨回）
             val toggleCharge: (Boolean) -> Unit = { on ->
-                if (fire(if (on) ControlCmd.CHARGE_ON else ControlCmd.CHARGE_OFF)) MockBms.chargeSwitch.value = on
+                fire(if (on) ControlCmd.CHARGE_ON else ControlCmd.CHARGE_OFF)
             }
             val toggleDischarge: (Boolean) -> Unit = { on ->
-                if (fire(if (on) ControlCmd.DISCHARGE_ON else ControlCmd.DISCHARGE_OFF)) MockBms.dischargeSwitch.value = on
+                fire(if (on) ControlCmd.DISCHARGE_ON else ControlCmd.DISCHARGE_OFF)
             }
             val toggleBalance: (Boolean) -> Unit = { on ->
-                if (fire(if (on) ControlCmd.BALANCE_ON else ControlCmd.BALANCE_OFF)) MockBms.balanceSwitch.value = on
+                fire(if (on) ControlCmd.BALANCE_ON else ControlCmd.BALANCE_OFF)
             }
             SettingRow(title = "充电开关", trailing = { AppSwitch(chargeOn, toggleCharge) }, onClick = { toggleCharge(!chargeOn) })
             SettingRow(title = "放电开关", trailing = { AppSwitch(dischargeOn, toggleDischarge) }, onClick = { toggleDischarge(!dischargeOn) })

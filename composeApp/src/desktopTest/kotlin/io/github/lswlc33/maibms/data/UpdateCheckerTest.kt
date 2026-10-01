@@ -33,6 +33,29 @@ class UpdateCheckerTest {
         assertTrue(UpdateChecker.isNewer("0.1.1", "0.1.1-beta.9"))
     }
 
+    @Test fun betaSequenceComparesNumerically() {
+        // 真实线上形态（tag v0.1.1-beta.N）：序号按数值比，beta.20 > beta.9（不是字符串比较）
+        assertTrue(UpdateChecker.isNewer("0.1.1-beta.20", "0.1.1-beta.9"))
+        assertTrue(UpdateChecker.isNewer("0.1.1-beta.10", "0.1.1-beta.9"))
+        assertFalse(UpdateChecker.isNewer("0.1.1-beta.9", "0.1.1-beta.10"))
+        // 同版本号之间 beta 序号不同不算「已是最新」误判
+        assertFalse(UpdateChecker.isNewer("0.1.1-beta.9", "0.1.1-beta.9"))
+    }
+
+    @Test fun releaseTagWithVersionCodePrefix() {
+        // 真实线上形态：稳定版 tag = <versionCode>-<versionName>（如 2-0.1.1）。
+        // 曾直接把 tag 去掉 v 后比较，"2" 被当成主版本号 → 所有 0.1.1 用户被提示「发现 2-0.1.1」
+        assertEquals("0.1.1", UpdateChecker.versionFromTag("2-0.1.1"))
+        assertEquals("0.1.1", UpdateChecker.versionFromTag("v2-0.1.1"))
+        assertEquals("0.1.1-beta.20", UpdateChecker.versionFromTag("v0.1.1-beta.20"))
+        assertEquals("0.1.1", UpdateChecker.versionFromTag("v0.1.1"))
+        assertEquals("0.1.1", UpdateChecker.versionFromTag("0.1.1"))
+        // 归一化后不再误报
+        assertFalse(UpdateChecker.isNewer(UpdateChecker.versionFromTag("2-0.1.1"), "0.1.1"))
+        // code 前缀里的数字不影响版本本身
+        assertTrue(UpdateChecker.isNewer(UpdateChecker.versionFromTag("3-0.1.2"), "0.1.1"))
+    }
+
     @Test fun vPrefixAndSegmentPadding() {
         // tagName 前缀在 check() 里剥，isNewer 层面允许带 v 的容错由调用方保证；
         // 段数不同补 0：0.2 == 0.2.0

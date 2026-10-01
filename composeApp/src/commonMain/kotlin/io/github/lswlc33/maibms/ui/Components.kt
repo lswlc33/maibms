@@ -512,6 +512,13 @@ fun MetricGridCard(
                         fontSize = 9.sp, color = labelColor,
                         modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
+                } else {
+                    // 关闭态也要有线索：只靠用户记得双击开回来，等于这个开关单程
+                    Text(
+                        "进度条已关 · 双击卡片重新开启 · 长按设置功率阶梯",
+                        fontSize = 9.sp, color = labelColor,
+                        modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
                 }
             }
         }
@@ -616,7 +623,9 @@ private fun PowerStageDialog(
             if (v <= 0) return null
             out.add(v)
         }
-        return out
+        // 必须在这里排序：onConfirm 把返回值原样赋给卡面状态（AppStore 的 setter 不排序，
+        // getter 才排），乱序值会让背景条出现 1 单位宽的负差格子，档位语义崩坏到重启才自愈
+        return out.distinct().sorted()
     }
     val fields = listOf("第 1 档上限（W）" to s1, "第 2 档上限（W，可选）" to s2, "第 3 档上限（W，可选）" to s3)
     val setters = listOf<(String) -> Unit>(
@@ -643,7 +652,7 @@ private fun PowerStageDialog(
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
             }
-            error?.let { Text(it, fontSize = 10.sp, color = BmsColors.BadRed, modifier = Modifier.padding(top = 6.dp)) }
+            error?.let { Text(it, fontSize = 10.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp)) }
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = {

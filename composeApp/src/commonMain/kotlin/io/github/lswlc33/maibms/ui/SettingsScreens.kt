@@ -413,7 +413,7 @@ internal fun PasswordEditDialog(address: String, level: Int, onDismiss: () -> Un
                         if (sessionDevice) io.github.lswlc33.maibms.data.Bms.repository.forgetPassword(level)
                         else AppStore.removePassword(address, level)
                         onDismiss()
-                    }) { Text("清除", color = BmsColors.BadRed) }
+                    }) { Text("清除", color = MaterialTheme.colorScheme.error) }
                 }
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onDismiss) { Text("取消", color = MaterialTheme.colorScheme.primary) }

@@ -98,11 +98,14 @@ class BmsRepository(
     private var writeInFlight = false
 
     private var pollJob: Job? = null
+    /** 串行化「检查 pollJob 是否活跃 + 启动轮询」，防止并发 connect() 起出双轮询 */
+    private val pollGuard = Mutex()
     private var collectorJob: Job? = null
     private var stateJob: Job? = null
 
-    /** start() 已完成装配的标志：幂等守卫的主键（collectorJob 现在真实赋值，作为双保险） */
-    @Volatile private var started = false
+    /** start() 已完成装配的标志：幂等守卫的主键（collectorJob 现在真实赋值，作为双保险）。
+     *  CAS 落位而非先查后置：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 理论上可并发调 start() */
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** 链路就绪时的轮询唤醒：首拍立刻发，不等 900ms 相位（CONFLATED：最多积一次，不会空转） */
     private val pollWake = Channel<Unit>(Channel.CONFLATED)
@@ -117,8 +120,7 @@ class BmsRepository(
         // 幂等守卫：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 都会调 start()，
         // 只允许第一套收集器/自动重连生效——曾因守卫字段从未赋值而双跑，
         // 两套收集器×两条轮询×两个 postConnectFlow 抢同一个应答槽，连接后直接把会话搅崩
-        if (started) return
-        started = true
+        if (!started.compareAndSet(false, true)) return
         BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
         // 自动重连目标：历史列表里显式指定的设备优先，否则默认上次连接；
         // 被指定的设备若已从历史删除，回退到上次连接
@@ -375,6 +377,14 @@ class BmsRepository(
      * 同时把设备写进历史档案（新设备在此自动入列，已有设备刷新最近连接时间）。
      */
     suspend fun connectTo(address: String) {
+        // 预览保护口：与 connect() 同一挡位。这里不挡的话，下面会先把地址写进记忆设备
+        // 和设备档案，然后连接才被 connect() 拒掉——用户在预览里随手点一下设备，
+        // 重启后就会被自动连到它（记忆设备/密码库全被换掉）
+        if (previewActive.value) {
+            BmsLog.w("CONN", "快照预览中，连接请求被忽略（重启应用后才能重新连接）")
+            _connectHint.value = "正在预览快照，自动连接已停用（重启应用恢复）"
+            return
+        }
         val name = _scanResults.value.firstOrNull { it.address == address }?.name?.trim()
             ?: DeviceProfiles.find(address)?.displayName
         BmsLog.i("CONN", "选择设备 $name ($address)")
@@ -432,35 +442,43 @@ class BmsRepository(
         postConnectJob = null
         firstFrameSignal = null
         transport.connect(address)
-        if (pollJob?.isActive != true) {
-        pollJob = scope.launch {
-            // 无条件常驻：连接态在每拍内部判断（避免链路态镜像延迟导致首拍误判退出）
-            // 节奏 900ms：真机弱信号下 500ms 一轮会持续占满连接间隔，反而拖低成功率；
-            // 但链路刚就绪时会被 pollWake 立刻唤醒一次——首帧不用白等这个相位
-            while (isActive) {
-                if (_linkState.value == LinkState.Connected) {
-                    try {
-                        requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
-                    } catch (e: Exception) {
-                        // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
-                        BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
-                    }
-                    // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
-                    val since = System.currentTimeMillis() - lastFrameAt
-                    if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
-                        if (!_stalled.value) {
-                            _stalled.value = true
-                            BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（链路保持，继续轮询）")
-                        }
-                    } else if (_stalled.value) {
-                        _stalled.value = false
-                        BmsLog.i("LINK", "实时帧恢复")
-                    }
-                }
-                // 正常按 900ms 走；链路刚就绪会提前唤醒（见 pollWake）
-                withTimeoutOrNull(POLL_INTERVAL_MS) { pollWake.receive() }
+        // check-then-launch 的竞态：两次并发 connect() 都看到 isActive==false 会各起一条轮询，
+        // 轮询与命令共用一个应答槽，双管线会把会话搅崩（与 start() 双跑同一类故障）。
+        // 用 Mutex 串行化「检查+启动」：赢家启动轮询，输家进来发现已有活跃 Job 就什么都不做
+        pollGuard.withLock {
+            if (pollJob?.isActive != true) {
+                pollJob = scope.launch { pollLoop() }
             }
         }
+    }
+
+    /** 900ms 轮询循环（connect 启动，disconnect 取消）：无条件常驻，连接态在每拍内部判断 */
+    private suspend fun pollLoop() {
+        // 无条件常驻：连接态在每拍内部判断（避免链路态镜像延迟导致首拍误判退出）
+        // 节奏 900ms：真机弱信号下 500ms 一轮会持续占满连接间隔，反而拖低成功率；
+        // 但链路刚就绪时会被 pollWake 立刻唤醒一次——首帧不用白等这个相位
+        while (currentCoroutineContext().isActive) {
+            if (_linkState.value == LinkState.Connected) {
+                try {
+                    requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
+                } catch (e: Exception) {
+                    // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
+                    BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
+                }
+                // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
+                val since = System.currentTimeMillis() - lastFrameAt
+                if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
+                    if (!_stalled.value) {
+                        _stalled.value = true
+                        BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（链路保持，继续轮询）")
+                    }
+                } else if (_stalled.value) {
+                    _stalled.value = false
+                    BmsLog.i("LINK", "实时帧恢复")
+                }
+            }
+            // 正常按 900ms 走；链路刚就绪会提前唤醒（见 pollWake）
+            withTimeoutOrNull(POLL_INTERVAL_MS) { pollWake.receive() }
         }
     }
 

@@ -50,8 +50,12 @@ object BmsLog {
             return
         }
         val e = Entry(level, tag, msg, origin.elapsedNow().inWholeMilliseconds)
-        _entries.value = (_entries.value + e).takeLast(MAX)
-        _lines.value = (_lines.value + e.render()).takeLast(MAX)
+        // 追加必须原子：BLE IO 线程与 Default 调度器会并发记日志，
+        // 「读出列表 + 追加 + 写回」交错时会整行丢失（且丢的是刚发生的关键行）
+        synchronized(this) {
+            _entries.value = (_entries.value + e).takeLast(MAX)
+            _lines.value = (_lines.value + e.render()).takeLast(MAX)
+        }
         println("[ANTBMS/$tag] ${level.tag} $msg")
     }
 
@@ -66,8 +70,10 @@ object BmsLog {
     fun hex(b: ByteArray): String = b.joinToString(" ") { "%02X".format(it) }
 
     fun clear() {
-        _entries.value = emptyList()
-        _lines.value = emptyList()
+        synchronized(this) {
+            _entries.value = emptyList()
+            _lines.value = emptyList()
+        }
     }
 
     /** 导出文本：带可读时间与完整级别，供「导出日志」用 */

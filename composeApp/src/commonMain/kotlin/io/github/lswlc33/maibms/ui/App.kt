@@ -485,6 +485,15 @@ fun PermLevelsDialog(onDismiss: () -> Unit) {
             Text("切换权限等级", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             Text("当前 ${status.permissionLevel} 级 · 设备 ${MockBms.deviceLabel}",
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            // 374 地址冲突待实测：新参数表把 374 定义为「系统基准电压偏移」，旧版按管理员密码槽写 12 字节
+            // （docs/附录A、docs/09 都标注了这处冲突）。校验失败会自动删除已存的 9 级密码，为防误删先警示
+            if (editingLevel == 9) {
+                Text(
+                    "注意：9 级（管理员）槽地址 374 与新版参数表「系统基准电压偏移」冲突（固件代际有关），校验不通过会移除已记住的密码",
+                    fontSize = 10.sp, color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
             Text(
                 if (canAuth) "点已记住的等级直接校验；点未设置的等级可输入密码"
                 else "未连接保护板 · 校验需要先连上设备",

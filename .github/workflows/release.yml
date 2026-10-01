@@ -3,8 +3,9 @@ name: Release
 # 手动发布正式版：
 #   Actions -> Release -> Run workflow（version 留空则自动把版本号末位 +1）
 #
-# 流程：递增 versionCode/versionName -> 提交 -> 用 secrets 里的密钥签名构建 ->
-#       上传构建产物 -> 打 tag <versionCode>-<versionName> 发布正式 Release
+# 流程：递增 versionCode/versionName（只改工作区）-> 测试 -> 用 secrets 里的密钥签名构建 ->
+#       上传构建产物 -> 提交版本号（测试构建全过才提交）-> 打 tag <versionCode>-<versionName> 发布
+#       （tag 指向版本号提交本身，保证 tag 里的源码与发布的包一致）
 on:
   workflow_dispatch:
     inputs:
@@ -40,8 +41,10 @@ jobs:
       # 它的新版本会因为已移除的 legacy "tools" 包而失败
       - name: Ensure Android platform and build-tools
         run: |
+          set -euo pipefail
           echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          # pipefail 必须显式开：Actions 默认 bash -e 不含管道，sdkmanager 失败会被 tail 吞成绿
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0" | tail -3
 
       - name: Bump the version
@@ -49,8 +52,16 @@ jobs:
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
-          set -e
+          set -euo pipefail
           GRADLE_FILE=composeApp/build.gradle.kts
+          if [ -n "$VERSION_INPUT" ]; then
+            # 入口校验：只收 x.y.z 纯数字版本。特殊字符（& / ; 等）会破坏下游 sed；
+            # RC 之类的预发布语义未在此定义，预发布一律走 Beta 工作流
+            if ! echo "$VERSION_INPUT" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version 输入 '$VERSION_INPUT' 不是 x.y.z 格式（如 0.2.0）；预发布请走 Beta 工作流"
+              exit 1
+            fi
+          fi
           OLD_CODE="$(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | head -1 | grep -oE '[0-9]+')"
           OLD_NAME="$(grep -oE 'versionName = "[^"]*"' "$GRADLE_FILE" | head -1 | cut -d'"' -f2)"
           NEW_CODE=$((OLD_CODE + 1))
@@ -77,15 +88,6 @@ jobs:
           echo "name=${NEW_NAME}" >> "$GITHUB_OUTPUT"
           echo "tag=${NEW_CODE}-${NEW_NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Commit the version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add composeApp/build.gradle.kts
-          # [skip ci] 防止这次提交又触发一轮 Beta 构建
-          git commit -m "chore(release): v${{ steps.version.outputs.name }} [skip ci]"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
-
       - name: Run unit tests
         run: |
           chmod +x ./gradlew
@@ -99,11 +101,15 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
-          set -e
-          if [ -z "$SIGNING_KEYSTORE_BASE64" ]; then
-            echo "::error::缺少 SIGNING_KEYSTORE_BASE64 —— 发布包必须是签名包，请先配置签名 secrets"
-            exit 1
-          fi
+          set -euo pipefail
+          # 四个 secret 缺一不可：Gradle 端 hasReleaseSigning 要求全部非空，否则会
+          # 静默退回 debug 签名并照常发布（debug 包装不上正式版，老用户覆盖安装必失败）
+          for v in SIGNING_KEYSTORE_BASE64 SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS SIGNING_KEY_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::缺少签名 secret $v —— 发布包必须是发布密钥签名，请在 Settings→Secrets 配齐 4 项"
+              exit 1
+            fi
+          done
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
           # 必须 export：$GITHUB_ENV 只对后续步骤生效，同一步里 gradle 读不到
           export SIGNING_KEYSTORE_FILE="$RUNNER_TEMP/maibms-release.jks"
@@ -117,8 +123,11 @@ jobs:
           cp "$SRC" "$OUT"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
 
-          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort | tail -1)"
-          "$APKSIGNER" verify --print-certs "$OUT" | head -4
+          # sort -V：build-tools 目录按版本号取最新（字典序会在 9.x/10.x 处选错）；
+          # 不接管道：find/verify 的失败必须让本步骤直接红，不能被 head 吞掉
+          APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)"
+          test -n "$APKSIGNER" || { echo "::error::未找到 apksigner"; exit 1; }
+          "$APKSIGNER" verify --print-certs "$OUT"
           echo "built: $OUT"
 
       - name: Upload build artifact
@@ -128,6 +137,17 @@ jobs:
           path: ${{ steps.build.outputs.apk }}
           if-no-files-found: error
 
+      # 测试与构建都过了才提交版本号：失败时不往 main 留「已自增未发布」的提交
+      - name: Commit the version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add composeApp/build.gradle.kts
+          git diff --cached --quiet && { echo "版本号无变化，跳过提交"; exit 0; }
+          # [skip ci] 防止这次提交又触发一轮 Beta 构建
+          git commit -m "chore(release): v${{ steps.version.outputs.name }} [skip ci]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -135,16 +155,25 @@ jobs:
           VER: ${{ steps.version.outputs.name }}
           NOTES_INPUT: ${{ inputs.notes }}
         run: |
+          set -euo pipefail
           NOTES="$NOTES_INPUT"
           if [ -z "$NOTES" ]; then
             NOTES="正式版 **v${VER}**，已签名，可直接覆盖安装。
 
-          Signed stable build **v${VER}**, built from \`${GITHUB_SHA}\`. 安装与构建说明见 README.md。"
+          Signed stable build **v${VER}**, built from \`${GITHUB_SHA:0:7}\`. 安装与构建说明见 README.md。"
           fi
-          gh release create "$TAG" \
-            --title "v${VER}" \
-            --target "$GITHUB_SHA" \
-            --latest \
-            --notes "$NOTES"
-          gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+          # tag 必须指向刚 push 的版本号提交（HEAD），不能指向触发时的旧 SHA——
+          # 否则 tag 里的源码 versionCode/versionName 还是上一版，与发布的包对不上
+          TARGET="$(git rev-parse HEAD)"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "release $TAG 已存在（重跑），仅上传产物覆盖"
+            gh release upload "$TAG" "${{ steps.build.outputs.apk }}" --clobber
+          else
+            gh release create "$TAG" \
+              --title "v${VER}" \
+              --target "$TARGET" \
+              --latest \
+              --notes "$NOTES"
+            gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+          fi
           echo "published: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"

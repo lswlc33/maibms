@@ -353,14 +353,26 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 10.dp))
             }
-            if (status.alarmPairs.isNotEmpty()) {
+            if (status.alarmPairs.isNotEmpty() || status.alarmList.isNotEmpty()) {
                 Text("告警", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            // 与告警卡同源展示：卡片用 displayAlarmList（含合成的「MOS关」提示），
+            // 详情只列真实位（带 bit 号），MOS 关提示按同一条规则补在末尾，两边条数才对得上
+            val mosHints = io.github.lswlc33.maibms.protocol.BitDict.mosClosedHints(
+                status.chMos == "开启", status.disMos == "开启")
             status.alarmPairs.forEach { (bit, a) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     StatusDot(BmsColors.WarnAmber)
                     Text(a, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f).padding(start = 9.dp))
                     Text("bit $bit", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            mosHints.forEach { hint ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                    StatusDot(BmsColors.OffGray)
+                    Text(hint, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
+                    Text("状态", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
@@ -376,7 +388,7 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
-            if (status.hasData) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            if (status.hasData && status.alarmPairs.isEmpty() && status.protectPairs.isEmpty()) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 StatusDot(BmsColors.OffGray)
                 Text("其余位正常", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
                 Text("u64", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
