@@ -70,7 +70,10 @@ class RealFrameTest {
         assertEquals(35516411L, r.runtimeSec)                // 单位秒=411天01:40:11（按 ms 误读会显示 09:51:56）
         assertTrue(r.hasExt)
         assertEquals(emptyList(), BitDict.decode(r.protectBits, BitDict.protectNames))
-        assertEquals(listOf("单体过压告警"), BitDict.decodeForDisplay(r.warnBits, BitDict.warnNames))
+        // 真机帧告警位 0/23/24/26：bit23/24（MOS 开）自 2026-10-01 起跟随官方实现展示，
+        // bit26（待机中）仍是状态位被过滤
+        assertEquals(listOf("单体过压告警", "充电MOS开", "放电MOS开"),
+            BitDict.decodeForDisplay(r.warnBits, BitDict.warnNames))
     }
 
     /** 真机 0x23 应答：段1 无 AA55，紧跟 0xFF 开头无帧头段，AA55 只在最末尾 */

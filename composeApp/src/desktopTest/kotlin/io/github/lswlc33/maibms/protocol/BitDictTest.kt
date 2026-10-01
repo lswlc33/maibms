@@ -40,12 +40,16 @@ class BitDictTest {
         assertEquals("内部通信不稳定", BitDict.warnNames[53])
     }
 
-    @Test fun realDeviceResidualBitsAreStateNotAlarm() {
+    @Test fun mosOpenBitsShownAsImportantHints() {
         // 真机 2026-09-29 实录：告警位 0/23/24/26 常驻置位（RealFrameTest 同源）。
-        // 卡片应只报「单体过压告警」，MOS 开/待机是状态不算告警；
-        // 完整解码（详情弹窗）则能看到全部四条带真实位号。
+        // 2026-10-01 用户实测对比官方 APP：官方告警卡显示「充电 MOS 开 / 放电 MOS 开」两条
+        // （不过滤任何位）；bit23/24 因此从状态过滤表中移除，跟随参考实现展示。
+        // bit26（待机中）仍是状态位、继续过滤；详情弹窗则始终能看到全部四条带真实位号。
         val bits = (1UL) or (1UL shl 23) or (1UL shl 24) or (1UL shl 26)
-        assertEquals(listOf("单体过压告警"), BitDict.decodeForDisplay(bits, BitDict.warnNames))
+        assertEquals(
+            listOf("单体过压告警", "充电MOS开", "放电MOS开"),
+            BitDict.decodeForDisplay(bits, BitDict.warnNames),
+        )
         assertEquals(
             listOf("单体过压告警", "充电MOS开", "放电MOS开", "待机中"),
             BitDict.decodePairs(bits, BitDict.warnNames).map { it.second },
@@ -53,10 +57,11 @@ class BitDictTest {
     }
 
     @Test fun decodePairsSortedByBit() {
+        // bit24（放电MOS开）已随 2026-10-01 的对齐展示在卡片上；bit2/bit49 是纯告警
         val bits = (1UL shl 24) or (1UL shl 2) or (1UL shl 49)
         val pairs = BitDict.decodeForDisplayPairs(bits, BitDict.warnNames)
-        assertEquals(listOf(2, 49), pairs.map { it.first })
-        assertEquals(listOf("单体欠压告警", "即将低压关机"), pairs.map { it.second })
+        assertEquals(listOf(2, 24, 49), pairs.map { it.first })
+        assertEquals(listOf("单体欠压告警", "放电MOS开", "即将低压关机"), pairs.map { it.second })
     }
 
     @Test fun protectBits64bitSafe() {
