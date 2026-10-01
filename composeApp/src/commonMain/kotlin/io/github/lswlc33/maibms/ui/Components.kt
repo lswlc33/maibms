@@ -438,9 +438,10 @@ private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = 
 data class Metric(val label: String, val value: String, val unit: String)
 
 /**
- * 卡3：第一行左「电流」右「功率」；功率下方是变速箱式换挡进度条——
- * 设了 N 个功率阶梯（W）就串 N 条轨道，功率走满一条再进下一条。
+ * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下，
+ * 功率下方保留变速箱式换挡进度条（设 N 个阶梯串 N 条轨道，走满一条进下一条）。
  * 点击卡片开/关进度条；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
+ * 其余指标（总压/循环/平均/最高/最低/压差）已由别的卡片展示，这里不再重复。
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -453,41 +454,29 @@ fun MetricGridCard(
     var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
     var stages by remember { mutableStateOf(AppStore.powerStagesW) }
     var editing by remember { mutableStateOf(false) }
-    // 点击/长按挂在整行读数上（需求原文「点击本卡片」）：点击开关进度条，长按设阶梯；
-    // 下方的其余指标网格不挂手势，避免滚动误触
+    // 点击/长按挂在整卡读数上：点击开关进度条，长按设阶梯
     val gaugeClickable = Modifier.combinedClickable(
         onClick = { gaugeOn = !gaugeOn; AppStore.powerGaugeEnabled = gaugeOn },
         onLongClick = { editing = true },
     )
 
     SectionCard(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             val current = metrics.firstOrNull { it.label == "电流" }
             val power = metrics.firstOrNull { it.label == "功率" }
-            Row(modifier = Modifier.fillMaxWidth().then(gaugeClickable), verticalAlignment = Alignment.CenterVertically) {
-                BigMetric(current, Modifier.weight(1f))
-                BigMetric(power, Modifier.weight(1f))
+            Row(
+                modifier = Modifier.fillMaxWidth().then(gaugeClickable).padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CenterMetric(current, Modifier.weight(1f))
+                // 中缝细分隔线：两块读数各占一半
+                Box(Modifier.width(1.dp).height(34.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)))
+                CenterMetric(power, Modifier.weight(1f))
             }
             if (gaugeOn && powerW != null && stages.isNotEmpty()) {
                 PowerGauge(powerW, stages, hasData)
-            }
-            metrics.filter { it.label != "电流" && it.label != "功率" }.chunked(4).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                    row.forEach { m ->
-                        Row(
-                            Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(m.label, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Row(verticalAlignment = Alignment.Bottom) {
-                                Text(m.value, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-                                Text(m.unit, fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 1.dp, bottom = 1.dp))
-                            }
-                        }
-                    }
-                    repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
-                }
             }
         }
     }
@@ -500,18 +489,20 @@ fun MetricGridCard(
     }
 }
 
-/** 大号读数（卡3 第一行用）：label 小字在上，数值大字在下 */
+/** 居中大读数（卡3 用）：label 小字在上居中，数值大字居中在下 */
 @Composable
-private fun BigMetric(m: Metric?, modifier: Modifier = Modifier) {
-    if (m == null) { Box(modifier); return }
-    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+private fun CenterMetric(m: Metric?, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        if (m == null) {
+            Text("--", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@Column
+        }
         Text(m.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.weight(1f))
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(m.value, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+            Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                  color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-            Text(m.unit, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                 modifier = Modifier.padding(start = 2.dp, bottom = 2.dp))
+            Text(m.unit, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
         }
     }
 }
@@ -620,26 +611,14 @@ private fun PowerStageDialog(
 }
 
 fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
+    // 卡3 只显示电流与功率；总压/循环/平均/最高/最低/压差由单体电压卡等其它卡片展示，不再重复
     if (off) return listOf(
-        Metric("总压", "--", "V"),
         Metric("电流", "--", "A"),
         Metric("功率", "--", "W"),
-        Metric("循环", "--", "Ah"),
-        Metric("平均", "--", "V"),
-        Metric("最高", "--", "V"),
-        Metric("最低", "--", "V"),
-        Metric("压差", "--", "V"),
     )
-    // 第一行=总压/电流/功率/循环，第二行=平均/最高/最低/压差
     return listOf(
-        Metric("总压", "%.2f".format(totalVoltage), "V"),
         Metric("电流", "%.1f".format(current), "A"),
         Metric("功率", power.toString(), "W"),
-        Metric("循环", totalCycleAh.toString(), "Ah"),
-        Metric("平均", avgCell, "V"),
-        Metric("最高", maxCell, "V"),
-        Metric("最低", minCell, "V"),
-        Metric("压差", deltaCell, "V"),
     )
 }
 
