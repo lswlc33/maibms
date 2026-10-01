@@ -288,11 +288,12 @@ fun BatteryCard(
     val track = fill.copy(alpha = if (dark) .22f else .18f)
     // 卡内左侧文字的可读性（用户要求：不要底衬，用透明/滤镜方式）：
     // 给填充层加「左实右透」的横向渐变滤镜——饱和电量色只保留在最左 ~12%（电量条视觉锚点），
-    // 12% 后快速淡出、25% 起完全等于轨道色；文字从 12% 就开始，永远坐在轨道底上。
+    // 12% 后快速淡出、25% 起完全消失；文字从 12% 就开始，永远坐在轨道底上。
+    // 淡出终点必须是全透明：填充层叠在轨道层之上，若终点只降到轨道透明度，两层同色
+    // 叠加会让填充区比右侧未填充区深一截——电量不满时卡上有一条突兀的竖向分界
     // 文字前景用 onSurface（不是 onSurfaceVariant）：浅色下轨道是 18% 透明的绿，
     // 灰字在上面对比度不足，只有主前景色才够
     val fillAlphaHigh = if (dark) 0.92f else 1f
-    val fillAlphaLow = track.alpha
     Box(
         modifier
             .fillMaxWidth()
@@ -307,8 +308,8 @@ fun BatteryCard(
                         androidx.compose.ui.graphics.Brush.horizontalGradient(
                             0f to fill.copy(alpha = fillAlphaHigh),
                             0.12f to fill.copy(alpha = fillAlphaHigh),
-                            0.25f to fill.copy(alpha = fillAlphaLow),
-                            1f to fill.copy(alpha = fillAlphaLow),
+                            0.25f to Color.Transparent,
+                            1f to Color.Transparent,
                         )
                     )
             )
