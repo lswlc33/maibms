@@ -51,7 +51,9 @@ jobs:
           sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$GRADLE_FILE"
           echo "beta version: ${NAME} (versionCode ${CODE})"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
-          echo "tag=beta-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          # tag 必须是合法 semver（v 前缀 + 版本名）：GitHub Releases 列表按 tag 的语义化版本排序，
+          # 此前的 beta-12 这种纯数字后缀 tag 只能按字典序排（"beta-9" > "beta-12"），新版会被排到旧版后面
+          echo "tag=v${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Run unit tests
         run: |
@@ -119,11 +121,13 @@ jobs:
           KEEP: ${{ env.KEEP_BETAS }}
         run: |
           # 只保留最近 KEEP 个 beta 预发布，避免 Releases 页被刷屏
+          # （新 tag 是 v<版本名> 旧 tag 是 beta-<N>：两种前缀都收，等旧的自然被淘汰完）
           gh release list --limit 100 --json tagName,isPrerelease \
             | python3 -c "
           import json,sys
           keep=int('${KEEP}')
-          rels=[r for r in json.load(sys.stdin) if r['isPrerelease'] and r['tagName'].startswith('beta-')]
+          rels=[r for r in json.load(sys.stdin)
+                if r['isPrerelease'] and (r['tagName'].startswith('beta-') or '-beta.' in r['tagName'])]
           for r in rels[keep:]:
               print(r['tagName'])
           " | while read -r tag; do
