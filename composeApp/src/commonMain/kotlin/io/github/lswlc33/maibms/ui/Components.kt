@@ -333,7 +333,7 @@ fun BatteryCard(
                 )
                 Text(
                     "${status.totalCycleAh}Ah 循环 · ${status.runtime}",
-                    fontSize = 10.sp,
+                    fontSize = 10.sp, fontWeight = FontWeight.Bold,
                     color = onFillLabel ?: MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                 )
@@ -489,7 +489,7 @@ fun MetricGridCard(
     }
 }
 
-/** 居中大读数（卡3 用）：label 小字在上居中，数值大字居中在下 */
+/** 居中大读数（卡3 用）：label 小字加粗居上，数值大字居中在下 */
 @Composable
 private fun CenterMetric(m: Metric?, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -497,11 +497,11 @@ private fun CenterMetric(m: Metric?, modifier: Modifier = Modifier) {
             Text("--", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             return@Column
         }
-        Text(m.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(m.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Row(verticalAlignment = Alignment.Bottom) {
             Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                  color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-            Text(m.unit, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Text(m.unit, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
                  modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
         }
     }
@@ -534,7 +534,7 @@ private fun PowerGauge(powerW: Int, stages: List<Int>, hasData: Boolean) {
         Row {
             Text(
                 (if (hasData) "${powerW.coerceAtLeast(0)} W" else "-- W") + " / 共 ${total} W",
-                fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
+                fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.weight(1f))
@@ -543,7 +543,7 @@ private fun PowerGauge(powerW: Int, stages: List<Int>, hasData: Boolean) {
                          else stages.indexOfFirst { powerW < it }.let { if (it < 0) stages.size else it + 1 }
             Text(
                 if (gearNo == null) "待机" else "挡位 $gearNo/${stages.size}",
-                fontSize = 8.5.sp, fontFamily = FontFamily.Monospace,
+                fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -654,7 +654,7 @@ private fun PwCard(
         } else items.take(3).forEach {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 StatusDot(dot, 5.dp); Spacer(Modifier.width(5.dp))
-                Text(it, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(it, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         // 无数据时不给点：点开只会看到空详情
