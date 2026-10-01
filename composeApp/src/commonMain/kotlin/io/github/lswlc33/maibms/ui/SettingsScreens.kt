@@ -40,6 +40,8 @@ fun SettingsHomeScreen(
     darkOverride: Boolean?,
     onDarkOverrideChange: (Boolean?) -> Unit,
     bottomPadding: androidx.compose.ui.unit.Dp = 20.dp,
+    /** 外观板块「UI 预览」载入内置快照后回调（App 跳到仪表盘） */
+    onPreviewUi: () -> Unit = {},
 ) {
     // 外观
     val realBle by MockBms.usingRealBle.collectAsState()
@@ -69,6 +71,27 @@ fun SettingsHomeScreen(
                 )
             }
             // 深色恒为纯黑（原来的 AMOLED 开关已去掉，默认即纯黑）
+            // UI 预览：内置一张 72114 锂电池的静态快照（特殊快照，不入库），没接板子也能看真实排版
+            val previewing by io.github.lswlc33.maibms.data.Bms.repository.previewActive.collectAsState()
+            SettingRow(
+                title = "UI 预览",
+                inlineValue = when {
+                    previewing -> "预览中"
+                    connected -> "已连接 · 先断开"
+                    else -> "72V·114Ah 预设快照"
+                },
+                trailing = { Chevron() },
+                onClick = if (connected) null else {
+                    {
+                        scope.launch {
+                            io.github.lswlc33.maibms.data.Bms.repository.enterPreview(
+                                io.github.lswlc33.maibms.data.UiPreview.snapshot()
+                            )
+                            onPreviewUi()
+                        }
+                    }
+                },
+            )
         }
         SectionCard {
             SectionHeader("连接", tail = "BLE")

@@ -194,6 +194,7 @@ fun App(
                                     onOpenScan = { dialog.value = DialogKind.Scan },
                                     darkOverride = darkOverride,
                                     onDarkOverrideChange = setDarkOverride,
+                                    onPreviewUi = { currentTab.value = Route.Dashboard; backStack.clear() },
                                 )
                                 is Route.ParamGroup -> ParamGroupScreen(
                                     groupIndex = r.index,
