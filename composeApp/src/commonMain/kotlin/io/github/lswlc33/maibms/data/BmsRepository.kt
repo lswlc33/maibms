@@ -101,6 +101,9 @@ class BmsRepository(
     private var collectorJob: Job? = null
     private var stateJob: Job? = null
 
+    /** start() 已完成装配的标志：幂等守卫的主键（collectorJob 现在真实赋值，作为双保险） */
+    @Volatile private var started = false
+
     /** 链路就绪时的轮询唤醒：首拍立刻发，不等 900ms 相位（CONFLATED：最多积一次，不会空转） */
     private val pollWake = Channel<Unit>(Channel.CONFLATED)
 
@@ -111,7 +114,11 @@ class BmsRepository(
     private var postConnectJob: Job? = null
 
     fun start() {
-        if (collectorJob != null) return
+        // 幂等守卫：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 都会调 start()，
+        // 只允许第一套收集器/自动重连生效——曾因守卫字段从未赋值而双跑，
+        // 两套收集器×两条轮询×两个 postConnectFlow 抢同一个应答槽，连接后直接把会话搅崩
+        if (started) return
+        started = true
         BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
         // 自动重连目标：历史列表里显式指定的设备优先，否则默认上次连接；
         // 被指定的设备若已从历史删除，回退到上次连接
@@ -159,7 +166,7 @@ class BmsRepository(
                 }
             }
         }
-        scope.launch {
+        collectorJob = scope.launch {
             real.incoming.collect { bytes ->
                 // 预览中丢弃一切残余帧：断开瞬间在途的报文不得覆盖快照数据
                 if (previewActive.value) return@collect
@@ -239,17 +246,26 @@ class BmsRepository(
      * 已经触发了一轮 force 重读，这里再调一次会被 refreshParams 里的 readJob.isActive
      * 去重挡掉（不是靠运气，是那次调用的显式守卫）。
      */
+    /** 连后序列进行中标志：Connected 事件重复触发时不重入（升权/读参数各只跑一套） */
+    @Volatile private var postConnectRunning = false
+
     private suspend fun postConnectFlow() {
-        val firstFrame = firstFrameSignal ?: return
-        if (withTimeoutOrNull(FIRST_FRAME_WAIT_MS) { firstFrame.await() } == null) {
-            // 连上了却一直不吐数据（走远/被占用）：升权与参数区读回都没有意义，别去刷 14 条注定超时的命令
-            BmsLog.w("CONN", "首个实时帧 ${FIRST_FRAME_WAIT_MS}ms 未到，跳过升权与参数区读回")
-            return
+        if (postConnectRunning) return   // 上一次连后序列还在跑（弱信号升权可达数秒），别叠第二套
+        postConnectRunning = true
+        try {
+            val firstFrame = firstFrameSignal ?: return
+            if (withTimeoutOrNull(FIRST_FRAME_WAIT_MS) { firstFrame.await() } == null) {
+                // 连上了却一直不吐数据（走远/被占用）：升权与参数区读回都没有意义，别去刷 14 条注定超时的命令
+                BmsLog.w("CONN", "首个实时帧 ${FIRST_FRAME_WAIT_MS}ms 未到，跳过升权与参数区读回")
+                return
+            }
+            if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
+            autoUpgradePermission()
+            if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
+            refreshParams(force = true)
+        } finally {
+            postConnectRunning = false
         }
-        if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
-        autoUpgradePermission()
-        if (previewActive.value || manualDisconnect.value || _linkState.value != LinkState.Connected) return
-        refreshParams(force = true)
     }
 
     /** 幂等：换设备/重连前先清掉上一台的假数据与权限状态 */
