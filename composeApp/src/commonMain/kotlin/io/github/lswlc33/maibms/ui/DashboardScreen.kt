@@ -88,12 +88,8 @@ fun DashboardScreen(
                     }
                 }
             }
-            Column(
-                Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())
-                    .padding(horizontal = 12.dp).padding(top = 8.dp, bottom = bottomPadding),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // 卡1：电池大卡（预览/手动断开时不要写成「重连中」——快照不是实时数据，要诚实标注）
+            // 卡1：电池大卡置顶固定（用户要求：始终显示，不随列表滚动）
+            Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp)) {
                 BatteryCard(
                     status = status,
                     connLabel = when {
@@ -105,7 +101,7 @@ fun DashboardScreen(
                     },
                     onPermClick = onOpenPerm,
                 )
-                // 链路状态横幅：预览 / 手动断开 / 未连接 / 掉线重连 / 失联 分开提示（预览优先级最高）
+                // 链路状态横幅也跟着固定：它是卡1状态的直接延续，不该滚走
                 when {
                     previewing ->
                         InfoBanner("正在预览快照 · ${previewLabel ?: ""} · 自动连接已停用，重启应用恢复", kind = "info")
@@ -119,10 +115,16 @@ fun DashboardScreen(
                     linkLost ->
                         InfoBanner("设备失联：链路仍在但收不到数据，请靠近电池或检查干扰（以下为最后数据）", kind = "err")
                 }
+            }
+            Column(
+                Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())
+                    .padding(horizontal = 12.dp).padding(top = 8.dp, bottom = bottomPadding),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 // 卡2：状态与容量
                 StatusCapacityCard(status)
-                // 卡3：4×2 图标网格
-                // 断开时保留最后已知值（整屏一致），时效性由上面的横幅声明；
+                // 卡3：电流 / 功率（换挡进度条）
+                // 断开时保留最后已知值（整屏一致），时效性由固定的横幅声明；
                 // 从未收到数据时 metrics 自身会返回 "--"
                 MetricGridCard(status.metrics(), powerW = status.power, hasData = status.hasData)
                 // 保护/告警双卡

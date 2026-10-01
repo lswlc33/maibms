@@ -235,6 +235,7 @@ private fun AboutAppCard() {
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.UpToDate -> "已是最新"
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update ->
                     if (r.info.prerelease) "发现预览版 v${r.latest}" else "发现新版 v${r.latest}"
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.Ahead -> "预览版领先正式版"
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> "检查失败"
             },
             trailing = {
@@ -252,6 +253,11 @@ private fun AboutAppCard() {
                 kind = "info",
                 action = "去下载",
                 onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
+            )
+            is io.github.lswlc33.maibms.data.UpdateChecker.Result.Ahead -> InfoBanner(
+                "当前预览版 v${r.local} 比最新正式版 v${r.remote} 还新 · 预览版渠道才有更新的构建",
+                kind = "info", action = "去 Releases",
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases") } },
             )
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> InfoBanner(
                 "更新检查失败（网络不可达或被拦截）· 可直接到仓库 Releases 页查看",

@@ -286,13 +286,13 @@ fun BatteryCard(
     }
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.4f
     val track = fill.copy(alpha = if (dark) .22f else .18f)
-    // 卡内左侧文字的反色策略：填充与轨道是同色不同透明度，填充边界（SOC 55% 前后）会扫过文字，
-    // 固定前景色在边界两侧对比度会突变（深字骑深填充 / 白字骑淡轨道都不可读）。
-    // 解法：给文字垫一个不透明底衬胶囊（与右上角权限徽章、右下连接态胶囊同一套视觉语言），
-    // 文字对比度只取决于底衬色，与底下是填充还是轨道彻底解耦。
-    val chipBg = MaterialTheme.colorScheme.surface
-    val onChip = MaterialTheme.colorScheme.onSurface
-    val onChipLabel = MaterialTheme.colorScheme.onSurfaceVariant
+    // 卡内左侧文字的可读性（用户要求：不要底衬，用透明/滤镜方式）：
+    // 给填充层加「左实右透」的横向渐变滤镜——饱和电量色只保留在最左 ~12%（电量条视觉锚点），
+    // 12% 后快速淡出、25% 起完全等于轨道色；文字从 12% 就开始，永远坐在轨道底上。
+    // 文字前景用 onSurface（不是 onSurfaceVariant）：浅色下轨道是 18% 透明的绿，
+    // 灰字在上面对比度不足，只有主前景色才够
+    val fillAlphaHigh = if (dark) 0.92f else 1f
+    val fillAlphaLow = track.alpha
     Box(
         modifier
             .fillMaxWidth()
@@ -302,46 +302,48 @@ fun BatteryCard(
         // 电量填充（左=有电，右=空电）：父级 clip 已把右缘裁直，与截图一致
         Box(Modifier.matchParentSize()) {
             Box(
-                Modifier.fillMaxHeight().fillMaxWidth(status.soc / 100f).background(fill)
+                Modifier.fillMaxHeight().fillMaxWidth(status.soc / 100f)
+                    .background(
+                        androidx.compose.ui.graphics.Brush.horizontalGradient(
+                            0f to fill.copy(alpha = fillAlphaHigh),
+                            0.12f to fill.copy(alpha = fillAlphaHigh),
+                            0.25f to fill.copy(alpha = fillAlphaLow),
+                            1f to fill.copy(alpha = fillAlphaLow),
+                        )
+                    )
             )
         }
         // 右缘电池极头已去掉：在扁平进度卡上就是一根莫名其妙的竖条
-        // 左侧：电压大标题（小 desc 紧跟其后）→ 设备名 → 循环 · 运行时间。
-        // 三行都垫 surface 底衬胶囊：填充边界扫过时文字对比度不变（见上方 chipBg 注释）
+        // 左侧：电压大标题（小 desc 紧跟其后）→ 设备名 → 循环 · 运行时间（无底衬，常规前景）
         Row(
             modifier = Modifier.padding(CardPadding).fillMaxWidth().height(IntrinsicSize.Min),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(
-                    verticalAlignment = Alignment.Bottom,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
-                ) {
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         if (status.hasData) "%.2f".format(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                        color = onChip,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
                     Text(
                         " V · 当前电压",
                         fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        color = onChipLabel,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = .72f),
                         modifier = Modifier.padding(start = 3.dp, bottom = 5.dp),
                     )
                 }
                 Text(
                     status.deviceName,
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                    color = onChip,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
-                    modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
                 )
                 Text(
                     "${status.totalCycleAh}Ah 循环 · ${status.runtime}",
                     fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                    color = onChipLabel,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = .72f),
                     maxLines = 1,
-                    modifier = Modifier.clip(RoundedCornerShape(7.dp)).background(chipBg).padding(horizontal = 6.dp, vertical = 1.dp),
                 )
             }
             Column(
@@ -446,7 +448,7 @@ data class Metric(val label: String, val value: String, val unit: String)
 /**
  * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下，
  * 功率下方保留变速箱式换挡进度条（设 N 个阶梯串 N 条轨道，走满一条进下一条）。
- * 点击卡片开/关进度条；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
+ * **双击卡片**开/关进度条（Toast 提示开/关成功）；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
  * 其余指标（总压/循环/平均/最高/最低/压差）已由别的卡片展示，这里不再重复。
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -460,9 +462,15 @@ fun MetricGridCard(
     var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
     var stages by remember { mutableStateOf(AppStore.powerStagesW) }
     var editing by remember { mutableStateOf(false) }
-    // 点击/长按挂在整卡读数上：点击开关进度条，长按设阶梯
+    // 双击开关进度条（用户要求双击 + 开关提示）；长按设阶梯。
+    // combinedClickable 的双击重载要求同时给 onClick（给空实现，单击不占任何行为）
     val gaugeClickable = Modifier.combinedClickable(
-        onClick = { gaugeOn = !gaugeOn; AppStore.powerGaugeEnabled = gaugeOn },
+        onClick = {},
+        onDoubleClick = {
+            gaugeOn = !gaugeOn
+            AppStore.powerGaugeEnabled = gaugeOn
+            showSystemToast(if (gaugeOn) "功率进度条已开启" else "功率进度条已关闭")
+        },
         onLongClick = { editing = true },
     )
 
@@ -483,6 +491,12 @@ fun MetricGridCard(
             }
             if (gaugeOn && powerW != null && stages.isNotEmpty()) {
                 PowerGauge(powerW, stages, hasData)
+            } else if (gaugeOn && stages.isEmpty()) {
+                Text(
+                    "双击卡片可关闭 · 长按设置功率阶梯",
+                    fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().then(gaugeClickable), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                )
             }
         }
     }
@@ -490,7 +504,10 @@ fun MetricGridCard(
         PowerStageDialog(
             initial = stages,
             onDismiss = { editing = false },
-            onConfirm = { v -> stages = v; AppStore.powerStagesW = v; editing = false },
+            onConfirm = { v ->
+                stages = v; AppStore.powerStagesW = v; editing = false
+                showSystemToast(if (v.isEmpty()) "未设置功率阶梯" else "功率阶梯已设置：${v.joinToString("/")}W")
+            },
         )
     }
 }
@@ -632,7 +649,11 @@ fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
 
 @Composable
 fun ProtectAlarmCards(status: BmsStatus, onSeeAll: () -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // IntrinsicSize.Min：两卡按内容较多的一侧撑齐高度（一侧空一侧有条目时不再一高一低）
+    Row(
+        modifier.fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         PwCard("保护信息", if (status.hasData) status.protectList.size else null, BmsColors.BadRed,
                status.protectList, status.hasData, onSeeAll, Modifier.weight(1f))
         PwCard("告警信息", if (status.hasData) status.alarmList.size else null, BmsColors.WarnAmber,

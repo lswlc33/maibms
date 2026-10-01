@@ -45,9 +45,10 @@ object UpdateChecker {
         UpdateChannel.PREVIEW -> API_LIST
     }
 
-    /** 顺序即优先级：前面是直连 github 困难地区的加速镜像，最后一个兜底直连 */
+    /** 顺序即优先级：前面是直连 github 困难地区的加速镜像，最后一个兜底直连。
+     *  2026-10-01 实测 ghproxy.net 已停止代理 api.github.com（403 Invalid input.），换 ghfast.top */
     private val sources: List<(String) -> String> = listOf(
-        { "https://ghproxy.net/$it" },
+        { "https://ghfast.top/$it" },
         { "https://gh-proxy.com/$it" },
         { it },
     )
@@ -65,6 +66,8 @@ object UpdateChecker {
     sealed class Result {
         data object UpToDate : Result()
         data class Update(val latest: String, val info: ReleaseInfo) : Result()
+        /** 本机比远端新：装了预览版的用户切回稳定版渠道时的正常情形（不算错误） */
+        data class Ahead(val local: String, val remote: String) : Result()
         data class Failed(val reason: String) : Result()
     }
 
@@ -85,7 +88,12 @@ object UpdateChecker {
         }
         val info = latestInfo ?: return@withContext Result.Failed("所有源都失败了：" + errors.joinToString("；"))
         val latest = info.tagName.removePrefix("v").removePrefix("V")
-        return@withContext if (isNewer(latest, AppVersion.name)) Result.Update(latest, info) else Result.UpToDate
+        return@withContext when {
+            isNewer(latest, AppVersion.name) -> Result.Update(latest, info)
+            // 本机比远端新（预览版用户切回稳定版渠道的常见情形）：单独成态，别混进「已是最新」
+            isNewer(AppVersion.name, latest) -> Result.Ahead(AppVersion.name, latest)
+            else -> Result.UpToDate
+        }
     }
 
     /** GET 一次 release JSON（单对象或列表按渠道区分）；非 200 或 body 为空返回 null */

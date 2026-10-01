@@ -105,7 +105,11 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 混淆 + 资源收缩：未开时 release 包 6.4MB（Compose 运行时全量进 dex）；
+            // kotlinx-serialization 与 Compose 1.7 都自带 consumer proguard 规则，无需手写
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
             // 有签名材料就用发布签名（本地/CI 同一密钥），否则退回 debug 签名只为能跑起来
             signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release")
                             else signingConfigs.getByName("debug")
@@ -167,3 +171,4 @@ kotlin.sourceSets.getByName("desktopMain") { kotlin.srcDir(generateDesktopVersio
 tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.configureEach {
     dependsOn(generateDesktopVersion)
 }
+
