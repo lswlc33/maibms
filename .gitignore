@@ -58,3 +58,4 @@ $RECYCLE.BIN/
 
 # Node（若后续使用工具链）
 node_modules/
+"__pycache__/"  
