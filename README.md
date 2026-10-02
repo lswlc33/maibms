@@ -152,7 +152,8 @@ Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后
 
 > Apple 目标**只能在 macOS 上编译**（Windows/Linux 连编译都做不了，首次还需下载约 1GB 的
 > Kotlin/Native 工具链）。CI 已缓存 Gradle 与 `~/.konan`，重复运行快得多。
-> 本地 Mac 上构建：`brew install xcodegen`，然后 `cd iosApp && xcodegen generate` 打开工程。
+> 本地 Mac 上构建：装 **Xcode 16+**（xcodegen 生成的工程是 Xcode 16 的格式）与
+> `brew install xcodegen`，然后 `cd iosApp && xcodegen generate`，打开生成的工程即可运行。
 
 入口是 `MainViewControllerKt.MainViewController()`（`iosMain/MainViewController.kt`），
 由壳工程的 `ComposeView` 挂成根视图控制器。iOS 侧平台实现一览：

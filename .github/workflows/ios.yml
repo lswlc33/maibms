@@ -34,8 +34,10 @@ concurrency:
 
 jobs:
   ios:
-    name: iOS framework (compile & link)
-    runs-on: macos-14
+    name: iOS framework (compile & link) + unsigned ipa
+    # macos-15：随附 Xcode 16。xcodegen 2.46 生成的工程是 Xcode 16 的格式（objectVersion 77），
+    # macos-14 的 Xcode 15.4 读不了——报「future Xcode project file format (77)」
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +85,8 @@ jobs:
           set -euo pipefail
           brew install xcodegen
           cd iosApp && xcodegen generate && cd ..
+          echo "--- 工程格式（诊断用）---"
+          grep -m1 objectVersion iosApp/iosApp.xcodeproj/project.pbxproj || true
           xcodebuild \
             -project iosApp/iosApp.xcodeproj \
             -scheme iosApp \
