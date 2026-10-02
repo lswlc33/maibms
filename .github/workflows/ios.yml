@@ -75,6 +75,43 @@ jobs:
             :composeApp:linkDebugFrameworkIosArm64 \
             :composeApp:linkDebugFrameworkIosSimulatorArm64
 
+      # 打包未签名 ipa：Xcode 工程由 xcodegen 从 iosApp/project.yml 生成（工程文件不入库），
+      # 关掉签名（CODE_SIGNING_ALLOWED=NO）产出 .app，再按 ipa 的目录结构手工打成 zip。
+      # 用户可在 Windows 上用 Sideloadly/爱思 这类工具自签安装（免费 Apple ID 签 7 天）。
+      - name: Build unsigned ipa
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          cd iosApp && xcodegen generate && cd ..
+          xcodebuild \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Debug \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/ios-dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -40
+          APP="build/ios-dd/Build/Products/Debug-iphoneos/iosApp.app"
+          test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
+          echo "--- .app 内容 ---"
+          ls -la "$APP" | head -20
+          echo "--- 嵌入的 framework ---"
+          ls -la "$APP/Frameworks" 2>/dev/null || { echo "::error::App 里没有嵌入 framework"; exit 1; }
+          # 手工打成 ipa（Payload/ 目录 + zip）
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R "$APP" build/ipa/Payload/
+          (cd build/ipa && zip -qry "maibms-unsigned.ipa" Payload)
+          ls -la build/ipa/maibms-unsigned.ipa
+
+      - name: Upload unsigned ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: build/ipa/maibms-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
       # 产物自检：framework 目录、二进制架构、大小——空产物或架构不符要在这里红掉
       - name: Verify framework artifacts
         run: |
@@ -116,7 +153,8 @@ jobs:
             echo "- ✅ commonMain 平台中立性（metadata 编译）"
             echo "- ✅ iosArm64（真机）framework 编译 + 链接"
             echo "- ✅ iosSimulatorArm64（模拟器）framework 编译 + 链接"
+            echo "- ✅ 未签名 ipa 打包（Xcode 工程由 xcodegen 生成）"
             echo ""
-            echo "产物：\`ios-frameworks\`（两档 debugFramework/ComposeApp.framework）"
-            echo "注：这是**编译验证**产物，不含 Xcode 壳工程与签名，不能直接装到设备。"
+            echo "产物：\`ios-frameworks\`（两档 debugFramework）与 \`ios-unsigned-ipa\`（可直接自签安装）"
+            echo "注：ipa 未签名，需用 Sideloadly/爱思 等工具以你的 Apple ID 自签后安装。"
           } >> "$GITHUB_STEP_SUMMARY"

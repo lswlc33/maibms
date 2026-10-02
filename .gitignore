@@ -44,6 +44,12 @@ unpack/
 *.swp
 *.swo
 
+# ---- iOS 壳工程：工程文件由 xcodegen 从 iosApp/project.yml 生成，不入库 ----
+iosApp/iosApp.xcodeproj/
+iosApp/iosApp/Info.plist
+iosApp/*.xcworkspace/
+xcuserdata/
+
 # ---- 系统 ----
 Thumbs.db
 Desktop.ini
@@ -58,4 +64,4 @@ $RECYCLE.BIN/
 
 # Node（若后续使用工具链）
 node_modules/
-"__pycache__/"  
+__pycache__/

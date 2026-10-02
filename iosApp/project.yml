@@ -1,0 +1,82 @@
+# Xcode 工程由 xcodegen 从本文件生成（工程文件 .xcodeproj 不入库，避免二进制差异与手工维护）。
+# 本地 Mac 上：brew install xcodegen && cd iosApp && xcodegen generate
+#
+# 依赖关系：Kotlin 侧编出的 ComposeApp.framework 由 Gradle 任务
+# embedAndSignAppleFrameworkForXcode 在「Compile Kotlin Framework」构建阶段产出并嵌入 App。
+name: iosApp
+options:
+  bundleIdPrefix: io.github.lswlc33
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    # Gradle 脚本要往工程外写文件（产出 framework），Xcode 15 起默认打开的脚本沙箱必须关掉
+    ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+
+targets:
+  iosApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: iosApp
+    info:
+      path: iosApp/Info.plist
+      properties:
+        CFBundleDisplayName: 麻衣 BMS
+        CFBundleName: Maibms
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # 纯色启动屏（不加 storyboard）
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 蓝牙用途说明：iOS 强制要求，缺了会在访问 CoreBluetooth 时闪退
+        NSBluetoothAlwaysUsageDescription: 用于扫描并连接您的电池保护板，读取电池状态与控制开关。应用不会上传任何数据。
+        NSBluetoothPeripheralUsageDescription: 用于扫描并连接您的电池保护板。
+        UIRequiredDeviceCapabilities:
+          - bluetooth-le
+        # 应用只做 GitHub Releases 的公开接口读（检查更新），无自定义加密
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.lswlc33.maibms
+        PRODUCT_NAME: iosApp
+        MARKETING_VERSION: "0.1.1"
+        CURRENT_PROJECT_VERSION: "3"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Kotlin framework 的搜索路径（KGP 的 embedAndSign 任务会把 framework 放在这里）
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../composeApp/build/xcode-frameworks/$(CONFIGURATION)/$(SDK_NAME)"
+          - "$(BUILT_PRODUCTS_DIR)/$(FRAMEWORKS_FOLDER_PATH)"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-framework"
+          - "ComposeApp"
+    preBuildScripts:
+      - name: Compile Kotlin Framework
+        basedOnDependencyAnalysis: false
+        script: |
+          if [ "$ACTION" = "clean" ]; then exit 0; fi
+          cd "$SRCROOT/.."
+          ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode
+    postBuildScripts:
+      - name: Report framework
+        basedOnDependencyAnalysis: false
+        script: |
+          echo "APP: $TARGET_BUILD_DIR/$WRAPPER_NAME"
+          ls -la "$TARGET_BUILD_DIR/$WRAPPER_NAME/Frameworks" 2>/dev/null || echo "(无 Frameworks 目录)"
+
+schemes:
+  iosApp:
+    build:
+      targets:
+        iosApp: all
+    run:
+      config: Debug
+    archive:
+      config: Release
