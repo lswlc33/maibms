@@ -123,9 +123,10 @@ export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
 
 ### iOS 构建
 
-iOS 目前是**编译目标**（第一交付平台是 Android）：代码能编、能链成 framework，但还没有
-Xcode 壳工程与真机适配，因此不产出可安装的 ipa。验证交给 GitHub Actions 的
-**iOS 工作流**（`.github/workflows/ios.yml`），它在 macOS runner 上跑三件事：
+KMP 让界面、协议解析、数据这些**共享代码**一次编写三端复用；但**蓝牙**与 **App 外壳**
+天生要按平台各写一份，iOS 侧这两块现在也补齐了（`iosMain/transport/IosBleTransport.kt`
+与 `iosApp/` 壳工程）。CI 的 **iOS 工作流**（`.github/workflows/ios.yml`）在 macOS runner
+上依次做四件事：
 
 ```bash
 # 1) 公共代码的平台中立性：commonMain 若混入 JVM 专属 API（java.* / System.* / String.format）会立刻失败
@@ -133,19 +134,34 @@ Xcode 壳工程与真机适配，因此不产出可安装的 ipa。验证交给 
 
 # 2) 编译 + 链接两档 framework（arm64 真机 / arm64 模拟器；静态 framework 无需签名）
 ./gradlew :composeApp:linkDebugFrameworkIosArm64 :composeApp:linkDebugFrameworkIosSimulatorArm64
-# 产物：composeApp/build/bin/<target>/debugFramework/ComposeApp.framework
+
+# 3) 生成 Xcode 工程并打**未签名 ipa**（关掉签名的 xcodebuild + 手工 Payload 打包）
+brew install xcodegen && cd iosApp && xcodegen generate
+xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -sdk iphoneos \
+  -destination 'generic/platform=iOS' \
+  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+# 4) 上传制品：ios-frameworks（两档 framework）与 ios-unsigned-ipa（可自签安装）
 ```
+
+**自己装到 iPhone 上？** 从 Actions 运行的制品区下载 `ios-unsigned-ipa`，用
+Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后安装：
+
+- 免费 Apple ID 签名 **7 天过期**，到期需重签（工具里再点一次即可）；
+- 付费开发者账号（¥688/年）可签一年；
+- 首次启动需在「设置 → 通用 → VPN与设备管理」里信任该开发者证书。
 
 > Apple 目标**只能在 macOS 上编译**（Windows/Linux 连编译都做不了，首次还需下载约 1GB 的
 > Kotlin/Native 工具链）。CI 已缓存 Gradle 与 `~/.konan`，重复运行快得多。
+> 本地 Mac 上构建：`brew install xcodegen`，然后 `cd iosApp && xcodegen generate` 打开工程。
 
-框架入口是 `MainViewControllerKt.MainViewController()`（`iosMain/MainViewController.kt`），
-将来的 Xcode 壳工程把它作为根视图控制器即可。当前 iOS 侧的平台实现：
+入口是 `MainViewControllerKt.MainViewController()`（`iosMain/MainViewController.kt`），
+由壳工程的 `ComposeView` 挂成根视图控制器。iOS 侧平台实现一览：
 
 | 能力 | iOS 实现 | 说明 |
 | --- | --- | --- |
+| **蓝牙** | **CoreBluetooth（IosBleTransport）** | 与 Android 同一套契约：FFE0 服务、通道候选 FFE1/FFF3-4/FFF5-6、订阅落地才算就绪、12ms 分片写入、常驻重连退避。差异：iOS 不暴露 MAC（用系统外设标识当"地址"）、无 MTU 协商 API（用单次写上限）、连接前必须先扫描到设备 |
 | 日期时间 | kotlinx-datetime（公共代码） | 与 Android/桌面输出逐字符一致 |
-| 日志落盘 | NSFileManager（Application Support/maibms-logs） | 保留 3 天、按天一个文件 |
+| 日志落盘 | okio（Application Support/maibms-logs） | 保留 3 天、按天一个文件 |
 | 检查更新 | NSURLSession | 同样的镜像回退链与超时策略 |
 | 剪贴板 | UIPasteboard | 开发者页「复制日志」 |
 | 日志导出 | 写入沙盒 Documents | 「文件」App 可取走 |

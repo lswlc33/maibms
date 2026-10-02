@@ -17,6 +17,18 @@
   超椭圆蒙版下脸部完整、耳朵保留。
 
 ### 新增
+- **iOS 侧补齐蓝牙与 App 外壳，并产出未签名 ipa**：KMP 复用共享代码（界面/协议/数据），
+  但蓝牙与外壳必须按平台各写一份——
+  - **CoreBluetooth 传输**：与 Android 同一套契约（FFE0 服务、通道候选 FFE1/FFF3-4/
+    FFF5-6、订阅落地才算就绪、按单次写上限分片 + 12ms 间隔、常驻重连指数退避）；
+    差异及理由写在类注释（iOS 不暴露 MAC，用系统外设标识当"地址"；无 MTU 协商 API，
+    用 `maximumWriteValueLengthForType`；连接前必须先扫描到设备）。
+  - **Xcode 壳工程**（`iosApp/`）：xcodegen 从 `project.yml` 生成工程（不手工维护 pbxproj），
+    SwiftUI 入口 + ComposeView、Info.plist（含蓝牙用途说明，缺了会闪退）、1024 应用图标。
+  - **CI 产出未签名 ipa**：xcodegen 生成工程 → 关签名 xcodebuild → 校验 framework 已嵌入 →
+    手工打成 `Payload/*.ipa` → 上传制品，可在 Windows 用 Sideloadly/爱思 等自签安装
+    （免费 Apple ID 签 7 天）。
+  - **尚待真机验证**（模拟器测不了蓝牙）：扫描/连接/订阅/写入全链路；CI 只能保证能编能链能打包。
 - **iOS 编译目标 + GitHub Actions 验证**：新增 `iosArm64` / `iosSimulatorArm64` 两个目标与
   `iosMain` 平台实现（日期时间、日志落盘、检查更新、剪贴板、日志导出、锁；BLE 传输暂为
   Noop，设置存储暂为内存）。新增 **iOS 工作流**：macOS runner 上先跑

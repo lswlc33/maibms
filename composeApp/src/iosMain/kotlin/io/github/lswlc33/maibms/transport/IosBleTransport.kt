@@ -4,7 +4,9 @@ import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.epochMillisNow
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.Frame
+import kotlin.concurrent.Volatile
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCSignatureOverride
 import kotlinx.cinterop.addressOf
 import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.CompletableDeferred
@@ -24,8 +26,14 @@ import platform.CoreBluetooth.CBAdvertisementDataLocalNameKey
 import platform.CoreBluetooth.CBCentralManager
 import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
 import platform.CoreBluetooth.CBCharacteristic
-import platform.CoreBluetooth.CBCharacteristicWriteType
+import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
 import platform.CoreBluetooth.CBManagerState
+import platform.CoreBluetooth.CBManagerStatePoweredOff
+import platform.CoreBluetooth.CBManagerStatePoweredOn
+import platform.CoreBluetooth.CBManagerStateResetting
+import platform.CoreBluetooth.CBManagerStateUnauthorized
+import platform.CoreBluetooth.CBManagerStateUnknown
+import platform.CoreBluetooth.CBManagerStateUnsupported
 import platform.CoreBluetooth.CBPeripheral
 import platform.CoreBluetooth.CBPeripheralDelegateProtocol
 import platform.CoreBluetooth.CBService
@@ -121,11 +129,11 @@ class IosBleTransport : BmsTransport {
 
         override fun centralManagerDidUpdateState(central: CBCentralManager) {
             logI("蓝牙状态：${stateText(central.state)}")
-            if (central.state != CBManagerState.CBManagerStatePoweredOn) {
+            if (central.state != CBManagerStatePoweredOn) {
                 _connectHint.value = when (central.state) {
-                    CBManagerState.CBManagerStateUnauthorized ->
+                    CBManagerStateUnauthorized ->
                         "未获得蓝牙权限，请在系统设置中允许本应用使用蓝牙"
-                    CBManagerState.CBManagerStatePoweredOff -> "蓝牙未打开，请在控制中心或设置中打开蓝牙"
+                    CBManagerStatePoweredOff -> "蓝牙未打开，请在控制中心或设置中打开蓝牙"
                     else -> "蓝牙不可用（${stateText(central.state)}）"
                 }
             }
@@ -168,6 +176,7 @@ class IosBleTransport : BmsTransport {
             didConnectPeripheral.discoverServices(null)
         }
 
+        @ObjCSignatureOverride
         override fun centralManager(
             central: CBCentralManager,
             didFailToConnectPeripheral: CBPeripheral,
@@ -177,6 +186,7 @@ class IosBleTransport : BmsTransport {
             readySignal?.complete(false)
         }
 
+        @ObjCSignatureOverride
         override fun centralManager(
             central: CBCentralManager,
             didDisconnectPeripheral: CBPeripheral,
@@ -195,6 +205,7 @@ class IosBleTransport : BmsTransport {
 
         // ---------------- 服务 / 特征 ----------------
 
+        @ObjCSignatureOverride
         override fun peripheral(peripheral: CBPeripheral, didDiscoverServices: NSError?) {
             if (didDiscoverServices != null) {
                 logE("发现服务失败：${didDiscoverServices.localizedDescription}")
@@ -212,6 +223,7 @@ class IosBleTransport : BmsTransport {
             peripheral.discoverCharacteristics(null, forService = service)
         }
 
+        @ObjCSignatureOverride
         override fun peripheral(
             peripheral: CBPeripheral,
             didDiscoverCharacteristicsForService: CBService,
@@ -243,7 +255,7 @@ class IosBleTransport : BmsTransport {
             }
             logI("通道选中 写=${shortUuid(wc.UUID.UUIDString)} 通知=${shortUuid(nc.UUID.UUIDString)}")
             maxWriteLen = peripheral
-                .maximumWriteValueLengthForType(CBCharacteristicWriteType.CBCharacteristicWriteWithoutResponse)
+                .maximumWriteValueLengthForType(CBCharacteristicWriteWithoutResponse)
                 .toInt()
             logD("单次写上限 $maxWriteLen 字节")
             // 先订阅通知（docs 硬性顺序）；就绪要等订阅落地（见 didUpdateNotificationState）
@@ -251,6 +263,7 @@ class IosBleTransport : BmsTransport {
             armReadyFallback()
         }
 
+        @ObjCSignatureOverride
         override fun peripheral(
             peripheral: CBPeripheral,
             didUpdateNotificationStateForCharacteristic: CBCharacteristic,
@@ -269,6 +282,7 @@ class IosBleTransport : BmsTransport {
             }
         }
 
+        @ObjCSignatureOverride
         override fun peripheral(
             peripheral: CBPeripheral,
             didUpdateValueForCharacteristic: CBCharacteristic,
@@ -306,13 +320,13 @@ class IosBleTransport : BmsTransport {
 
     /** 蓝牙状态 → 人话 */
     private fun stateText(state: CBManagerState): String = when (state) {
-        CBManagerState.CBManagerStatePoweredOn -> "已开启"
-        CBManagerState.CBManagerStatePoweredOff -> "关闭"
-        CBManagerState.CBManagerStateUnauthorized -> "未授权"
-        CBManagerState.CBManagerStateUnsupported -> "本机不支持"
-        CBManagerState.CBManagerStateResetting -> "正在重置"
-        CBManagerState.CBManagerStateUnknown -> "未知"
-        else -> state.name
+        CBManagerStatePoweredOn -> "已开启"
+        CBManagerStatePoweredOff -> "关闭"
+        CBManagerStateUnauthorized -> "未授权"
+        CBManagerStateUnsupported -> "本机不支持"
+        CBManagerStateResetting -> "正在重置"
+        CBManagerStateUnknown -> "未知"
+        else -> "未知状态($state)"
     }
 
     /** "0000FFE0-0000-1000-8000-00805F9B34FB" → "FFE0"；已经是短形态就原样大写 */
@@ -327,7 +341,7 @@ class IosBleTransport : BmsTransport {
 
     override suspend fun scan(onFound: (ScanDevice) -> Unit) {
         val c = central
-        if (c.state != CBManagerState.CBManagerStatePoweredOn) {
+        if (c.state != CBManagerStatePoweredOn) {
             throw IllegalStateException("设备蓝牙未打开或未授权")
         }
         runCatching { c.stopScan() }
@@ -419,7 +433,7 @@ class IosBleTransport : BmsTransport {
      */
     private suspend fun findPeripheral(address: String?): CBPeripheral? {
         val c = central
-        if (c.state != CBManagerState.CBManagerStatePoweredOn) {
+        if (c.state != CBManagerStatePoweredOn) {
             _connectHint.value = "蓝牙未打开或未授权"
             return null
         }
@@ -469,7 +483,7 @@ class IosBleTransport : BmsTransport {
             p.writeValue(
                 piece.toNSData(),
                 forCharacteristic = wc,
-                type = CBCharacteristicWriteType.CBCharacteristicWriteWithoutResponse,
+                type = CBCharacteristicWriteWithoutResponse,
             )
             offset += len
             delay(WRITE_GAP_MS)
