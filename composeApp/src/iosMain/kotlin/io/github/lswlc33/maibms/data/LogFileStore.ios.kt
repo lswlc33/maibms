@@ -6,6 +6,10 @@ import kotlinx.cinterop.usePinned
 import platform.Foundation.NSData
 import platform.Foundation.NSFileHandle
 import platform.Foundation.NSFileManager
+import platform.Foundation.dataWithBytes
+import platform.Foundation.dataWithContentsOfFile
+import platform.Foundation.fileHandleForWritingAtPath
+import platform.Foundation.writeToFile
 import platform.posix.memcpy
 
 /**
@@ -34,6 +38,7 @@ internal actual object LogFileBackend {
         val path = filePath(fileName) ?: return
         ensureDir() ?: return
         val bytes = text.encodeToByteArray()
+        if (bytes.isEmpty()) return
         if (NSFileManager.defaultManager.fileExistsAtPath(path)) {
             val handle = NSFileHandle.fileHandleForWritingAtPath(path) ?: return
             handle.seekToEndOfFile()

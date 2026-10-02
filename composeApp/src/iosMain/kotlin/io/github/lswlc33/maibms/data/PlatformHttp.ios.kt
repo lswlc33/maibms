@@ -11,11 +11,7 @@ import platform.Foundation.NSURLSession
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSString
 import platform.Foundation.create
-import platform.Foundation.dataTaskWithRequest
 import platform.Foundation.setValue
-import platform.Foundation.setTimeoutInterval
-import platform.Foundation.resume
-import platform.Foundation.cancel
 import kotlin.coroutines.resume
 
 /**

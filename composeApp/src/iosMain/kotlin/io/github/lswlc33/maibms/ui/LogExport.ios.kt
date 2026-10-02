@@ -10,6 +10,7 @@ import platform.Foundation.NSDate
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSUserDomainMask
+import platform.Foundation.dataWithBytes
 import platform.Foundation.timeIntervalSince1970
 import platform.Foundation.writeToFile
 
@@ -27,6 +28,7 @@ actual fun rememberLogExporter(): (String) -> String? = remember {
             val stamp = (NSDate().timeIntervalSince1970 * 1000).toLong()
             val path = "$docs/maibms-log-$stamp.txt"
             val bytes = text.encodeToByteArray()
+            if (bytes.isEmpty()) return@runCatching null
             bytes.usePinned { NSData.dataWithBytes(it.addressOf(0), bytes.size.toULong()) }
                 .writeToFile(path, atomically = true)
             path

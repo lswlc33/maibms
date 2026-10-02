@@ -21,6 +21,7 @@ import platform.UIKit.UIViewController
  */
 private var bootstrapped = false
 
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 private fun bootstrapOnce() {
     if (bootstrapped) return
     bootstrapped = true
