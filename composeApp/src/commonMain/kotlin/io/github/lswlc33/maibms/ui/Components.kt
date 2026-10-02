@@ -1,5 +1,9 @@
 package io.github.lswlc33.maibms.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,11 +32,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import ant_bms_open.composeapp.generated.resources.Res
+import ant_bms_open.composeapp.generated.resources.power_charging
+import ant_bms_open.composeapp.generated.resources.power_gear1
+import ant_bms_open.composeapp.generated.resources.power_gear2
+import ant_bms_open.composeapp.generated.resources.power_gear3
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
 import io.github.lswlc33.maibms.protocol.WriteAccess
 import io.github.lswlc33.maibms.ui.BmsColors
+import org.jetbrains.compose.resources.DrawableResource
+import org.jetbrains.compose.resources.painterResource
 
 /* ---------- 通用小组件 ---------- */
 
@@ -287,13 +298,16 @@ fun BatteryCard(
     val dark = MaterialTheme.colorScheme.surface.luminance() < 0.4f
     val track = fill.copy(alpha = if (dark) .22f else .18f)
     // 卡内左侧文字的可读性（用户要求：不要底衬，用透明/滤镜方式）：
-    // 给填充层加「左实右透」的横向渐变滤镜——饱和电量色只保留在最左 ~12%（电量条视觉锚点），
-    // 12% 后快速淡出、25% 起完全消失；文字从 12% 就开始，永远坐在轨道底上。
-    // 淡出终点必须是全透明：填充层叠在轨道层之上，若终点只降到轨道透明度，两层同色
-    // 叠加会让填充区比右侧未填充区深一截——电量不满时卡上有一条突兀的竖向分界
-    // 文字前景用 onSurface（不是 onSurfaceVariant）：浅色下轨道是 18% 透明的绿，
-    // 灰字在上面对比度不足，只有主前景色才够
-    val fillAlphaHigh = if (dark) 0.92f else 1f
+    // 填充层用**均匀半透明**色画到 soc% 为止——进度条必须表达电量进度：
+    // 曾用「左实右透」渐变滤镜（饱和色留最左 12% 作锚点、25% 后全透明），但渐变色标
+    // 是相对填充层自身宽度分布的，实际画出来的是一条与 soc 无关的左侧渐变色块
+    //（快照 76% 电量下肉眼可见的绿只到 ~19%），既不是电量进度、也谈不上锚点。
+    // 均匀填充叠在轨道之上仍是均匀色，填充右缘就是电量边界本身，任何电量下都是一条
+    // 干净的进度边界，不会再出现渐变色块或竖向色带。
+    // 填充层透明度取中档：远深于轨道（进度可辨），又浅到文字直接坐在上面仍可读。
+    // 文字前景用 onSurface（不是 onSurfaceVariant）：轨道/填充都是同色系淡底，
+    // 灰字对比度不足，只有主前景色才够
+    val fillAlpha = if (dark) 0.50f else 0.40f
     Box(
         modifier
             .fillMaxWidth()
@@ -304,14 +318,7 @@ fun BatteryCard(
         Box(Modifier.matchParentSize()) {
             Box(
                 Modifier.fillMaxHeight().fillMaxWidth(status.soc / 100f)
-                    .background(
-                        androidx.compose.ui.graphics.Brush.horizontalGradient(
-                            0f to fill.copy(alpha = fillAlphaHigh),
-                            0.12f to fill.copy(alpha = fillAlphaHigh),
-                            0.25f to Color.Transparent,
-                            1f to Color.Transparent,
-                        )
-                    )
+                    .background(fill.copy(alpha = fillAlpha))
             )
         }
         // 右缘电池极头已去掉：在扁平进度卡上就是一根莫名其妙的竖条
@@ -448,8 +455,10 @@ data class Metric(val label: String, val value: String, val unit: String)
 
 /**
  * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下。
- * 进度条即**卡片背景本身**：按功率阶梯把卡面竖切成 1~3 个档位格（格宽=各档区间占比），
- * 功率在所在档的格子里从左往右推进、走满进下一格，末档蓝=红区；底行给当前功率/顶格与档位。
+ * 进度条即**卡片背景本身**：每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
+ * 整条切换（500W 用 0~1000 的条、1500W 切 0~2000 的条），配色=节能绿/均衡蓝/运动红；
+ * 充电（功率为负）不计量，整条连轨道一起屏蔽，只留读数 + 「充电中」说明。
+ * 右下角状态立牌随状态切图（充电/一档/二档/三档，composeResources 贴纸），读数随之左移。
  * **双击卡片**开/关（Toast 提示开/关成功）；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
  * 其余指标（总压/循环/平均/最高/最低/压差）已由别的卡片展示，这里不再重复。
  */
@@ -475,11 +484,24 @@ fun MetricGridCard(
         },
         onLongClick = { editing = true },
     )
-    /** 背景进度条是否在画：关了或没设阶梯都不占背景（只留读数） */
-    val bgOn = gaugeOn && stages.isNotEmpty()
+    /** 表盘特性是否启用（开关 + 已设阶梯）：背景条与状态立牌都以它为前提 */
+    val gaugeActive = gaugeOn && stages.isNotEmpty()
+    /** 充电中（功率为负）：背景进度条整条屏蔽，但立牌切到充电图 */
+    val charging = powerW != null && powerW < 0
+    val bgOn = gaugeActive && !charging
     // 进度条作底时文字换用 onSurface 系：onSurfaceVariant 的灰在色块上对比度不足
     val labelColor = if (bgOn) MaterialTheme.colorScheme.onSurface.copy(alpha = .72f)
                      else MaterialTheme.colorScheme.onSurfaceVariant
+    /** 右侧状态立牌（充电/一档/二档/三档各一张）：表关了、没设阶梯或未连接时不占位 */
+    val sticker: DrawableResource? = when {
+        !gaugeActive || !hasData -> null
+        charging -> Res.drawable.power_charging
+        else -> when (powerGearNo(powerW ?: 0, stages)) {
+            1 -> Res.drawable.power_gear1
+            2 -> Res.drawable.power_gear2
+            else -> Res.drawable.power_gear3
+        }
+    }
 
     Column(
         modifier.fillMaxWidth().clip(CardShape)
@@ -488,37 +510,29 @@ fun MetricGridCard(
     ) {
         Box(Modifier.fillMaxWidth()) {
             if (bgOn) PowerGaugeBackground(powerW, stages, hasData, Modifier.matchParentSize())
-            Column(
-                Modifier.fillMaxWidth().padding(CardPadding),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
+            // 上下内边距压到 2dp：卡片高度尽量由读数决定，立牌靠右下角
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = CardPadding, vertical = 2.dp)
             ) {
-                val current = metrics.firstOrNull { it.label == "电流" }
-                val power = metrics.firstOrNull { it.label == "功率" }
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    Modifier.weight(1f).align(Alignment.CenterVertically),
                 ) {
-                    CenterMetric(current, labelColor, Modifier.weight(1f))
-                    // 中缝细分隔线：两块读数各占一半
-                    Box(Modifier.width(1.dp).height(34.dp)
-                        .clip(RoundedCornerShape(1.dp))
-                        .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = .5f)))
-                    CenterMetric(power, labelColor, Modifier.weight(1f))
+                    val current = metrics.firstOrNull { it.label == "电流" }
+                    val power = metrics.firstOrNull { it.label == "功率" }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        CenterMetric(current, labelColor, Modifier.weight(1f))
+                        CenterMetric(power, labelColor, Modifier.weight(1f))
+                    }
                 }
-                if (bgOn) {
-                    PowerGaugeCaption(powerW, stages, hasData, labelColor)
-                } else if (gaugeOn) {
-                    Text(
-                        "双击卡片可关闭 · 长按设置功率阶梯",
-                        fontSize = 9.sp, color = labelColor,
-                        modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                    )
-                } else {
-                    // 关闭态也要有线索：只靠用户记得双击开回来，等于这个开关单程
-                    Text(
-                        "进度条已关 · 双击卡片重新开启 · 长按设置功率阶梯",
-                        fontSize = 9.sp, color = labelColor,
-                        modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）
+                sticker?.let { res ->
+                    Image(
+                        painterResource(res),
+                        contentDescription = null,
+                        modifier = Modifier.align(Alignment.Bottom).size(80.dp),
                     )
                 }
             }
@@ -555,51 +569,32 @@ private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Mod
 }
 
 /**
- * 全卡背景进度条（换挡制）：把卡面竖切成 stages.size 个档位格，格宽 = 该档区间（上限差）
- * 占比，格与格的 3dp 缝就是分档刻线；每格在自己的区间内从左往右填充，末档（红区）用图表蓝。
- * 未连接/无数据整组中性灰——空态别看着像低电/告警。
+ * 全卡背景进度条（整条切换制）：每个档位一条**完整**进度条，刻度 0~本档上限，
+ * 功率落在哪个档整条就切到哪条——500W 用 0~1000 的条、1500W 切 0~2000 的条，
+ * 填充 = 功率/本档上限，跨档瞬间整条换色：节能绿 → 均衡蓝 → 运动红（单档恒绿）。
+ * 未连接/无数据整条中性灰——空态别看着像低电/告警。
  */
 @Composable
 private fun PowerGaugeBackground(powerW: Int?, stages: List<Int>, hasData: Boolean, modifier: Modifier = Modifier) {
     val dark = isDarkScheme()
-    val fracs = if (hasData && powerW != null) powerGaugeFracs(powerW, stages)
-                else List(stages.size) { 0f }
-    Row(modifier, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-        var prev = 0
-        stages.forEachIndexed { i, cap ->
-            val width = (cap - prev).coerceAtLeast(1); prev = cap
-            val base = when {
-                !hasData -> BmsColors.OffGray
-                i == stages.lastIndex -> BmsColors.ChartBlue
-                else -> BmsColors.GreenFill
-            }
-            Box(
-                Modifier.weight(width.toFloat()).fillMaxHeight()
-                    .background(base.copy(alpha = if (dark) .22f else .18f))   // 轨道=同色淡底
-            ) {
-                val frac = fracs.getOrElse(i) { 0f }
-                if (frac > 0f) Box(
-                    Modifier.fillMaxHeight().fillMaxWidth(frac.coerceIn(0f, 1f))
-                        .background(base.copy(alpha = if (dark) .92f else 1f))
-                )
-            }
-        }
+    val barIdx = if (hasData && stages.isNotEmpty()) powerGaugeBarIndex(powerW ?: 0, stages) else 0
+    val fill = if (hasData && powerW != null) powerGaugeBarFill(powerW, stages) else 0f
+    val base = when {
+        !hasData -> BmsColors.OffGray
+        stages.size <= 1 || barIdx == 0 -> BmsColors.GreenFill           // 节能档
+        barIdx == stages.lastIndex -> BmsColors.BadRed                   // 运动档（末档=红区）
+        else -> BmsColors.ChartBlue                                      // 均衡档
     }
-}
-
-/** 进度条底行：当前功率/顶格功率 + 当前档位；负功率=充电不计量，未连接/无数据也显示待机 */
-@Composable
-private fun PowerGaugeCaption(powerW: Int?, stages: List<Int>, hasData: Boolean, color: Color) {
-    Row(Modifier.fillMaxWidth()) {
-        Text(
-            (if (hasData && powerW != null) "${powerW.coerceAtLeast(0)} W" else "-- W") + " / 最高 ${stages.last()} W",
-            fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = color,
-        )
-        Spacer(Modifier.weight(1f))
-        val gearNo = if (!hasData || powerW == null || powerW < 0) null else powerGearNo(powerW, stages)
-        Text(
-            if (gearNo == null) "待机" else "挡位 $gearNo/${stages.size}",
-            fontSize = 8.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = color,
+    // 填充与换色都走短动画：拖测试滑条时进度跟手，跨档瞬间是整条渐变而非硬切
+    val animFill by animateFloatAsState(fill, tween(180))
+    val animBase by animateColorAsState(base, tween(250))
+    // 填充明度与卡1 电池大卡完全同参：.40（深色 .50）叠在同色 .18/.22 轨道上，
+    // 两张卡的色块亮度一致——不过纯也不过淡
+    val fillAlpha = if (dark) 0.50f else 0.40f
+    Box(modifier.background(animBase.copy(alpha = if (dark) .22f else .18f))) {   // 轨道=同色淡底
+        if (animFill > 0f) Box(
+            Modifier.fillMaxHeight().fillMaxWidth(animFill.coerceIn(0f, 1f))
+                .background(animBase.copy(alpha = fillAlpha))
         )
     }
 }

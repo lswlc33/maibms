@@ -1,7 +1,8 @@
 package io.github.lswlc33.maibms.data
 
+import io.github.lswlc33.maibms.ui.powerGaugeBarFill
+import io.github.lswlc33.maibms.ui.powerGaugeBarIndex
 import io.github.lswlc33.maibms.ui.powerGearNo
-import io.github.lswlc33.maibms.ui.powerGaugeFracs
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -46,48 +47,75 @@ class PowerStagesTest {
         assertEquals(listOf(1000, 2000, 3000), AppStore.powerStagesW)
     }
 
-    @Test fun gaugeFractionMath() {
-        // 填充比例直接调 UI 用的本体（曾经测试复算一份、照着 bug 一起写歪）
+    @Test fun gaugeBarMath() {
+        // 整条切换制 + 前段压缩缓曲线：填充直接调 UI 用的本体（曾经测试复算一份、照着 bug 一起写歪）
         val stages = listOf(1000, 2000, 3000)
-        // 800W：第 1 档（0~1k）走 80%，其余空
-        assertEquals(listOf(0.8f, 0f, 0f), powerGaugeFracs(800, stages))
-        // 1500W：第 1 档走满，第 2 档（1k~2k）走 50%
-        assertEquals(listOf(1f, 0.5f, 0f), powerGaugeFracs(1500, stages))
-        // 2500W：前两档走满，第 3 档（2k~3k）走 50% —— 曾是档位文案与格子矛盾的分歧区间
-        assertEquals(listOf(1f, 1f, 0.5f), powerGaugeFracs(2500, stages))
-        // 3000W 顶格及超出：格子画满（超出部分不封顶显示，底行照实给功率值）
-        assertEquals(listOf(1f, 1f, 1f), powerGaugeFracs(3000, stages))
-        assertEquals(listOf(1f, 1f, 1f), powerGaugeFracs(9999, stages))
-        // 0W / 负功率（充电）：全部空
-        assertEquals(listOf(0f, 0f, 0f), powerGaugeFracs(0, stages))
-        assertEquals(listOf(0f, 0f, 0f), powerGaugeFracs(-500, stages))
-        // 单档 = 整条卡面一格
-        assertEquals(listOf(0.5f), powerGaugeFracs(500, listOf(1000)))
-        // 不等距阶梯：1k/5k/6k → 区间 1k/4k/1k，中段走得慢
-        assertEquals(listOf(1f, 0.25f, 0f), powerGaugeFracs(2000, listOf(1000, 5000, 6000)))
+        // 800W：第 1 条（0~1000），线性 80% → 显示 0.8² = 64%
+        assertEquals(0, powerGaugeBarIndex(800, stages))
+        assertEquals(0.64f, powerGaugeBarFill(800, stages), 0.001f)
+        // 1500W：整条切到第 2 条（0~2000），线性 75% → 显示 56.25%（绝对刻度，不扣除前面档走过的量）
+        assertEquals(1, powerGaugeBarIndex(1500, stages))
+        assertEquals(0.5625f, powerGaugeBarFill(1500, stages), 0.001f)
+        // 2500W：第 3 条（0~3000），线性 83.3% → 显示 ≈ 69.4%
+        assertEquals(2, powerGaugeBarIndex(2500, stages))
+        assertEquals(0.6944f, powerGaugeBarFill(2500, stages), 0.001f)
+        // 顶格及超出：末条画满（超出部分不封顶显示，底行照实给功率值）
+        assertEquals(2, powerGaugeBarIndex(3000, stages))
+        assertEquals(1f, powerGaugeBarFill(3000, stages))
+        assertEquals(1f, powerGaugeBarFill(9999, stages))
+        // 0W / 负功率（充电）：画第 1 条的空轨道
+        assertEquals(0, powerGaugeBarIndex(0, stages))
+        assertEquals(0f, powerGaugeBarFill(0, stages))
+        assertEquals(0f, powerGaugeBarFill(-500, stages))
+        // 单档 = 唯一一条；500W 线性一半 → 显示 25%
+        assertEquals(0, powerGaugeBarIndex(500, listOf(1000)))
+        assertEquals(0.25f, powerGaugeBarFill(500, listOf(1000)), 0.001f)
+        // 不等距阶梯：2kW 在 1k/5k/6k → 第 2 条，线性 40% → 显示 16%
+        assertEquals(1, powerGaugeBarIndex(2000, listOf(1000, 5000, 6000)))
+        assertEquals(0.16f, powerGaugeBarFill(2000, listOf(1000, 5000, 6000)), 0.001f)
     }
 
-    @Test fun gearNoMatchesTheFillingCell() {
-        // 不变量：文案档位 == 第一个没走满的格子（全满=末档）。
-        // 曾经的 bug 就是两者各用一套口径，在 2000~3000W 区间自相矛盾。
+    @Test fun gaugeBarFillCurveFrontLoadedValue() {
+        // 用户指定锚点：线性 70% 只显示 ~50%（进度条前面 50% 相当于原本的 70%）
+        //（跨档整条切换时填充本来就回跳，单调性只在条内成立）
         val stages = listOf(1000, 2000, 3000)
+        // 700W = 第 1 条线性 70% → 显示 ≈ 49%
+        assertEquals(0.49f, powerGaugeBarFill(700, stages), 0.005f)
+        val bounds = listOf(0, 1000, 2000, 3000)
+        for (g in stages.indices) {
+            var prev = 0f
+            // 不含上限端点：功率到达上限的瞬间整条已切下一条，该点属于下一条的起点
+            for (p in bounds[g] until bounds[g + 1] step 10) {
+                val fill = powerGaugeBarFill(p, stages)
+                val linear = p.toFloat() / stages[g]
+                assertTrue(fill <= linear + 1e-4f, "功率 ${p}W 显示 $fill 高于线性 $linear，曲线方向反了")
+                assertTrue(fill >= prev - 1e-4f, "功率 ${p}W 填充回退：$fill < $prev")
+                prev = fill
+            }
+        }
+    }
+
+    @Test fun gearSwitchesAtEachCap() {
+        // 不变量：功率到达某档上限的瞬间整条切到下一档（999W→条1、1000W→条2）
+        val stages = listOf(1000, 2000, 3000)
+        assertEquals(0, powerGaugeBarIndex(999, stages))
+        assertEquals(1, powerGaugeBarIndex(1000, stages))
+        assertEquals(1, powerGaugeBarIndex(1999, stages))
+        assertEquals(2, powerGaugeBarIndex(2000, stages))
+        // 条号与档位文案始终一致（barIndex == gearNo-1，全功率域扫描）
         for (p in 0..4500 step 7) {
-            val fromCells = powerGaugeFracs(p, stages)
-                .indexOfFirst { it < 1f }
-                .let { if (it < 0) stages.size else it + 1 }
-            assertEquals(fromCells, powerGearNo(p, stages), "功率 ${p}W 时档位文案与格子填充不一致")
+            assertEquals(powerGearNo(p, stages) - 1, powerGaugeBarIndex(p, stages),
+                "功率 ${p}W 档位文案与进度条不一致")
+        }
+        // 不等距阶梯同样自洽
+        val uneven = listOf(1000, 5000, 6000)
+        for (p in 0..7000 step 13) {
+            assertEquals(powerGearNo(p, uneven) - 1, powerGaugeBarIndex(p, uneven),
+                "不等距阶梯 ${p}W 不一致")
         }
         // 空阶梯没有档位；负功率（充电）由 UI 显示「待机」，档位函数本身不越界
         assertEquals(0, powerGearNo(500, emptyList()))
         assertEquals(1, powerGearNo(-500, stages))
-        assertTrue(powerGearNo(9999, stages) == stages.size)
-        // 不等距阶梯同样自洽
-        val uneven = listOf(1000, 5000, 6000)
-        for (p in 0..7000 step 13) {
-            val fromCells = powerGaugeFracs(p, uneven)
-                .indexOfFirst { it < 1f }
-                .let { if (it < 0) uneven.size else it + 1 }
-            assertEquals(fromCells, powerGearNo(p, uneven), "不等距阶梯 ${p}W 不一致")
-        }
+        assertEquals(stages.size, powerGearNo(9999, stages))
     }
 }
