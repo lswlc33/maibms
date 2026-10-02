@@ -11,6 +11,7 @@ import platform.Foundation.NSURLSession
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.NSString
 import platform.Foundation.create
+import platform.Foundation.dataTaskWithRequest
 import platform.Foundation.setValue
 import kotlin.coroutines.resume
 

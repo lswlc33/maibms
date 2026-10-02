@@ -4,11 +4,8 @@ import androidx.compose.ui.window.ComposeUIViewController
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.LogFileStore
+import io.github.lswlc33.maibms.data.iosAppSupportDir
 import io.github.lswlc33.maibms.ui.App
-import platform.Foundation.NSApplicationSupportDirectory
-import platform.Foundation.NSFileManager
-import platform.Foundation.NSSearchPathForDirectoriesInDomains
-import platform.Foundation.NSUserDomainMask
 import platform.UIKit.UIViewController
 
 /**
@@ -21,7 +18,6 @@ import platform.UIKit.UIViewController
  */
 private var bootstrapped = false
 
-@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
 private fun bootstrapOnce() {
     if (bootstrapped) return
     bootstrapped = true
@@ -33,15 +29,9 @@ private fun bootstrapOnce() {
         }
     }
     runCatching {
-        // 沙盒 Application Support 下的 maibms-logs（用户可在「文件」App 取走）
-        val base = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, true)
-            .firstOrNull() as? String
-        val dir = base?.let { "$it/maibms-logs" }
-        if (dir != null) {
-            NSFileManager.defaultManager.createDirectoryAtPath(
-                dir, withIntermediateDirectories = true, attributes = null, error = null
-            )
-            LogFileStore.setDir(dir)
+        // 沙盒 Application Support 下的 maibms-logs（okio 建目录与写文件）
+        iosAppSupportDir()?.let { base ->
+            LogFileStore.setDir("$base/maibms-logs")
             BmsLog.restore()
         }
     }

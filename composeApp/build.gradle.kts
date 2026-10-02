@@ -66,6 +66,9 @@ kotlin {
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
                 // 跨平台日期时间：commonMain 不能用 JVM 的 SimpleDateFormat/java.time
                 implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.1")
+                // 跨平台文件：日志落盘/导出统一走 okio，不在公共代码碰 java.io.File、
+                // 也不用为 iOS 单独写 NSFileManager 互操作（Android/桌面/iOS 都有实现）
+                implementation("com.squareup.okio:okio:3.9.0")
             }
         }
         val androidMain by getting {
