@@ -25,9 +25,11 @@
     用 `maximumWriteValueLengthForType`；连接前必须先扫描到设备）。
   - **Xcode 壳工程**（`iosApp/`）：xcodegen 从 `project.yml` 生成工程（不手工维护 pbxproj），
     SwiftUI 入口 + ComposeView、Info.plist（含蓝牙用途说明，缺了会闪退）、1024 应用图标。
-  - **CI 产出未签名 ipa**：xcodegen 生成工程 → 关签名 xcodebuild → 校验 framework 已嵌入 →
-    手工打成 `Payload/*.ipa` → 上传制品，可在 Windows 用 Sideloadly/爱思 等自签安装
-    （免费 Apple ID 签 7 天）。
+  - **偏好落盘**：iOS 侧 KV 存储接上 NSUserDefaults（UserDefaultsStore），
+    对应 Android 的 SharedPreferences——设备、密码、主题等重启保留（否则装了也没法用）。
+  - **CI 产出未签名 ipa**：xcodegen 生成工程 → 关签名 xcodebuild → 核检 .app 体积与链接 →
+    手工打成 `Payload/*.ipa` → 上传制品（实测 18.8MB，结构已核对），可在 Windows 用
+    Sideloadly/爱思 等自签安装（免费 Apple ID 签 7 天）。
   - **尚待真机验证**（模拟器测不了蓝牙）：扫描/连接/订阅/写入全链路；CI 只能保证能编能链能打包。
 - **iOS 编译目标 + GitHub Actions 验证**：新增 `iosArm64` / `iosSimulatorArm64` 两个目标与
   `iosMain` 平台实现（日期时间、日志落盘、检查更新、剪贴板、日志导出、锁；BLE 传输暂为

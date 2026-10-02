@@ -167,7 +167,7 @@ Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后
 | 剪贴板 | UIPasteboard | 开发者页「复制日志」 |
 | 日志导出 | 写入沙盒 Documents | 「文件」App 可取走 |
 | 锁 | NSRecursiveLock | 替代 JVM 的 synchronized |
-| 设置存储 | 内存（重启不保留） | 接真机适配时换 NSUserDefaults |
+| 设置存储 | NSUserDefaults（UserDefaultsStore） | 对应 Android 的 SharedPreferences；设备/密码/主题等偏好重启保留 |
 | BLE 传输 | **无**（NoopTransport） | 需要 CoreBluetooth 实现，属后续工作 |
 
 ### 应用图标
