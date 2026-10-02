@@ -1,5 +1,7 @@
 package io.github.lswlc33.maibms.protocol
 
+import io.github.lswlc33.maibms.data.fmt
+
 /**
  * 结果码两套表，别混用（docs/06 §6.5、附录B B.2/B.3）：
  * - 写参数结果 → 0x42 同帧追加的 0xFF 段（低字节），见 [writeResult]
@@ -349,19 +351,19 @@ object ParamTable {
         val v = raw / def.scale
         def.dict?.get(raw)?.let { return it }
         return when {
-            def.scale >= 1_000_000 -> "%.1f".format(v)
-            def.scale >= 1000 -> "%.3f".format(v)
-            def.scale >= 10 -> "%.1f".format(v)
-            else -> "%.0f".format(v)
+            def.scale >= 1_000_000 -> "%.1f".fmt(v)
+            def.scale >= 1000 -> "%.3f".fmt(v)
+            def.scale >= 10 -> "%.1f".fmt(v)
+            else -> "%.0f".fmt(v)
         }
     }
 
     /** 显示范围文本（编辑弹窗用） */
     fun rangeText(def: ParamDef): String {
         fun f(v: Double) = when {
-            def.scale >= 1000 -> "%.3f".format(v)
-            def.scale >= 10 -> "%.1f".format(v)
-            else -> "%.0f".format(v)
+            def.scale >= 1000 -> "%.3f".fmt(v)
+            def.scale >= 10 -> "%.1f".fmt(v)
+            else -> "%.0f".fmt(v)
         }
         return "${f(def.min)}~${f(def.max)} ${def.unit}"
     }

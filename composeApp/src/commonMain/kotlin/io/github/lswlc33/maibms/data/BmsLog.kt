@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms.data
 
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -45,16 +46,14 @@ object BmsLog {
     val minLevel = MutableStateFlow(Level.INFO)
 
     /** 启动时调用：读回上次运行留下的日志（文件按天存，最多 3 天），并清理过期文件 */
-    fun restore() {
-        synchronized(this) {
-            lastAppendDay = System.currentTimeMillis() / DAY_MS
-            LogFileStore.cleanup()
-            val saved = LogFileStore.readRecentLines()
-            if (saved.isNotEmpty()) {
-                val parsed = saved.mapNotNull(::parseLine)
-                _entries.value = parsed.takeLast(MAX)
-                _lines.value = saved.takeLast(MAX)
-            }
+    fun restore() = withLock(lock) {
+        lastAppendDay = epochMillisNow() / DAY_MS
+        LogFileStore.cleanup()
+        val saved = LogFileStore.readRecentLines()
+        if (saved.isNotEmpty()) {
+            val parsed = saved.mapNotNull(::parseLine)
+            _entries.value = parsed.takeLast(MAX)
+            _lines.value = saved.takeLast(MAX)
         }
     }
 
@@ -64,10 +63,10 @@ object BmsLog {
             println("[ANTBMS/$tag] ${level.tag} $msg")
             return
         }
-        val e = Entry(level, tag, msg, System.currentTimeMillis())
+        val e = Entry(level, tag, msg, epochMillisNow())
         // 追加必须原子：BLE IO 线程与 Default 调度器会并发记日志，
         // 「读出列表 + 追加 + 写回」交错时会整行丢失（且丢的是刚发生的关键行）
-        synchronized(this) {
+        withLock(lock) {
             _entries.value = (_entries.value + e).takeLast(MAX)
             _lines.value = (_lines.value + e.render()).takeLast(MAX)
             if (e.atMs / DAY_MS != lastAppendDay) {
@@ -89,13 +88,11 @@ object BmsLog {
     /** 兼容旧签名（原先的 add(tag, msg) 视作 INFO） */
     fun add(tag: String, msg: String) = add(Level.INFO, tag, msg)
 
-    fun hex(b: ByteArray): String = b.joinToString(" ") { "%02X".format(it) }
+    fun hex(b: ByteArray): String = b.joinToString(" ") { "%02X".fmt(it) }
 
-    fun clear() {
-        synchronized(this) {
-            _entries.value = emptyList()
-            _lines.value = emptyList()
-        }
+    fun clear() = withLock(lock) {
+        _entries.value = emptyList()
+        _lines.value = emptyList()
         // 内存清了文件也得清，否则重启后上次的内容又读回来了
         LogFileStore.clearAll()
     }
@@ -119,26 +116,24 @@ object BmsLog {
     }
 
     /** 墙钟转可读时间：跨会话的日志必须能看出「昨天几点」，所以导出与文件都用完整日期。
-     *  固定 Locale.US：纯数字格式不该被系统语言本地化（某些语言会把数字换成非 ASCII 字形，破坏文件解析） */
-    private fun dayLabel(epochMs: Long): String =
-        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(epochMs))
+     *  格式与原先 JVM 版逐字符一致（见 DateTime.kt，不做本地化） */
+    private fun dayLabel(epochMs: Long): String = formatDate(epochMs)
 
-    private fun formatAbsolute(e: Entry): String {
-        val t = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
-            .format(java.util.Date(e.atMs))
-        return "$t ${e.level.tag}/${e.tag} ${e.text}"
-    }
+    private fun formatAbsolute(e: Entry): String =
+        "${formatDateTime(e.atMs)} ${e.level.tag}/${e.tag} ${e.text}"
 
     /** 文件行（导出同款格式）→ Entry；解析失败的行跳过，保证旧格式/损坏行不拖垮读回 */
     private fun parseLine(line: String): Entry? = runCatching {
         val m = lineRegex.matchEntire(line.trim()) ?: return null
-        val at = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US)
-            .parse(m.groupValues[1])!!.time
+        val at = parseDateTimeOrNull(m.groupValues[1]) ?: return null
         val level = Level.entries.firstOrNull { it.tag == m.groupValues[2] } ?: return null
         Entry(level, m.groupValues[3], m.groupValues[4], at)
     }.getOrNull()
 
     private val lineRegex = Regex("""(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) ([DEIW])/(\S+) (.*)""")
+
+    /** 环形缓冲/文件追加的互斥（JVM=synchronized 语义，iOS=NSRecursiveLock） */
+    private val lock = PlatformLock()
 
     /** 上次写入日志所在的「天」（epoch day）；restore 后为 restore 当天，跨天时触发一次清理 */
     @Volatile private var lastAppendDay: Long = -1

@@ -6,9 +6,23 @@
 ## [未发布]
 
 ### 变更
+- **公共代码去 JVM 化（为 iOS 目标铺路，行为等价）**：commonMain 此前直接用了一批 JVM 专属
+  API（`String.format`、`SimpleDateFormat`/`java.time`、`java.io.File`、`HttpURLConnection`、
+  `synchronized`、`AtomicBoolean`、`Charsets.US_ASCII`），它们在 Kotlin/Native 上不存在。
+  现在全部换成跨平台实现，**输出逐字符不变**（新增单测拿 JVM 的 `String.format` 当参照逐例比对）：
+  自研 printf 子集、kotlinx-datetime 时间格式化、平台锁（JVM=ReentrantLock / iOS=NSRecursiveLock）、
+  平台文件后端与平台 HTTP、ASCII 编解码。Android 与桌面端的行为完全不变。
 - **应用图标换新**：全套图标由新插画重新生成（Android 全密度 mipmaps/自适应图标前后景、
   桌面窗口图标与 .ico、README/商店 512px）。构图按新源图重新校准，圆形/圆角方形/
   超椭圆蒙版下脸部完整、耳朵保留。
+
+### 新增
+- **iOS 编译目标 + GitHub Actions 验证**：新增 `iosArm64` / `iosSimulatorArm64` 两个目标与
+  `iosMain` 平台实现（日期时间、日志落盘、检查更新、剪贴板、日志导出、锁；BLE 传输暂为
+  Noop，设置存储暂为内存）。新增 **iOS 工作流**：macOS runner 上先跑
+  `compileCommonMainKotlinMetadata` 把「commonMain 混入 JVM 专属 API」挡在门口，再编译并
+  链接两档静态 framework，自检产物（架构、体积）后上传。与开发计划里「iOS 保留编译目标」
+  的约定对齐——Android 仍是第一交付平台，iOS 不做真机联调、不产出可安装包。
 
 ### 新增
 - **快照预览可一键退出**：预览提示条右侧新增「退出快照」按钮，点击即回到未连接空态

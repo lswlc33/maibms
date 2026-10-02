@@ -40,6 +40,19 @@ kotlin {
     }
     jvm("desktop")
 
+    // iOS：只做编译目标（Android 为第一交付平台，iOS 不做真机联调）。
+    // framework 供将来接入 Xcode 壳工程用；CI 在 macOS runner 上跑 linkDebugFramework* 验证能编能链。
+    // 同时编 arm64 真机与 arm64 模拟器两档（CI 的 macos-14 runner 是 Apple Silicon，模拟器档可直接链）
+    listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
+        target.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+        }
+    }
+    // 显式应用默认层级模板：iosMain 等中间源集因此**立刻**创建，下面的 sourceSets 块才能按名访问
+    //（不调用的话模板在构建脚本求值之后才应用，配置期 getByName/named 都会报 not found）
+    applyDefaultHierarchyTemplate()
+
     // 把 versionName/versionCode 注入 BuildConfig，应用内「关于/检查更新」读取
     // （Release 工作流自增 versionName 后，这里与代码不用再同步）
     sourceSets {
@@ -51,6 +64,8 @@ kotlin {
                 implementation(compose.animation)
                 implementation(compose.components.resources)
                 implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+                // 跨平台日期时间：commonMain 不能用 JVM 的 SimpleDateFormat/java.time
+                implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.6.1")
             }
         }
         val androidMain by getting {
@@ -145,14 +160,14 @@ tasks.register<JavaExec>("shot") {
     args = listOf(layout.buildDirectory.dir("shots").get().asFile.absolutePath)
 }
 
-// 桌面端没有 AGP 的 BuildConfig：生成一个 Version.kt，让 AppVersion.actual 与 Android 同源。
-// 版本值从上面 defaultConfig 的字面量解析（grep 同款正则），避免两处手改不同步
-val desktopVersionName = file("build.gradle.kts").readText()
+// 桌面端与 iOS 都没有 AGP 的 BuildConfig：生成一个 Version.kt，让 AppVersion.actual 与 Android 同源。
+// 版本值从上面 defaultConfig 的字面量解析（grep 同款正则），避免多处手改不同步
+val nonAndroidVersionName = file("build.gradle.kts").readText()
     .let { Regex("versionName = \"([^\"]*)\"").find(it)!!.groupValues[1] }
-val desktopVersionCode = file("build.gradle.kts").readText()
+val nonAndroidVersionCode = file("build.gradle.kts").readText()
     .let { Regex("versionCode = ([0-9]+)").find(it)!!.groupValues[1].toInt() }
-val generateDesktopVersion by tasks.registering {
-    val outDir = layout.buildDirectory.dir("generated/desktopVersion")
+val generatePlatformVersion by tasks.registering {
+    val outDir = layout.buildDirectory.dir("generated/platformVersion")
     outputs.dir(outDir)
     doLast {
         val dir = outDir.get().asFile.resolve("io/github/lswlc33/maibms/data")
@@ -161,14 +176,26 @@ val generateDesktopVersion by tasks.registering {
             """
             |package io.github.lswlc33.maibms.data
             |
-            |internal const val DESKTOP_VERSION_NAME = "$desktopVersionName"
-            |internal const val DESKTOP_VERSION_CODE = $desktopVersionCode
+            |internal const val PLATFORM_VERSION_NAME = "$nonAndroidVersionName"
+            |internal const val PLATFORM_VERSION_CODE = $nonAndroidVersionCode
             """.trimMargin()
         )
     }
 }
-kotlin.sourceSets.getByName("desktopMain") { kotlin.srcDir(generateDesktopVersion.map { it.outputs.files.first() }) }
+kotlin.sourceSets.getByName("desktopMain") { kotlin.srcDir(generatePlatformVersion.map { it.outputs.files.first() }) }
+// iOS 的源集（含 iosMain 中间源集）由默认层级模板**延迟创建**：配置期这里只能用 named() 惰性取，
+// 直接 by getting / getByName 会报 "KotlinSourceSet with name 'iosMain' not found"。
+// 生成目录挂在 iosMain 上，两个 iOS 目标（iosArm64Main / iosSimulatorArm64Main）经 dependsOn 继承
+// iOS 的 iosMain 中间源集由 applyDefaultHierarchyTemplate() 显式创建（见上面的 kotlin 块）；
+// 生成目录挂在它上面，两个 iOS 目标（iosArm64Main / iosSimulatorArm64Main）经 dependsOn 继承
+kotlin.sourceSets.getByName("iosMain") {
+    kotlin.srcDir(generatePlatformVersion.map { it.outputs.files.first() })
+}
 tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.configureEach {
-    dependsOn(generateDesktopVersion)
+    dependsOn(generatePlatformVersion)
+}
+// 链接阶段（framework）也依赖生成文件：iOS 的 link 任务不在上面的 compile 前缀匹配里
+tasks.matching { it.name.startsWith("link") && it.name.contains("Framework") }.configureEach {
+    dependsOn(generatePlatformVersion)
 }
 

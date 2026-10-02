@@ -54,7 +54,7 @@ object PasswordCodec {
 
     /** ASCII 槽：超出槽长截断，不足补 0x00 */
     fun ascii(password: String, slotLen: Int): ByteArray =
-        password.toByteArray(Charsets.US_ASCII).copyOf(slotLen)
+        password.asciiBytes().copyOf(slotLen)
 
     /** 管理员槽：点分十进制 12 段 → 12 字节；不含 `.` 的输入按 ASCII 处理（兼容直填） */
     fun admin(password: String): ByteArray {
@@ -80,7 +80,7 @@ object PasswordCodec {
             }
             else -> {
                 val slot = ParamTable.slotLen(level)
-                if (password.toByteArray(Charsets.US_ASCII).size > slot)
+                if (password.asciiBytes().size > slot)
                     "$level 级密码槽为 $slot 字节，最多 $slot 个字符" else null
             }
         }

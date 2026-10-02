@@ -568,8 +568,7 @@ fun DeveloperScreen(onBack: () -> Unit) {
             }
             shown.forEach { e ->
                 // 墙钟时间：日志跨会话保留（按天文件、最多 3 天），相对毫秒已无法对齐两次启动
-                val clock = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
-                    .format(java.util.Date(e.atMs))
+                val clock = io.github.lswlc33.maibms.data.formatTimeOfDay(e.atMs)
                 Text(
                     "$clock " + e.render(),
                     fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,

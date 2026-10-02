@@ -1,0 +1,122 @@
+name: iOS
+
+# iOS 是**编译目标**（第一交付平台是 Android）：这个工作流保证 iOS 侧始终「能编、能链」，
+# 不产出可安装的 ipa（那需要 Apple 开发者签名与 Xcode 壳工程，见 README「iOS 构建」一节）。
+#
+# 为什么必须在 macOS runner 上跑：Apple 目标只能用 Apple 工具链（Xcode + Kotlin/Native，
+# 首次还要下载 ~1GB konan 工具链），Windows/Linux 上连编译都做不了。
+on:
+  push:
+    branches: [main, ios-target]
+    paths:
+      - 'composeApp/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'composeApp/**'
+      - 'gradle/**'
+      - 'gradlew'
+      - 'settings.gradle.kts'
+      - 'build.gradle.kts'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS framework (compile & link)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Gradle 依赖与构建缓存（Compose iOS 依赖树不小，缓存能省几分钟）
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Kotlin/Native 工具链（~/.konan，约 1GB）：只在首次下载，缓存住后续运行
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Build tools info
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version 2>/dev/null || true
+
+      # 第一步先做公共代码的平台中立性检查：commonMain 若混入 JVM 专属 API（java.* / System.* /
+      # String.format 等），metadata 编译会直接失败——比等到 K/N 编译到一半才发现快得多
+      - name: Compile common metadata (platform-neutrality gate)
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :composeApp:compileCommonMainKotlinMetadata
+
+      # 编译 + 链接两档 iOS framework：arm64 真机（iosArm64）与 arm64 模拟器（iosSimulatorArm64）。
+      # 静态 framework 不需要签名，无 Apple 账号也能完整走通链接
+      - name: Compile & link iOS frameworks
+        run: |
+          ./gradlew --no-daemon \
+            :composeApp:linkDebugFrameworkIosArm64 \
+            :composeApp:linkDebugFrameworkIosSimulatorArm64
+
+      # 产物自检：framework 目录、二进制架构、大小——空产物或架构不符要在这里红掉
+      - name: Verify framework artifacts
+        run: |
+          set -euo pipefail
+          BASE=composeApp/build/bin
+          for ARCH in iosArm64 iosSimulatorArm64; do
+            FW="$BASE/$ARCH/debugFramework/ComposeApp.framework"
+            test -d "$FW" || { echo "::error::未找到 $FW"; exit 1; }
+            BIN="$FW/ComposeApp"
+            test -f "$BIN" || { echo "::error::未找到二进制 $BIN"; exit 1; }
+            echo "--- $ARCH ---"
+            lipo -info "$BIN"
+            ls -la "$FW" | head -10
+            SIZE=$(stat -f%z "$BIN")
+            echo "$ARCH binary size: $SIZE bytes"
+            if [ "$SIZE" -lt 1000000 ]; then
+              echo "::error::$ARCH framework 二进制只有 ${SIZE}B，疑似没有真正链进 Compose 运行时"
+              exit 1
+            fi
+            cp "$FW/ComposeApp" "/tmp/ComposeApp-$ARCH"
+          done
+
+      - name: Upload frameworks
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-frameworks
+          # framework 目录里有符号链接，tar 打包后再上传（zip 对 symlink 处理不一致）
+          path: |
+            composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework
+            composeApp/build/bin/iosSimulatorArm64/debugFramework/ComposeApp.framework
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summary
+        run: |
+          {
+            echo "### iOS 构建验证通过"
+            echo ""
+            echo "- ✅ commonMain 平台中立性（metadata 编译）"
+            echo "- ✅ iosArm64（真机）framework 编译 + 链接"
+            echo "- ✅ iosSimulatorArm64（模拟器）framework 编译 + 链接"
+            echo ""
+            echo "产物：\`ios-frameworks\`（两档 debugFramework/ComposeApp.framework）"
+            echo "注：这是**编译验证**产物，不含 Xcode 壳工程与签名，不能直接装到设备。"
+          } >> "$GITHUB_STEP_SUMMARY"

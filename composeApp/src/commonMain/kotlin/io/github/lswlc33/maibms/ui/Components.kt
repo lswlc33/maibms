@@ -8,8 +8,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +40,7 @@ import ant_bms_open.composeapp.generated.resources.power_gear3
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
+import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.WriteAccess
 import io.github.lswlc33.maibms.ui.BmsColors
 import org.jetbrains.compose.resources.DrawableResource
@@ -330,7 +331,7 @@ fun BatteryCard(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        if (status.hasData) "%.2f".format(status.totalVoltage) else "--",
+                        if (status.hasData) "%.2f".fmt(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -420,11 +421,11 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
             ),
             listOf(
                 Triple(BmsColors.OkGreen, "放电 MOS", v(status.disMos)),
-                Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".format(status.remainCapAh) + " Ah" else "--"),
+                Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".fmt(status.remainCapAh) + " Ah" else "--"),
             ),
             listOf(
                 Triple(BmsColors.OffGray, "均衡状态", v(status.balance)),
-                Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".format(status.totalCapAh) + " Ah" else "--"),
+                Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".fmt(status.totalCapAh) + " Ah" else "--"),
             ),
         )
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -668,7 +669,7 @@ fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
         Metric("功率", "--", "W"),
     )
     return listOf(
-        Metric("电流", "%.1f".format(current), "A"),
+        Metric("电流", "%.1f".fmt(current), "A"),
         Metric("功率", power.toString(), "W"),
     )
 }
@@ -764,7 +765,7 @@ private fun TempBox(label: String, value: Double?, modifier: Modifier = Modifier
         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(if (value == null) "--" else "%.1f°".format(value), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+        Text(if (value == null) "--" else "%.1f°".fmt(value), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
     }
 }
 
@@ -830,7 +831,7 @@ private fun CellBox(c: CellV, modifier: Modifier = Modifier) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("${c.index}", fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-            Text("%.3f".format(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = valueColor)
+            Text("%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = valueColor)
         }
         if (c.balancing) Box(
             Modifier.align(Alignment.TopEnd).padding(2.5.dp).size(4.5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary)

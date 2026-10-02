@@ -21,7 +21,7 @@ fun main() = application {
             if (value == null) map.remove(key) else map[key] = value
         }
     }
-    LogFileStore.dir = File(System.getProperty("user.home"), "maibms-logs")
+    LogFileStore.setDir(File(System.getProperty("user.home"), "maibms-logs").absolutePath)
     BmsLog.restore()
     BmsLog.frameLogOn.value = AppStore.logFrameOn
     BmsLog.minLevel.value = BmsLog.Level.entries.firstOrNull { it.tag == AppStore.logMinLevel } ?: BmsLog.Level.INFO

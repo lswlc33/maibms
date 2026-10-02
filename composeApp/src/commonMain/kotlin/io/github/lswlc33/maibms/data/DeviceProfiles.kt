@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms.data
 
+import kotlin.concurrent.Volatile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -42,13 +43,13 @@ object DeviceProfiles {
      * 全部读写共用一把锁：KV 的读-改-写（upsert/remove/rename…）与迁移都必须串行，
      * 否则 auth 线程（Default 调度器）与 UI 线程并发改档案会互相覆盖丢更新。
      */
-    private val lock = Any()
+    private val lock = PlatformLock()
 
     @Volatile private var migrated = false
 
     /** 测试专用：复位迁移标志与整表（测试各用例间 KV 是共享的 MemoryStore） */
     internal fun resetForTest() {
-        synchronized(lock) {
+        withLock(lock) {
             migrated = false
             AppStore.put(AppStore.KEY_PROFILES_V1, null)
             AppStore.put(AppStore.KEY_PW, null)
@@ -56,7 +57,7 @@ object DeviceProfiles {
         }
     }
 
-    fun all(): List<DeviceProfile> = synchronized(lock) {
+    fun all(): List<DeviceProfile> = withLock(lock) {
         migrateOnce()
         AppStore.get(AppStore.KEY_PROFILES_V1)?.let { text ->
             runCatching { json.decodeFromString(ListSerializer(DeviceProfile.serializer()), text) }.getOrNull()
@@ -66,14 +67,14 @@ object DeviceProfiles {
     fun find(address: String?): DeviceProfile? = address?.let { addr -> all().firstOrNull { it.address == addr } }
 
     /** 新增或更新（按 address 合并），并滚动淘汰超限的最旧档案 */
-    fun upsert(profile: DeviceProfile) = synchronized(lock) {
+    fun upsert(profile: DeviceProfile) = withLock(lock) {
         val merged = allLocked().filterNot { it.address == profile.address } + profile
         save(merged.sortedByDescending { it.lastConnectedAt }.take(MAX))
     }
 
     /** 仅刷新最近连接时间（建链成功时调用，不动名称/密码/备注） */
-    fun touch(address: String?, at: Long = System.currentTimeMillis()) {
-        synchronized(lock) {
+    fun touch(address: String?, at: Long = epochMillisNow()) {
+        withLock(lock) {
             val p = allLocked().firstOrNull { it.address == address } ?: return
             if (p.lastConnectedAt == at) return
             val merged = allLocked().filterNot { it.address == address } + p.copy(lastConnectedAt = at)
@@ -81,26 +82,26 @@ object DeviceProfiles {
         }
     }
 
-    fun remove(address: String) = synchronized(lock) {
+    fun remove(address: String) = withLock(lock) {
         save(allLocked().filterNot { it.address == address })
     }
 
     /** 设置/清除备注名；清成空白 = 恢复广播名 */
-    fun rename(address: String, alias: String?) = synchronized(lock) {
+    fun rename(address: String, alias: String?) = withLock(lock) {
         val p = allLocked().firstOrNull { it.address == address } ?: return
         val merged = allLocked().filterNot { it.address == address } +
                 p.copy(alias = alias?.trim()?.takeIf { it.isNotEmpty() })
         save(merged)
     }
 
-    fun setPassword(address: String, level: Int, password: String) = synchronized(lock) {
+    fun setPassword(address: String, level: Int, password: String) = withLock(lock) {
         val profiles = allLocked()
         val p = profiles.firstOrNull { it.address == address } ?: DeviceProfile(address = address)
         val merged = profiles.filterNot { it.address == address } + p.copy(passwords = p.passwords + (level to password))
         save(merged)
     }
 
-    fun removePassword(address: String, level: Int) = synchronized(lock) {
+    fun removePassword(address: String, level: Int) = withLock(lock) {
         val profiles = allLocked()
         val p = profiles.firstOrNull { it.address == address } ?: return
         save(profiles.filterNot { it.address == address } + p.copy(passwords = p.passwords - level))

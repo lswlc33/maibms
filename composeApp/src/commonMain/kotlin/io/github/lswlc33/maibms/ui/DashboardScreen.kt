@@ -9,6 +9,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -17,11 +18,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.collectAsState
-import kotlinx.coroutines.launch
-import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.BmsLog
+import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.StartupTrace
+import io.github.lswlc33.maibms.data.fmt
+import kotlinx.coroutines.launch
 
 /**
  * 首屏耗时 Toast 的上限：只有 20s 内出数才弹。
@@ -50,7 +51,7 @@ fun DashboardScreen(
         if (status.hasData) {
             StartupTrace.elapsedToFirstScreenMs()?.let { ms ->
                 BmsLog.i("APP", "启动→上屏 ${ms}ms" + if (StartupTrace.usedProcessStart) "" else "（无进程起点，从发起连接算起）")
-                if (ms <= FIRST_SCREEN_TOAST_LIMIT_MS) showSystemToast("首屏 %.1fs".format(ms / 1000.0))
+                if (ms <= FIRST_SCREEN_TOAST_LIMIT_MS) showSystemToast("首屏 %.1fs".fmt(ms / 1000.0))
             }
         }
     }

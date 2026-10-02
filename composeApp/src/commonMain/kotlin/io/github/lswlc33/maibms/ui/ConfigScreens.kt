@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -13,8 +14,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.collectAsState
 import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.ControlCmd
 import io.github.lswlc33.maibms.protocol.ParamTable
 import io.github.lswlc33.maibms.protocol.Perm
@@ -125,7 +126,7 @@ fun ParamGroupScreen(
             name = d.name,
             value = ParamTable.format(live, d),
             unit = d.unit,
-            addr = "0x%X".format(d.addr),
+            addr = "0x%X".fmt(d.addr),
             scale = if (d.scale >= 1000) "1e${d.scale.toLong().toString().length - 1}" else d.scale.toLong().toString(),
             range = ParamTable.rangeText(d),
         )
@@ -384,12 +385,12 @@ fun ParamEditDialog(
                         RadioDot(selected = pickedRaw == code)
                         Text(text, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f).padding(start = 10.dp))
-                        Text("0x%X".format(code), fontSize = 10.sp, fontFamily = FontFamily.Monospace,
+                        Text("0x%X".fmt(code), fontSize = 10.sp, fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
                 if (dict.keys.none { it == currentRaw }) {
-                    Text("当前设备值 0x%X 不在已知枚举内".format(currentRaw), fontSize = 10.sp,
+                    Text("当前设备值 0x%X 不在已知枚举内".fmt(currentRaw), fontSize = 10.sp,
                         color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 2.dp))
                 }
                 Text(

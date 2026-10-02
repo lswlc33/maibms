@@ -256,6 +256,11 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         return g != null
     }
 
+    /**
+     * 收尾清理：disconnect/close 在 API 31+ 需要 BLUETOOTH_CONNECT，权限被回收时抛
+     * SecurityException——这里都是尽力而为的清理调用，runCatching 已兜住，注解仅为标注意图
+     */
+    @SuppressLint("MissingPermission")
     private fun closeGatt() {
         val g = gatt ?: return
         gatt = null
@@ -366,6 +371,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             if (g === gatt) this@AndroidBleTransport.mtu = mtu
         }
 
+        // 主动断开也属尽力而为的清理：权限被回收时 SecurityException 由 runCatching 兜住
+        @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
             if (g !== gatt || d.uuid != CCCD) return
             if (status != BluetoothGatt.GATT_SUCCESS) {

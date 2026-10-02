@@ -1,6 +1,7 @@
 package io.github.lswlc33.maibms.transport
 
 import io.github.lswlc33.maibms.protocol.*
+import io.github.lswlc33.maibms.protocol.asciiString
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -170,7 +171,7 @@ class MockBmsEngine(private val scope: CoroutineScope) {
         if (slot != null) {
             val level_ = slot.first
             val expected = permissionSlots[level_] ?: "12345678"
-            val got = frame.data.takeWhile { it != 0.toByte() }.toByteArray().toString(Charsets.US_ASCII)
+            val got = frame.data.takeWhile { it != 0.toByte() }.toByteArray().asciiString()
             if (got == expected) { level = level_; currentPermission = level }
         }
         // 应答 0x43：数据区前 2 字节 = 校验后运行权限（u16 小端）

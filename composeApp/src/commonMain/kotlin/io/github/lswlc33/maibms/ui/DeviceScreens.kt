@@ -19,13 +19,9 @@ import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.Bms
 import io.github.lswlc33.maibms.data.DeviceProfile
 import io.github.lswlc33.maibms.data.DeviceProfiles
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import io.github.lswlc33.maibms.data.formatShortDateTime
 
 /* ---------- S17 历史设备（档案 + 自动重连目标 + 按设备密码） ---------- */
-
-private val timeFmt = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
 
 /** 历史连接列表：只能通过连接设备自动入列；这里负责编辑备注/管密码/删设备/选重连目标。 */
 @Composable
@@ -162,7 +158,7 @@ private fun DeviceRow(profile: DeviceProfile, isLast: Boolean, onClick: () -> Un
                 }
             }
             Text(
-                "${profile.address} · ${timeFmt.format(Date(profile.lastConnectedAt))} · 密码 ${profile.passwords.size} 级",
+                "${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)} · 密码 ${profile.passwords.size} 级",
                 fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 1.dp),
             )
@@ -191,7 +187,7 @@ private fun DeviceDetailDialog(
         ) {
             Text(profile.displayName, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-            Text("${profile.address} · ${timeFmt.format(Date(profile.lastConnectedAt))}",
+            Text("${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)}",
                 fontSize = 10.sp, fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
             OutlinedTextField(

@@ -1,5 +1,7 @@
 package io.github.lswlc33.maibms.protocol
 
+import io.github.lswlc33.maibms.data.fmt
+
 /** 协议常量（docs/03-帧格式与校验.md） */
 object Proto {
     const val HEAD: Byte = 0x7E.toByte()
@@ -118,14 +120,14 @@ object Frame {
         val sb = StringBuilder(frame.size * 3)
         for (i in frame.indices) {
             if (i in dataStart until dataEnd) sb.append("**_")
-            else sb.append("%02X".format(frame[i]))
+            else sb.append("%02X".fmt(frame[i]))
             if (i != frame.lastIndex) sb.append(' ')
         }
         return sb.toString()
     }
 
     /** 帧的十六进制串（空格分隔） */
-    fun hex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".format(it) }
+    fun hex(frame: ByteArray): String = frame.joinToString(" ") { "%02X".fmt(it) }
 
     /** 密码校验（按等级编码：五级/管理员槽 12 字节，管理员用点分十进制） */
     fun auth(level: Int, password: String, addr: Byte = Proto.ADDR_MAIN): ByteArray =
@@ -149,7 +151,7 @@ class ParsedFrame(
                 other.data.contentEquals(data) && other.isSeg2 == isSeg2
     override fun hashCode(): Int = func * 31 + reg
     override fun toString(): String =
-        "F(%02X reg=%04X len=%d seg2=%s)".format(func, reg, data.size, isSeg2)
+        "F(%02X reg=%04X len=%d seg2=%s)".fmt(func, reg, data.size, isSeg2)
 }
 
 /**

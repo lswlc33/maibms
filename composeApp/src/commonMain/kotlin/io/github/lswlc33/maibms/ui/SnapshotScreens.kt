@@ -16,11 +16,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.data.AppStore
+import io.github.lswlc33.maibms.data.Bms
 import io.github.lswlc33.maibms.data.BmsRepository
 import io.github.lswlc33.maibms.data.BmsSnapshot
-import io.github.lswlc33.maibms.data.Bms
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.SnapshotCodec
+import io.github.lswlc33.maibms.data.fmt
 import kotlinx.coroutines.launch
 
 /* ---------- S16 快照管理与预览 ---------- */
@@ -141,7 +142,7 @@ private fun SnapshotRow(snapshot: BmsSnapshot, onOpen: () -> Unit, onDelete: () 
                 fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                "${snapshot.timeLabel} · SOC ${st.soc}% · ${"%.1f".format(st.totalVoltage)}V",
+                "${snapshot.timeLabel} · SOC ${st.soc}% · ${"%.1f".fmt(st.totalVoltage)}V",
                 fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 1.dp),
             )

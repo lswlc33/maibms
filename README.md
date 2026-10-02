@@ -121,6 +121,38 @@ export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
 ./gradlew :composeApp:shot
 ```
 
+### iOS 构建
+
+iOS 目前是**编译目标**（第一交付平台是 Android）：代码能编、能链成 framework，但还没有
+Xcode 壳工程与真机适配，因此不产出可安装的 ipa。验证交给 GitHub Actions 的
+**iOS 工作流**（`.github/workflows/ios.yml`），它在 macOS runner 上跑三件事：
+
+```bash
+# 1) 公共代码的平台中立性：commonMain 若混入 JVM 专属 API（java.* / System.* / String.format）会立刻失败
+./gradlew :composeApp:compileCommonMainKotlinMetadata
+
+# 2) 编译 + 链接两档 framework（arm64 真机 / arm64 模拟器；静态 framework 无需签名）
+./gradlew :composeApp:linkDebugFrameworkIosArm64 :composeApp:linkDebugFrameworkIosSimulatorArm64
+# 产物：composeApp/build/bin/<target>/debugFramework/ComposeApp.framework
+```
+
+> Apple 目标**只能在 macOS 上编译**（Windows/Linux 连编译都做不了，首次还需下载约 1GB 的
+> Kotlin/Native 工具链）。CI 已缓存 Gradle 与 `~/.konan`，重复运行快得多。
+
+框架入口是 `MainViewControllerKt.MainViewController()`（`iosMain/MainViewController.kt`），
+将来的 Xcode 壳工程把它作为根视图控制器即可。当前 iOS 侧的平台实现：
+
+| 能力 | iOS 实现 | 说明 |
+| --- | --- | --- |
+| 日期时间 | kotlinx-datetime（公共代码） | 与 Android/桌面输出逐字符一致 |
+| 日志落盘 | NSFileManager（Application Support/maibms-logs） | 保留 3 天、按天一个文件 |
+| 检查更新 | NSURLSession | 同样的镜像回退链与超时策略 |
+| 剪贴板 | UIPasteboard | 开发者页「复制日志」 |
+| 日志导出 | 写入沙盒 Documents | 「文件」App 可取走 |
+| 锁 | NSRecursiveLock | 替代 JVM 的 synchronized |
+| 设置存储 | 内存（重启不保留） | 接真机适配时换 NSUserDefaults |
+| BLE 传输 | **无**（NoopTransport） | 需要 CoreBluetooth 实现，属后续工作 |
+
 ### 应用图标
 
 启动器图标与桌面端窗口图标都由 `tools/icon/generate_icons.py` 从 `tools/icon/source.jpg` 生成（需要 Pillow）：

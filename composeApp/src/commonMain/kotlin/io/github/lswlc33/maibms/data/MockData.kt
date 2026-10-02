@@ -175,7 +175,7 @@ object MockBms {
 
     private fun fmtRuntime(sec: Long): String {
         val d = sec / 86400
-        val hms = "%02d:%02d:%02d".format(sec % 86400 / 3600, sec % 3600 / 60, sec % 60)
+        val hms = "%02d:%02d:%02d".fmt(sec % 86400 / 3600, sec % 3600 / 60, sec % 60)
         return if (d > 0) "${d}天 $hms" else hms
     }
 
@@ -226,10 +226,10 @@ object MockBms {
             totalVoltage = r.totalVoltage,
             current = r.current,
             power = r.powerW,
-            maxCell = "%.3f".format(r.maxCellV),
-            minCell = "%.3f".format(r.minCellV),
-            avgCell = "%.3f".format(r.avgCellV),
-            deltaCell = "%.3f".format(r.deltaCellV),
+            maxCell = "%.3f".fmt(r.maxCellV),
+            minCell = "%.3f".fmt(r.minCellV),
+            avgCell = "%.3f".fmt(r.avgCellV),
+            deltaCell = "%.3f".fmt(r.deltaCellV),
             totalCycleAh = r.cycleCapAh.toInt(),
             battState = io.github.lswlc33.maibms.protocol.RealtimeDecoder.battStateText(r.battStateCode),
             chMos = if (r.chMos == 1) "开启" else "关闭",

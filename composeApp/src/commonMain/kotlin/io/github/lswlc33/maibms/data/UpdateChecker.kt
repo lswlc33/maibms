@@ -1,12 +1,9 @@
 package io.github.lswlc33.maibms.data
 
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import java.net.HttpURLConnection
-import java.net.URL
 
 /**
  * 应用更新检查：读取 GitHub Releases 的最新版本，与 [AppVersion] 比较。
@@ -73,7 +70,7 @@ object UpdateChecker {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun check(channel: UpdateChannel): Result = withContext(Dispatchers.IO) {
+    suspend fun check(channel: UpdateChannel): Result = withContext(ioDispatcher) {
         val errors = mutableListOf<String>()
         val url = apiUrlFor(channel)
         var latestInfo: ReleaseInfo? = null
@@ -81,8 +78,7 @@ object UpdateChecker {
             if (latestInfo != null) break   // 拿到结果即停（continue 在 inline lambda 里是 2.2 语法）
             try {
                 latestInfo = fetchRelease(mirror(url), channel)
-                if (latestInfo == null) errors.add("${mirror(url)}: 响应为空")
-            } catch (e: Exception) {
+                if (latestInfo == null) errors.add("${mirror(url)}: 响应为空")            } catch (e: Exception) {
                 errors.add("${mirror(url)}: ${e.message ?: e::class.simpleName}")
             }
         }
@@ -99,26 +95,20 @@ object UpdateChecker {
         }
     }
 
-    /** GET 一次 release JSON（单对象或列表按渠道区分）；非 200 或 body 为空返回 null */
-    private fun fetchRelease(url: String, channel: UpdateChannel): ReleaseInfo? {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        try {
-            conn.connectTimeout = 5_000
-            conn.readTimeout = 5_000
-            conn.instanceFollowRedirects = true   // 镜像多为 302 透传
-            conn.setRequestProperty("Accept", "application/vnd.github+json")
-            conn.setRequestProperty("User-Agent", "maibms-app/${AppVersion.name}")
-            if (conn.responseCode !in 200..299) return null
-            val body = conn.inputStream.use { it.readBytes().decodeToString() }
-            if (body.isBlank()) return null
-            // 稳定版=单对象；预览版=release 数组取第一个（GitHub 按 created_at 倒序，即最近一次发布）
-            return when (channel) {
-                UpdateChannel.STABLE -> json.decodeFromString(ReleaseInfo.serializer(), body)
-                UpdateChannel.PREVIEW -> json.decodeFromString(
-                    ListSerializer(ReleaseInfo.serializer()), body).firstOrNull()
-            }
-        } finally {
-            conn.disconnect()
+    /** GET 一次 release JSON（单对象或列表按渠道区分）；非 200 或 body 为空返回 null。
+     *  取文本走平台实现 [httpGetText]（JVM=HttpURLConnection，iOS=NSURLSession），解析留在公共侧 */
+    private suspend fun fetchRelease(url: String, channel: UpdateChannel): ReleaseInfo? {
+        val body = httpGetText(
+            url = url,
+            timeoutMs = 5_000,
+            userAgent = "maibms-app/${AppVersion.name}",
+            accept = "application/vnd.github+json",
+        ) ?: return null
+        // 稳定版=单对象；预览版=release 数组取第一个（GitHub 按 created_at 倒序，即最近一次发布）
+        return when (channel) {
+            UpdateChannel.STABLE -> json.decodeFromString(ReleaseInfo.serializer(), body)
+            UpdateChannel.PREVIEW -> json.decodeFromString(
+                ListSerializer(ReleaseInfo.serializer()), body).firstOrNull()
         }
     }
 

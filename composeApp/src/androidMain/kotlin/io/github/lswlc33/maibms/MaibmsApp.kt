@@ -37,8 +37,8 @@ class MaibmsApp : Application() {
         runCatching {
             // 日志落盘：外部存储应用私有目录（用户可从文件管理器查看，卸载才删），
             // 启动即读回上次运行的日志（按天文件，只留最近 3 天）
-            io.github.lswlc33.maibms.data.LogFileStore.dir =
-                File(getExternalFilesDir(null), "maibms/logs")
+            io.github.lswlc33.maibms.data.LogFileStore.setDir(
+                File(getExternalFilesDir(null), "maibms/logs").absolutePath)
             io.github.lswlc33.maibms.data.BmsLog.restore()
             // 上次选择的日志级别与帧级开关也一起恢复（与设置页写入的 AppStore 对应）
             io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = AppStore.logFrameOn

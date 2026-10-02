@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms.data
 
+import kotlin.concurrent.Volatile
 import io.github.lswlc33.maibms.protocol.*
 import io.github.lswlc33.maibms.transport.*
 import kotlinx.coroutines.*
@@ -116,8 +117,10 @@ class BmsRepository(
     private var stateJob: Job? = null
 
     /** start() 已完成装配的标志：幂等守卫的主键（collectorJob 现在真实赋值，作为双保险）。
-     *  CAS 落位而非先查后置：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 理论上可并发调 start() */
-    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
+     *  取锁后「检查+置位」而非先查后置：MaibmsApp.onCreate 与 App() 的 LaunchedEffect
+     *  理论上可并发调 start()，两个都必须串行通过守卫 */
+    private val startGuard = PlatformLock()
+    private var started = false
 
     /** 链路就绪时的轮询唤醒：首拍立刻发，不等 900ms 相位（CONFLATED：最多积一次，不会空转） */
     private val pollWake = Channel<Unit>(Channel.CONFLATED)
@@ -132,7 +135,10 @@ class BmsRepository(
         // 幂等守卫：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 都会调 start()，
         // 只允许第一套收集器/自动重连生效——曾因守卫字段从未赋值而双跑，
         // 两套收集器×两条轮询×两个 postConnectFlow 抢同一个应答槽，连接后直接把会话搅崩
-        if (!started.compareAndSet(false, true)) return
+        val alreadyStarted = withLock(startGuard) {
+            if (started) true else { started = true; false }
+        }
+        if (alreadyStarted) return
         BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
         // 自动重连目标：历史列表里显式指定的设备优先，否则默认上次连接；
         // 被指定的设备若已从历史删除，回退到上次连接
@@ -299,17 +305,17 @@ class BmsRepository(
         if (!AppStore.snapshotEnabled || previewActive.value) return
         val status = MockBms.status.value
         if (!status.hasData) return
-        val id = if (sessionSnapshotId != 0L) sessionSnapshotId else System.currentTimeMillis()
+        val id = if (sessionSnapshotId != 0L) sessionSnapshotId else epochMillisNow()
         sessionSnapshotId = id
-        val snap = MockBms.captureSnapshot(id, timeLabel(System.currentTimeMillis()))
+        val snap = MockBms.captureSnapshot(id, timeLabel(epochMillisNow()))
         runCatching { AppStore.saveSnapshotJson(id, SnapshotCodec.encode(snap)) }
             .onSuccess { BmsLog.i("SNAP", "已记录快照：${snap.deviceName}（${snap.timeLabel}），参数 ${snap.liveParams.size} 项") }
             .onFailure { BmsLog.e("SNAP", "快照写入失败：$it") }
     }
 
-    /** 记录时刻的可读标签（两目标都是 JVM，直接用 SimpleDateFormat） */
+    /** 记录时刻的可读标签（MM-dd HH:mm，跨平台实现见 DateTime.kt） */
     private fun timeLabel(epochMs: Long): String =
-        java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(epochMs))
+        formatShortDateTime(epochMs)
 
     // ---- 配置缓存（≠ 快照）：自动重连设备「上次成功连接」的设置项，不含任何实时数据 ----
 
@@ -330,7 +336,7 @@ class BmsRepository(
         if (params.isEmpty()) return
         runCatching {
             AppStore.saveParamsCache(addr, AppStore.ParamsCache(
-                savedAt = System.currentTimeMillis(),
+                savedAt = epochMillisNow(),
                 params = params,
                 identity = MockBms.identity.value,
             ))
@@ -368,9 +374,11 @@ class BmsRepository(
         if (ok.isFailure) {
             val e = ok.exceptionOrNull()
             BmsLog.e("SCAN", "扫描失败：$e")
-            _scanError.value = when (e) {
-                is SecurityException -> "缺少蓝牙权限，请在系统设置中允许本应用使用附近的设备"
-                is IllegalStateException -> e.message
+            _scanError.value = when {
+                // 权限缺失时 Android 抛 SecurityException（common 代码没有这个类，按类名判）
+                e != null && e::class.simpleName == "SecurityException" ->
+                    "缺少蓝牙权限，请在系统设置中允许本应用使用附近的设备"
+                e is IllegalStateException -> e.message
                 else -> e?.message ?: "扫描失败"
             }
             _scanning.value = false
@@ -409,7 +417,7 @@ class BmsRepository(
             address = address,
             name = name ?: prev?.name.orEmpty(),
             alias = prev?.alias,
-            lastConnectedAt = System.currentTimeMillis(),
+            lastConnectedAt = epochMillisNow(),
             passwords = prev?.passwords ?: emptyMap(),
         ))
         restorePasswords(address)
@@ -478,7 +486,7 @@ class BmsRepository(
                     BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
                 }
                 // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
-                val since = System.currentTimeMillis() - lastFrameAt
+                val since = epochMillisNow() - lastFrameAt
                 if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
                     if (!_stalled.value) {
                         _stalled.value = true
@@ -535,11 +543,11 @@ class BmsRepository(
     }
 
     private suspend fun handleFrame(f: ParsedFrame) {
-        BmsLog.d("RX", "func=%02X reg=%d len=%d %s".format(f.func, f.reg, f.data.size, BmsLog.hex(f.data.take(24).toByteArray())))
+        BmsLog.d("RX", "func=%02X reg=%d len=%d %s".fmt(f.func, f.reg, f.data.size, BmsLog.hex(f.data.take(24).toByteArray())))
         when (f.func) {
             Proto.RSP_REALTIME -> {
                 runCatching { RealtimeDecoder.decode(f.data) }.onSuccess { r ->
-                    lastFrameAt = System.currentTimeMillis()
+                    lastFrameAt = epochMillisNow()
                     MockBms.updateFromRealtime(r)
                     MockBms.connected.value = true
                     // 首帧到达：唤醒连后序列（升权 → 参数区读回排在它后面）。
@@ -569,7 +577,7 @@ class BmsRepository(
                     k += 2
                 }
                 if (patch.isNotEmpty()) {
-                    BmsLog.d("WRITE", "回显 ${patch.size} 项 @0x${"%X".format(f.reg)}")
+                    BmsLog.d("WRITE", "回显 ${patch.size} 项 @0x${"%X".fmt(f.reg)}")
                     MockBms.liveParams.value = MockBms.liveParams.value + patch
                 }
             }
@@ -599,15 +607,15 @@ class BmsRepository(
                     val limit = (f.data[2].toInt() and 0xFF) or ((f.data[3].toInt() and 0xFF) shl 8)
                     val def = ParamTable.byAddr(addr)
                     if (def != null) {
-                        "%s %s=%.3f %s".format(
+                        "%s %s=%.3f %s".fmt(
                             def.name, if (code == 2) "最小" else "最大", limit / def.scale, def.unit
                         )
-                    } else "参数 0x%X 限值 %d".format(addr, limit)
+                    } else "参数 0x%X 限值 %d".fmt(addr, limit)
                 } else null
                 val ok = ResultCodes.writeOk(code)
                 val detail = MockBms.lastWriteDetail.value
-                if (ok) BmsLog.i("WRITE", "参数写入成功（0x${"%X".format(f.reg)}）")
-                else BmsLog.e("WRITE", "参数写入失败：${ResultCodes.writeResult(code)}（0x${"%X".format(f.reg)}）" + (detail?.let { " · $it" } ?: ""))
+                if (ok) BmsLog.i("WRITE", "参数写入成功（0x${"%X".fmt(f.reg)}）")
+                else BmsLog.e("WRITE", "参数写入失败：${ResultCodes.writeResult(code)}（0x${"%X".fmt(f.reg)}）" + (detail?.let { " · $it" } ?: ""))
                 }
             }
         }
@@ -639,7 +647,7 @@ class BmsRepository(
             val r = withTimeoutOrNull(timeoutMs) { d.await() }
             awaiting = null; expectFunc = -1; expectReg = null
             if (r == null && !fromPoll) {
-                BmsLog.w("TX", "命令无应答 func=%02X reg=%d（${timeoutMs}ms 超时）".format(respondFunc, expectedReg ?: -1))
+                BmsLog.w("TX", "命令无应答 func=%02X reg=%d（${timeoutMs}ms 超时）".fmt(respondFunc, expectedReg ?: -1))
             }
             r
         }
@@ -658,7 +666,7 @@ class BmsRepository(
         // 槽长按等级取（5 级与管理员槽 12 字节，管理员为点分十进制），见 PasswordCodec
         val payload = PasswordCodec.encode(level, password)
         BmsLog.i("AUTH", "校验 $level 级密码（寄存器 $addr，${payload.size} 字节）")
-        lastAuthAt = System.currentTimeMillis()
+        lastAuthAt = epochMillisNow()
         // 弱信号下 0x43 可能 2s 后才回（真机实测），给足 4s
         val r = requestAndAwait(Frame.auth(addr, payload), Proto.RSP_AUTH, expectedReg = addr, timeoutMs = 4000)
         if (r == null) {
@@ -720,7 +728,7 @@ class BmsRepository(
         if (target <= 0 || current >= target) return
         val pw = MockBms.plainPasswords.value[target] ?: return
         if (reAuthJob?.isActive == true) return
-        if (System.currentTimeMillis() - lastAuthAt < RE_AUTH_COOLDOWN_MS) return
+        if (epochMillisNow() - lastAuthAt < RE_AUTH_COOLDOWN_MS) return
         reAuthJob = scope.launch {
             delay(300)   // 让这一拍的轮询应答先落地，别抢应答队列
             val lv = runCatching { auth(target, pw) }.getOrDefault(0)
@@ -809,7 +817,7 @@ class BmsRepository(
 
     /** 控制命令（返回结果码，1=成功） */
     suspend fun control(cmd: Int): Int {
-        BmsLog.i("CTRL", "发送控制命令：${ControlCmd.name(cmd)}（0x%02X）".format(cmd))
+        BmsLog.i("CTRL", "发送控制命令：${ControlCmd.name(cmd)}（0x%02X）".fmt(cmd))
         val r = requestAndAwait(Frame.control(cmd), Proto.RSP_CONTROL, expectedReg = cmd)
         if (r == null) {
             BmsLog.e("CTRL", "控制命令无应答：${ControlCmd.name(cmd)}")
@@ -839,7 +847,7 @@ class BmsRepository(
      */
     suspend fun writeParam(addr: Int, rawValue: Int): Int {
         val def = ParamTable.byAddr(addr)
-        val label = "0x${"%X".format(addr)}" + (def?.let { "（${it.name}）" } ?: "")
+        val label = "0x${"%X".fmt(addr)}" + (def?.let { "（${it.name}）" } ?: "")
         BmsLog.i("WRITE", "写参数 $label = $rawValue")
         MockBms.lastWriteResult.value = -1
         MockBms.lastWriteDetail.value = null
