@@ -99,9 +99,20 @@ jobs:
           APP="build/ios-dd/Build/Products/Debug-iphoneos/iosApp.app"
           test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
           echo "--- .app 内容 ---"
-          ls -la "$APP" | head -20
-          echo "--- 嵌入的 framework ---"
-          ls -la "$APP/Frameworks" 2>/dev/null || { echo "::error::App 里没有嵌入 framework"; exit 1; }
+          ls -la "$APP"
+          BIN="$APP/iosApp"
+          test -f "$BIN" || { echo "::error::未找到可执行文件 $BIN"; exit 1; }
+          SIZE=$(stat -f%z "$BIN")
+          echo "可执行文件大小: $SIZE bytes"
+          # 静态 framework 是**链接进**可执行文件的（不嵌入 Frameworks/），所以用体积做粗检：
+          # 小于 5MB 说明 Kotlin/Compose 运行时没真正链进去
+          if [ "$SIZE" -lt 5000000 ]; then
+            echo "::error::可执行文件只有 ${SIZE}B，疑似 Compose 运行时未链入"
+            exit 1
+          fi
+          ls -la "$APP/Frameworks" 2>/dev/null || echo "(静态 framework：Frameworks 为空属正常)"
+          echo "--- 链接的动态库 ---"
+          otool -L "$BIN" | head -10
           # 手工打成 ipa（Payload/ 目录 + zip）
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
