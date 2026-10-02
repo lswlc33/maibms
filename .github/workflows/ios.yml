@@ -100,19 +100,21 @@ jobs:
           test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
           echo "--- .app 内容 ---"
           ls -la "$APP"
-          BIN="$APP/iosApp"
-          test -f "$BIN" || { echo "::error::未找到可执行文件 $BIN"; exit 1; }
-          SIZE=$(stat -f%z "$BIN")
-          echo "可执行文件大小: $SIZE bytes"
-          # 静态 framework 是**链接进**可执行文件的（不嵌入 Frameworks/），所以用体积做粗检：
-          # 小于 5MB 说明 Kotlin/Compose 运行时没真正链进去
-          if [ "$SIZE" -lt 5000000 ]; then
-            echo "::error::可执行文件只有 ${SIZE}B，疑似 Compose 运行时未链入"
+          test -f "$APP/iosApp" || { echo "::error::未找到可执行文件"; exit 1; }
+          # 静态 framework 是**链接进**二进制的（不嵌入 Frameworks/）；且 Xcode 16 的 Debug 构建
+          # 会把真正的代码放进 iosApp.debug.dylib（主可执行文件只是个壳，几十 KB），
+          # 所以按 .app 总大小核检，并打印构成便于核对
+          echo "--- .app 体积构成 ---"
+          du -sh "$APP"/* 2>/dev/null | sort -rh | head -6
+          APP_MB=$(du -sm "$APP" | cut -f1)
+          echo ".app 总大小: ${APP_MB}MB"
+          if [ "$APP_MB" -lt 20 ]; then
+            echo "::error::.app 只有 ${APP_MB}MB，疑似 Compose 运行时未链入"
             exit 1
           fi
           ls -la "$APP/Frameworks" 2>/dev/null || echo "(静态 framework：Frameworks 为空属正常)"
-          echo "--- 链接的动态库 ---"
-          otool -L "$BIN" | head -10
+          echo "--- 二进制链接情况 ---"
+          otool -L "$APP/iosApp" | head -6
           # 手工打成 ipa（Payload/ 目录 + zip）
           rm -rf build/ipa && mkdir -p build/ipa/Payload
           cp -R "$APP" build/ipa/Payload/
