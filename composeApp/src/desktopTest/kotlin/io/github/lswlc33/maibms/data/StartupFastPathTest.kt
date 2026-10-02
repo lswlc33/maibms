@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
  * 冷启动快路径：链路一就绪就发第一拍，升权与参数区读回都排在首帧之后。
  *
  * 这三件事是"打开就能看到电池状态"的关键时序，之前全靠固定 delay 凑：
- * 首拍要等 900ms 轮询相位、升权固定 delay(600) 且会抢应答槽、参数区还会读两遍。
+ * 首拍要等一个完整轮询相位（当时 900ms）、升权固定 delay(600) 且会抢应答槽、参数区还会读两遍。
  * 改动后必须由测试钉住，否则以后随便加个 delay 又回去了。
  *
  * 用例脚手架沿用 WritePathTest：常驻协程跑在自有用例 scope 上，结束时取消。
@@ -104,7 +104,7 @@ class StartupFastPathTest {
     }
 
     /**
-     * 首拍不等 900ms 相位：链路就绪后要立刻读到第一帧。
+     * 首拍不等整个轮询相位：链路就绪后要立刻读到第一帧。
      * 这是"快一秒看到保护/告警"最直接的一条——首页所有数值都在这条 0x11 帧里。
      */
     @Test fun firstRealtimeReadFiresImmediatelyOnConnected() {
@@ -124,7 +124,7 @@ class StartupFastPathTest {
                 val lag = first!!.first - transport.connectedAt
                 assertTrue(
                     lag in 0..400,
-                    "首拍应在链路就绪后立刻发出，实测相差 ${lag}ms（>400ms 说明还在等 900ms 轮询相位）",
+                    "首拍应在链路就绪后立刻发出，实测相差 ${lag}ms（>400ms 说明还在等轮询相位）",
                 )
             }
         } finally {

@@ -446,6 +446,12 @@ class BmsRepository(
         manualDisconnect.value = false
         AppStore.autoReconnect = true
         resetSessionState()
+        // resetSessionState 里的 clearForRealDevice() 会清掉设备名（本意是防快照预览的名字残留），
+        // 但这里连的就是同一台设备，必须立刻回填——否则重连成功后大卡的设备名和电量百分比
+        // 会一直显示「--」（百分比以设备名判断"是否见过设备"）。
+        // 注：connectTo() 虽先设了名字，但它末尾也调本函数，一样会被 reset 清掉，所以修复点在这里
+        MockBms.connectedDeviceName.value =
+            DeviceProfiles.find(address ?: MockBms.savedAddress)?.displayName ?: AppStore.savedDeviceName
         // 清空会话后立刻回灌该设备的配置缓存：连接期间配置页不至于从有值闪回空值，
         // 连接失败（板子不在）时也还留着上次成功连接的设置项可看
         loadParamsCacheIntoSession(address ?: MockBms.savedAddress)
@@ -464,11 +470,19 @@ class BmsRepository(
         }
     }
 
-    /** 900ms 轮询循环（connect 启动，disconnect 取消）：无条件常驻，连接态在每拍内部判断 */
+    /**
+     * 轮询节奏：读 AppStore.pollIntervalMs（开发者页三档 900/600/300，默认 600ms），
+     * 每拍现读——改完最迟一拍内生效。
+     */
+    private val pollIntervalMs: Long
+        get() = AppStore.pollIntervalMs.toLong()
+
+    /** 轮询循环（connect 启动，disconnect 取消）：无条件常驻，连接态在每拍内部判断 */
     private suspend fun pollLoop() {
         // 无条件常驻：连接态在每拍内部判断（避免链路态镜像延迟导致首拍误判退出）
-        // 节奏 900ms：真机弱信号下 500ms 一轮会持续占满连接间隔，反而拖低成功率；
-        // 但链路刚就绪时会被 pollWake 立刻唤醒一次——首帧不用白等这个相位
+        // 节奏 = 开发者页三档（900/600/300，默认 600）：更快的轮询在弱信号下会持续占满
+        // BLE 连接间隔、反而拖低成功率，遇到丢帧就切回 900 档；链路刚就绪时会被 pollWake
+        // 立刻唤醒一次——首帧不用白等这个相位
         while (currentCoroutineContext().isActive) {
             if (_linkState.value == LinkState.Connected) {
                 try {
@@ -489,8 +503,8 @@ class BmsRepository(
                     BmsLog.i("LINK", "实时帧恢复")
                 }
             }
-            // 正常按 900ms 走；链路刚就绪会提前唤醒（见 pollWake）
-            withTimeoutOrNull(POLL_INTERVAL_MS) { pollWake.receive() }
+            // 正常按当前档位走（默认 600ms）；链路刚就绪会提前唤醒（见 pollWake）
+            withTimeoutOrNull(pollIntervalMs) { pollWake.receive() }
         }
     }
 
@@ -522,8 +536,6 @@ class BmsRepository(
 
     companion object {
         const val STALL_MS = 7_000L
-        /** 轮询节奏：真机弱信号下 500ms 会占满连接间隔，900ms 是实测稳定的值 */
-        const val POLL_INTERVAL_MS = 900L
         /** 连后序列等首个实时帧的上限；等不到就跳过升权与参数区读回 */
         const val FIRST_FRAME_WAIT_MS = 10_000L
         /** BLE 扫描窗口：够扫到弱信号设备，又不至于让用户干等 */

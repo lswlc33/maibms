@@ -171,18 +171,37 @@ object AppStore {
         set(v) = put(KEY_POWER_GAUGE, if (v) "1" else "0")
 
     /**
-     * 功率阶梯（W），逗号分隔，1~3 个，每个数是**该档的上限**（第 1 档必填，后两个可选；
-     * 不填 = 不设阶梯）。形似变速箱换挡：功率升到第 1 档上限换第 2 档，以此类推。
-     * 读取时过滤非正数、去重、强制升序：换挡进度条的数学与输入顺序/重复输入无关
-     * （重复值会画出 0 宽度的档位格）。
+     * 功率阶梯（W）：第 1 个是**副档位上限**（负数，充电/动能回收共用，固定量程），
+     * 后三个是放电一/二/三档上限（正数升序）。默认 -1500/1000/3000/5000——开箱即有表，
+     * 「不设阶梯」不再是合法状态（双击才是关表的唯一开关）。
+     * 读取时规范化（见 [normalizePowerStages]）：老数据（如只有 1000/2000/3000 三个正档）
+     * 也能平滑升级——补上默认副档位，正档不足三个用默认值补足。
      */
     var powerStagesW: List<Int>
-        get() = get(KEY_POWER_STAGES)?.split(',')?.mapNotNull { it.trim().toIntOrNull() }
-            ?.filter { it > 0 }?.distinct()?.sorted()?.take(3) ?: emptyList()
-        set(v) = put(KEY_POWER_STAGES, v.filter { it > 0 }.distinct().take(3).joinToString(",").ifBlank { null })
+        get() = normalizePowerStages(
+            get(KEY_POWER_STAGES)?.split(',')?.mapNotNull { it.trim().toIntOrNull() } ?: emptyList()
+        )
+        set(v) = put(KEY_POWER_STAGES, normalizePowerStages(v).joinToString(","))
 
     private const val KEY_POWER_GAUGE = "ui.powerGauge"
     private const val KEY_POWER_STAGES = "ui.powerStagesW"
+
+    /**
+     * 轮询间隔（ms）：三档预设 [POLL_INTERVAL_PRESETS_MS]（900 / 600 / 300），默认 600。
+     * 900 = 更稳更省电（弱信号场景）；300 = 数据最跟手（弱信号下可能丢帧）。
+     * 读写都吸附到最近档位；老版本开发者页存过任意值（旧键 `test.pollIntervalMs`），
+     * 读取时同样吸附迁移，无需手动清理。
+     */
+    var pollIntervalMs: Int
+        get() {
+            val raw = get(KEY_POLL_INTERVAL)?.toIntOrNull()
+                ?: get(KEY_POLL_INTERVAL_LEGACY)?.toIntOrNull()
+            return raw?.let { nearestPollPreset(it) } ?: POLL_INTERVAL_DEFAULT_MS
+        }
+        set(v) = put(KEY_POLL_INTERVAL, nearestPollPreset(v).toString())
+
+    private const val KEY_POLL_INTERVAL = "device.pollIntervalMs"
+    private const val KEY_POLL_INTERVAL_LEGACY = "test.pollIntervalMs"   // 旧测试项的键：只读迁移
 
     private const val KEY_AUTOCONN = "device.autoReconnect"
     private const val KEY_AUTOUP = "device.autoUpgradeTarget"
@@ -196,3 +215,37 @@ object AppStore {
     private const val KEY_ADDR = "device.address"
     private const val KEY_NAME = "device.name"
 }
+
+/* ---------- 功率阶梯（换挡进度条）的默认值与规范化 ---------- */
+
+/** 功率阶梯默认值：副档位（充电/动能回收共用，负值）+ 放电一/二/三档上限（正数升序） */
+val DEFAULT_POWER_STAGES = listOf(-1500, 1000, 3000, 5000)
+
+/**
+ * 把任意输入规范化为 `[副档位(负), 一档, 二档, 三档]`：
+ * - 副档位取第一个负值，没有则用默认 -1500（老数据平滑升级）；
+ * - 正档去重升序取前 3 个，不足三个用默认 1000/3000/5000 补足（不与已有值重复）。
+ * 幂等：对规范化结果再跑一次不变。
+ */
+fun normalizePowerStages(raw: List<Int>): List<Int> {
+    val sub = raw.firstOrNull { it < 0 } ?: DEFAULT_POWER_STAGES.first()
+    val positives = raw.filter { it > 0 }.distinct().sorted().take(3).toMutableList()
+    for (d in DEFAULT_POWER_STAGES.drop(1)) {
+        if (positives.size >= 3) break
+        if (d !in positives) positives.add(d)
+    }
+    positives.sort()
+    return listOf(sub) + positives
+}
+
+/* ---------- 轮询间隔的三档预设 ---------- */
+
+/** 轮询间隔预设（ms）：顺序即界面展示顺序（900 更稳 / 600 默认 / 300 最跟手） */
+val POLL_INTERVAL_PRESETS_MS = listOf(900, 600, 300)
+
+/** 默认轮询间隔（ms）：600——数据跟手与链路稳定的平衡点 */
+const val POLL_INTERVAL_DEFAULT_MS = 600
+
+/** 任意值吸附到最近的预设档位（并列取靠前的，如 450 → 600）；空列表兜底回默认 */
+internal fun nearestPollPreset(v: Int): Int =
+    POLL_INTERVAL_PRESETS_MS.minByOrNull { kotlin.math.abs(it - v) } ?: POLL_INTERVAL_DEFAULT_MS

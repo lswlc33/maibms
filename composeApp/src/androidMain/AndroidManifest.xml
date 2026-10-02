@@ -6,7 +6,10 @@
     <!-- 蓝牙权限：API 31+ 用 BLUETOOTH_SCAN/CONNECT；≤30 用旧权限 + 定位 -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- API ≤30 的扫描要定位：FINE/COARSE 必须一并声明（Android 12+ 的 FINE 申请要求两者齐备）；
+         本权限止于 API 30，31+ 走 BLUETOOTH_SCAN 的 neverForLocation，不再声明定位 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
