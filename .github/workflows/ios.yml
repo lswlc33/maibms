@@ -181,18 +181,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 找一台可用的 iPhone 模拟器（GitHub macOS runner 自带 iOS 运行时）
-          UDID=$(xcrun simctl list devices available -j | python3 - <<'PY'
-          import json, sys
-          d = json.load(sys.stdin)
-          for runtime, devs in d['devices'].items():
-              for dev in devs:
-                  if dev.get('isAvailable', True) and 'iPhone' in dev.get('name', ''):
-                      print(dev['udid']); sys.exit(0)
-          sys.exit(1)
-          PY
-          )
-          test -n "$UDID" || { echo "::error::没有可用模拟器"; exit 1; }
+          # 找一台可用的 iPhone 模拟器（GitHub macOS runner 自带 iOS 运行时）。
+          # 用文本解析而不是 -j：`simctl list` 的 JSON 旗标位置在不同 Xcode 版本间不一致，
+          # 文本形式 `iPhone 16 Pro (UDID) (Shutdown)` 用括号取 UDID 最稳
+          UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
+          if [ -z "$UDID" ]; then
+            echo "::error::没有可用模拟器，simctl 输出如下："
+            xcrun simctl list devices available || true
+            xcrun simctl list runtimes || true
+            exit 1
+          fi
           echo "模拟器 UDID: $UDID"
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b
