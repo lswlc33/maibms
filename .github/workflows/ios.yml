@@ -1,7 +1,8 @@
 name: iOS
 
 # iOS 是**编译目标**（第一交付平台是 Android）：这个工作流保证 iOS 侧始终「能编、能链」，
-# 不产出可安装的 ipa（那需要 Apple 开发者签名与 Xcode 壳工程，见 README「iOS 构建」一节）。
+# 并产出未签名 ipa 供自签安装（见 README「iOS 构建」一节）。自签能装起来的前提是 .app 里
+# 只有一个 Mach-O，所以关掉了 Xcode 16 Debug 默认的 debug dylib（见 iosApp/project.yml）。
 #
 # 为什么必须在 macOS runner 上跑：Apple 目标只能用 Apple 工具链（Xcode + Kotlin/Native，
 # 首次还要下载 ~1GB konan 工具链），Windows/Linux 上连编译都做不了。
@@ -101,15 +102,24 @@ jobs:
           echo "--- .app 内容 ---"
           ls -la "$APP"
           test -f "$APP/iosApp" || { echo "::error::未找到可执行文件"; exit 1; }
-          # 静态 framework 是**链接进**二进制的（不嵌入 Frameworks/）；且 Xcode 16 的 Debug 构建
-          # 会把真正的代码放进 iosApp.debug.dylib（主可执行文件只是个壳，几十 KB），
-          # 所以按 .app 总大小核检，并打印构成便于核对
+          # 静态 framework 是**链接进**主执行文件里的（不嵌入 Frameworks/），Compose 运行时有没有
+          # 真链进去，看主执行文件大小最直接
           echo "--- .app 体积构成 ---"
           du -sh "$APP"/* 2>/dev/null | sort -rh | head -6
-          APP_MB=$(du -sm "$APP" | cut -f1)
-          echo ".app 总大小: ${APP_MB}MB"
-          if [ "$APP_MB" -lt 20 ]; then
-            echo "::error::.app 只有 ${APP_MB}MB，疑似 Compose 运行时未链入"
+          EXEC_MB=$(( $(stat -f%z "$APP/iosApp") / 1048576 ))
+          echo "主执行文件: ${EXEC_MB}MB"
+          if [ "$EXEC_MB" -lt 20 ]; then
+            echo "::error::主执行文件只有 ${EXEC_MB}MB，疑似 Compose 运行时未链入"
+            exit 1
+          fi
+          # 自签安装的前提：.app 里只能有主执行文件一个 Mach-O。多出来的 dylib（Xcode 16 Debug
+          # 默认产出的 iosApp.debug.dylib 与 __preview.dylib）自签工具多半漏签，装到手机上启动时
+          # 会被 dyld 以签名无效拒掉——这种包必须在 CI 就红掉，别让它流到设备上
+          MACHO=$(find "$APP" -type f -exec file {} + | grep -c "Mach-O" || true)
+          echo "Mach-O 文件数: $MACHO"
+          file "$APP"/* 2>/dev/null | grep "Mach-O" || true
+          if [ "$MACHO" -ne 1 ]; then
+            echo "::error::.app 里有 $MACHO 个 Mach-O（应只有 1 个）——检查 ENABLE_DEBUG_DYLIB 是否被改回默认"
             exit 1
           fi
           ls -la "$APP/Frameworks" 2>/dev/null || echo "(静态 framework：Frameworks 为空属正常)"

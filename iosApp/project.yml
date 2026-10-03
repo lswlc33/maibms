@@ -14,6 +14,10 @@ settings:
   base:
     # Gradle 脚本要往工程外写文件（产出 framework），Xcode 15 起默认打开的脚本沙箱必须关掉
     ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+    # 关掉 Xcode 16 Debug 默认的 debug dylib：开了的话 App 代码全在 iosApp.debug.dylib 里，
+    # 主执行文件只是个几十 KB 的壳。ipa 是给人自签安装的，而自签工具多半只签主执行文件，
+    # 漏签的 dylib 会让 dyld 在启动时以签名无效拒掉进程（无界面的秒退）。
+    ENABLE_DEBUG_DYLIB: "NO"
 
 targets:
   iosApp:

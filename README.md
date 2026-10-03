@@ -146,6 +146,8 @@ xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -sdk iphoneos \
 **自己装到 iPhone 上？** 从 Actions 运行的制品区下载 `ios-unsigned-ipa`，用
 Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后安装：
 
+- ipa 里只有主执行文件一个 Mach-O（`iosApp/project.yml` 显式关掉了 Xcode 16 Debug 默认的
+  `iosApp.debug.dylib`）：自签工具只需签这一个二进制，装完即可启动；
 - 免费 Apple ID 签名 **7 天过期**，到期需重签（工具里再点一次即可）；
 - 付费开发者账号（¥688/年）可签一年；
 - 首次启动需在「设置 → 通用 → VPN与设备管理」里信任该开发者证书。
