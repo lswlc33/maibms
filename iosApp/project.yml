@@ -34,6 +34,9 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         # 纯色启动屏（不加 storyboard）
         UILaunchScreen: {}
+        # Compose Multiplatform 的 PlistSanityCheck 强制要求：缺了会在启动时抛异常闪退
+        #（在 ProMotion 设备上解锁 120Hz 高刷）。模拟器启动冒烟测试实测抓到过这个崩溃。
+        CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
