@@ -11,6 +11,7 @@ on:
     branches: [main, ios-target]
     paths:
       - 'composeApp/**'
+      - 'iosApp/**'
       - 'gradle/**'
       - 'gradlew'
       - 'settings.gradle.kts'
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - 'composeApp/**'
+      - 'iosApp/**'
       - 'gradle/**'
       - 'gradlew'
       - 'settings.gradle.kts'
