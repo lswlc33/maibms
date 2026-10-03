@@ -29,8 +29,11 @@
     对应 Android 的 SharedPreferences——设备、密码、主题等重启保留（否则装了也没法用）。
   - **CI 产出未签名 ipa**：xcodegen 生成工程 → 关签名 xcodebuild → 核检 .app 体积与链接 →
     手工打成 `Payload/*.ipa` → 上传制品（实测 18.8MB，结构已核对），可在 Windows 用
-    Sideloadly/爱思 等自签安装（免费 Apple ID 签 7 天）。
-  - **尚待真机验证**（模拟器测不了蓝牙）：扫描/连接/订阅/写入全链路；CI 只能保证能编能链能打包。
+    Sideloadly/爱思 等自签安装（免费 Apple ID 签 7 天）。另加**模拟器启动冒烟测试**：
+    把 App 装进模拟器 `simctl launch`，进程活过启动头 15 秒才算过，崩了就把崩溃报告抓出来——
+    能抓「能编能链但一启动就崩」的坑（dyld 缺库、ObjC selector、Kotlin 运行时初始化、Compose 资源等）。
+  - **尚待真机验证**（模拟器测不了蓝牙）：扫描/连接/订阅/写入全链路；CI 现在能保证
+    能编、能链、能打包、能启动，但 BLE 收发只能在真机上验。
 - **iOS 编译目标 + GitHub Actions 验证**：新增 `iosArm64` / `iosSimulatorArm64` 两个目标与
   `iosMain` 平台实现（日期时间、日志落盘、检查更新、剪贴板、日志导出、锁；BLE 传输暂为
   Noop，设置存储暂为内存）。新增 **iOS 工作流**：macOS runner 上先跑

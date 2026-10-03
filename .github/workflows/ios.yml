@@ -172,6 +172,71 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      # 运行时冒烟：在模拟器里把 App 装起来、launch、确认进程能活过启动头几秒。
+      # 这能抓住「能编译能链接但一启动就崩」的坑——dyld 缺库、ObjC selector 找不到、
+      # Kotlin 运行时没初始化、Compose/Skia 资源加载失败、Info.plist 缺键等，都是上面
+      # 静态核检（体积/Mach-O 数/链接表）看不见的。真机上的签名问题这里测不到，但
+      # 「代码层面一启动就崩」这类问题，模拟器与真机基本同步。
+      - name: Simulator launch smoke test
+        run: |
+          set -euo pipefail
+
+          # 找一台可用的 iPhone 模拟器（GitHub macOS runner 自带 iOS 运行时）
+          UDID=$(xcrun simctl list devices available -j | python3 - <<'PY'
+          import json, sys
+          d = json.load(sys.stdin)
+          for runtime, devs in d['devices'].items():
+              for dev in devs:
+                  if dev.get('isAvailable', True) and 'iPhone' in dev.get('name', ''):
+                      print(dev['udid']); sys.exit(0)
+          sys.exit(1)
+          PY
+          )
+          test -n "$UDID" || { echo "::error::没有可用模拟器"; exit 1; }
+          echo "模拟器 UDID: $UDID"
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          # 模拟器构建：不关签名，让 Xcode 用默认 ad-hoc 签名（模拟器不校验团队身份）
+          xcodebuild \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$UDID" \
+            -derivedDataPath build/ios-sim-dd \
+            build | tail -40
+
+          APP="build/ios-sim-dd/Build/Products/Debug-iphonesimulator/iosApp.app"
+          test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
+
+          xcrun simctl install "$UDID" "$APP"
+          PID=$(xcrun simctl launch "$UDID" io.github.lswlc33.maibms | awk '{print $NF}')
+          echo "launch PID: $PID"
+          sleep 15
+          if ps -p "$PID" >/dev/null 2>&1; then
+            echo "✅ App 启动后进程存活（PID $PID）"
+            xcrun simctl io "$UDID" screenshot build/ios-smoke.png
+          else
+            xcrun simctl io "$UDID" screenshot build/ios-smoke-crash.png 2>/dev/null || true
+            echo "::error::App 启动后进程退出，疑似启动崩溃"
+            echo "--- 崩溃报告 ---"
+            ls -t ~/Library/Logs/DiagnosticReports 2>/dev/null | head -5
+            CRASH=$(ls -t ~/Library/Logs/DiagnosticReports/iosApp-*.ips 2>/dev/null | head -1)
+            if [ -n "$CRASH" ]; then sed -n '1,90p' "$CRASH"; fi
+            echo "--- 统一日志（iosApp 进程）---"
+            xcrun simctl spawn "$UDID" log show --last 3m --predicate 'process == "iosApp"' 2>/dev/null | tail -50 || true
+            exit 1
+          fi
+
+      - name: Upload smoke screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-smoke-screenshot
+          path: build/ios-smoke.png
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Summary
         run: |
           {
@@ -181,7 +246,9 @@ jobs:
             echo "- ✅ iosArm64（真机）framework 编译 + 链接"
             echo "- ✅ iosSimulatorArm64（模拟器）framework 编译 + 链接"
             echo "- ✅ 未签名 ipa 打包（Xcode 工程由 xcodegen 生成）"
+            echo "- ✅ 模拟器安装 + 启动冒烟（进程活过启动头 15 秒）"
             echo ""
-            echo "产物：\`ios-frameworks\`（两档 debugFramework）与 \`ios-unsigned-ipa\`（可直接自签安装）"
+            echo "产物：\`ios-frameworks\`（两档 debugFramework）、\`ios-unsigned-ipa\`（可直接自签安装）、"
+            echo "\`ios-smoke-screenshot\`（模拟器启动后的界面截图）"
             echo "注：ipa 未签名，需用 Sideloadly/爱思 等工具以你的 Apple ID 自签后安装。"
           } >> "$GITHUB_STEP_SUMMARY"
