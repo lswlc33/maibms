@@ -215,7 +215,7 @@ jobs:
           echo "launch PID: $PID"
           sleep 15
           if ps -p "$PID" >/dev/null 2>&1; then
-            echo "✅ App 启动后进程存活（PID $PID）"
+            echo "OK: app still alive after launch (pid=$PID)"
             xcrun simctl io "$UDID" screenshot build/ios-smoke.png
           else
             xcrun simctl io "$UDID" screenshot build/ios-smoke-crash.png 2>/dev/null || true
