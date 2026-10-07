@@ -315,8 +315,10 @@ private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: D
     val fillV = status.totalVoltage.toFloat()
     Canvas(modifier) {
         val cx = size.width / 2f
-        val cy = size.height * 0.50f
-        val r = min(size.width, size.height) * 0.335f
+        val cy = size.height / 2f
+        // 半径贴满 Canvas 的 270° 弧足迹（宽 2r × 高 1.707r），双向取 min——瘦长条里由宽度
+        // 决定，比按短边算大 ~36%；外发光再留 6% 余量。弧足迹垂直居中（cy=0.5h）。
+        val r = min(size.width / 2f, size.height / 1.707f) * 0.97f
         val stroke = r * 0.133f
         dialTrack(cx, cy, r, stroke)
         // 琥珀（过放侧）/ 红（过充侧）警示带
@@ -351,8 +353,9 @@ private fun ClusterGaugeP(status: BmsStatus, useKw: Boolean, modifier: Modifier 
     val fillW = if (hasData) status.power.toFloat() else 0f
     Canvas(modifier) {
         val cx = size.width / 2f
-        val cy = size.height * 0.50f
-        val r = min(size.width, size.height) * 0.335f
+        val cy = size.height / 2f
+        // 同左盘：半径贴满 270° 弧足迹（宽 2r × 高 1.707r）双向取 min，外发光留 6%
+        val r = min(size.width / 2f, size.height / 1.707f) * 0.97f
         val stroke = r * 0.133f
         dialTrack(cx, cy, r, stroke)
         // 充电绿带（0 → -副档位）与放电三色带，弱化铺底
