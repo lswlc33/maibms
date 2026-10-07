@@ -103,7 +103,8 @@ fun ClusterDashboard(
         modifier.fillMaxSize()
             .background(Brush.verticalGradient(listOf(ClusterFace0, ClusterFace1)))
     ) {
-        val u = maxWidth / 100f   // 容器宽的 1%（原型 cqw 的等价物），全部字号/间距由它派生
+        val u = maxWidth / 112f   // 表盘单位的基准：全屏宽的 ~0.9%——16:9 主盒比全屏窄，
+        // 字号/间距按它派生才不会溢出（之前按全屏宽派生，六灯排在盒内被裁）
         // 厂家系统（MIUI/HyperOS 实测）在旋转配置变化后会重新显示系统栏——
         // 宽度落定（竖→横）后再挂一次隐藏
         LaunchedEffect(maxWidth) { systemBarsImmersive(true) }
@@ -117,18 +118,12 @@ fun ClusterDashboard(
             screenCornerRadius(),
             50.dp,
         )
-        Column(
-            Modifier.fillMaxSize().padding(
-                start = sideSafe,
-                end = sideSafe,
-                top = insets.calculateTopPadding(),
-                bottom = insets.calculateBottomPadding(),
-            )
-        ) {
-            // ---- 顶条 ----
+        Column(Modifier.fillMaxSize()) {
+            // ---- 顶条：背景延伸出安全区铺满全宽，内容收在安全区内 ----
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = u * 1.9f, vertical = u * 0.9f)
-                    .background(Color.Transparent),
+                Modifier.fillMaxWidth()
+                    .background(ClusterLine.copy(alpha = 0.6f))
+                    .padding(horizontal = sideSafe + u * 1.9f, vertical = u * 0.9f),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(u * 2.2f),
             ) {
@@ -157,21 +152,35 @@ fun ClusterDashboard(
                     ClusterChip("退出仪表 ✕", u, emphasize = true, onClick = onExit)
                 }
             }
-            // ---- 三区主视图 ----
-            Row(Modifier.fillMaxWidth().weight(1f)) {
-                ClusterGaugeV(status, Modifier.weight(1.08f).fillMaxHeight(), u)
-                Box(Modifier.width(u * 0.09f).fillMaxHeight().background(ClusterLine))
-                ClusterMidColumn(
-                    status, connected, linkLost,
-                    Modifier.weight(1.18f).fillMaxHeight()
-                        .padding(horizontal = u * 1.6f, vertical = u * 0.8f),
-                    u,
-                )
-                Box(Modifier.width(u * 0.09f).fillMaxHeight().background(ClusterLine))
-                ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
+            // ---- 三区主视图：16:9 约束（用户定稿）——宽富余按高定宽居中，高富余按宽定高居中；
+            //      富余部分只显背景。竖分隔线画满 16:9 盒高（不再通到顶/底条）。
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)) {
+                val availW = maxWidth
+                val availH = maxHeight
+                // 首选 16:9；高度太扁（<2.4:1 都保不住）时放宽到 2.4:1 保底，避免表盘被压得过小
+                val ratio = availW / availH
+                val targetRatio = if (ratio > 16f / 9f) 16f / 9f else maxOf(ratio, 2.4f)
+                val innerW = if (availW < availH * targetRatio) availW else availH * targetRatio
+                val innerH = innerW / targetRatio
+                Box(
+                    Modifier.width(innerW).height(innerH).align(Alignment.Center)
+                ) {
+                    Row(Modifier.fillMaxSize()) {
+                        ClusterGaugeV(status, Modifier.weight(1.08f).fillMaxHeight(), u)
+                        ClusterMidColumn(
+                            status, connected, linkLost,
+                            Modifier.weight(1.18f).fillMaxHeight()
+                                .padding(horizontal = u * 1.6f, vertical = u * 0.8f),
+                            u,
+                        )
+                        ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
+                    }
+                    Box(Modifier.align(Alignment.CenterStart).width(u * 0.09f).fillMaxHeight().background(ClusterLine))
+                    Box(Modifier.align(Alignment.CenterEnd).width(u * 0.09f).fillMaxHeight().background(ClusterLine))
+                }
             }
-            // ---- 底条 ----
-            ClusterBottomBar(status, u)
+            // ---- 底条：背景延伸出安全区铺满全宽，内容收在安全区内 ----
+            ClusterBottomBar(status, u, sideSafe)
         }
     }
 }
@@ -214,7 +223,7 @@ private fun ClusterMidColumn(
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     if (status.hasData) status.soc.toString() else "--",
-                    fontSize = (u.value * 6.4).sp, fontWeight = FontWeight.Light,
+                    fontSize = (u.value * 5.6).sp, fontWeight = FontWeight.Light,
                     color = ClusterFg, maxLines = 1,
                 )
                 Text("%", fontSize = (u.value * 2.3).sp, color = ClusterFg2, modifier = Modifier.padding(bottom = u * 0.7f))
@@ -266,7 +275,8 @@ private fun ClusterMidColumn(
             )
         }
         // 六灯排
-        Row(horizontalArrangement = Arrangement.spacedBy(u * 1.7f)) {
+        // 六灯排：SpaceEvenly 随列宽自适应分布（fixed 间距在 16:9 盒的中央列里会溢出被裁）
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             ClusterLed("连接", u, ClusterGreen, connected)
             ClusterLed("充电MOS", u, ClusterTeal, status.chMos == "开启")
             ClusterLed("放电MOS", u, ClusterGreen, status.disMos == "开启")
@@ -463,18 +473,11 @@ private fun fmt1(v: Double): String = "%.1f".fmt(v)
 /* ================= 底条 ================= */
 
 @Composable
-private fun ClusterBottomBar(status: BmsStatus, u: Dp) {
+private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp) {
     val on = status.hasData
     val maxCell = status.cells.firstOrNull { it.isMax }
     val minCell = status.cells.firstOrNull { it.isMin }
-    // 背景横贯全屏；文字与主区同宽（左右对称安全区内不显示内容，只显背景）
-    val insets = WindowInsets.safeDrawing.asPaddingValues()
-    val sideSafe = maxOf(
-        insets.calculateStartPadding(LayoutDirection.Ltr),
-        insets.calculateEndPadding(LayoutDirection.Ltr),
-        screenCornerRadius(),
-        50.dp,
-    )
+    // 背景延伸出安全区铺满全宽；文字与主区同宽（对称安全区内不显示内容）
     Row(
         Modifier.fillMaxWidth()
             .background(ClusterLine.copy(alpha = 0.6f))
