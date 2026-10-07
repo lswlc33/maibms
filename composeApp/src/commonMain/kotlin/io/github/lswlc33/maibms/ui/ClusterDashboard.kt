@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -103,21 +104,23 @@ fun ClusterDashboard(
             .background(Brush.verticalGradient(listOf(ClusterFace0, ClusterFace1)))
     ) {
         val u = maxWidth / 100f   // 容器宽的 1%（原型 cqw 的等价物），全部字号/间距由它派生
-        // 异形屏避让：safeDrawing（挖孔/状态栏/手势条——需窗口开 ALWAYS cutout 才报告挖孔）
-        // + 屏幕圆角半径（四角最大值），背景仍铺满全屏，只有内容内缩
+        // 厂家系统（MIUI/HyperOS 实测）在旋转配置变化后会重新显示系统栏——
+        // 宽度落定（竖→横）后再挂一次隐藏
+        LaunchedEffect(maxWidth) { systemBarsImmersive(true) }
+        // 异形屏避让：safeDrawing（挖孔/状态栏/手势条——需窗口开 ALWAYS cutout 才报告挖孔）；
+        // 圆角内缩只加给横贯全宽的顶/底条端点（见各自 padding），主区不加——否则六灯排被挤裁
         val insets = WindowInsets.safeDrawing.asPaddingValues()
-        val corner = screenCornerRadius()
         Column(
             Modifier.fillMaxSize().padding(
-                start = insets.calculateStartPadding(LayoutDirection.Ltr) + corner,
-                end = insets.calculateEndPadding(LayoutDirection.Ltr) + corner,
+                start = insets.calculateStartPadding(LayoutDirection.Ltr),
+                end = insets.calculateEndPadding(LayoutDirection.Ltr),
                 top = insets.calculateTopPadding(),
                 bottom = insets.calculateBottomPadding(),
             )
         ) {
             // ---- 顶条 ----
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = u * 1.9f, vertical = u * 0.9f)
+                Modifier.fillMaxWidth().padding(horizontal = u * 1.9f + screenCornerRadius(), vertical = u * 0.9f)
                     .background(Color.Transparent),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(u * 2.2f),
@@ -161,7 +164,7 @@ fun ClusterDashboard(
                 ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
             }
             // ---- 底条 ----
-            ClusterBottomBar(status, u)
+            ClusterBottomBar(status, u, screenCornerRadius())
         }
     }
 }
@@ -453,14 +456,14 @@ private fun fmt1(v: Double): String = "%.1f".fmt(v)
 /* ================= 底条 ================= */
 
 @Composable
-private fun ClusterBottomBar(status: BmsStatus, u: Dp) {
+private fun ClusterBottomBar(status: BmsStatus, u: Dp, corner: Dp) {
     val on = status.hasData
     val maxCell = status.cells.firstOrNull { it.isMax }
     val minCell = status.cells.firstOrNull { it.isMin }
     Row(
         Modifier.fillMaxWidth()
             .background(ClusterLine.copy(alpha = 0.6f))
-            .padding(horizontal = u * 1.9f, vertical = u * 0.9f),
+            .padding(horizontal = u * 1.9f + corner, vertical = u * 0.9f),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(u * 2.0f),
     ) {

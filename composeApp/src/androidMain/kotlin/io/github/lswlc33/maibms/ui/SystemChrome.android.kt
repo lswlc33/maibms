@@ -23,10 +23,10 @@ actual fun screenCornerRadius(): Dp {
     val insets = AndroidApp.activity?.window?.decorView?.rootWindowInsets ?: return 0.dp
     val density = AndroidApp.context?.resources?.displayMetrics?.density ?: return 0.dp
     val maxPx = listOf(
-        WindowInsets.ROUNDED_CORNER_TOP_LEFT,
-        WindowInsets.ROUNDED_CORNER_TOP_RIGHT,
-        WindowInsets.ROUNDED_CORNER_BOTTOM_LEFT,
-        WindowInsets.ROUNDED_CORNER_BOTTOM_RIGHT,
+        android.view.RoundedCorner.POSITION_TOP_LEFT,
+        android.view.RoundedCorner.POSITION_TOP_RIGHT,
+        android.view.RoundedCorner.POSITION_BOTTOM_LEFT,
+        android.view.RoundedCorner.POSITION_BOTTOM_RIGHT,
     ).maxOfOrNull { insets.getRoundedCorner(it)?.radius ?: 0 } ?: 0
     return (maxPx / density).dp
 }
