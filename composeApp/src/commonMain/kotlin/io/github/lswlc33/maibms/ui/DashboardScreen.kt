@@ -132,10 +132,10 @@ fun DashboardScreen(
             ) {
                 // 卡2：状态与容量
                 StatusCapacityCard(status)
-                // 卡3：电流 / 功率（换挡进度条）
+                // 卡3：电流 / 功率（换挡进度条）+ 下方剩余时间小灰字
                 // 断开时保留最后已知值（整屏一致），时效性由固定的横幅声明；
                 // 从未收到数据时 metrics 自身会返回 "--"
-                MetricGridCard(status.metrics(), powerW = status.power, hasData = status.hasData)
+                MetricGridCard(status)
                 // 保护/告警双卡
                 ProtectAlarmCards(status, onSeeAll = onOpenProtect)
                 // 温度

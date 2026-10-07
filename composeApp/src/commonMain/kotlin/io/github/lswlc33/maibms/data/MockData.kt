@@ -29,6 +29,14 @@ data class BmsStatus(
     val totalVoltage: Double = 0.0,
     val current: Double = 0.0,
     val power: Int = 0,
+    /** 本次充电时长（实时帧扩展段 78，秒；老固件无扩展段恒 0） */
+    val thisChargeSec: Long = 0,
+    /** 上次充电间隔（扩展段 82，秒） */
+    val lastChargeGapSec: Long = 0,
+    /** 充电剩余时间（扩展段 86，分钟；0=设备未报，界面显示 --） */
+    val remainChargeMin: Int = 0,
+    /** 放电剩余时间（扩展段 88，分钟；0=设备未报） */
+    val remainDischargeMin: Int = 0,
     val maxCell: String = "--",
     val minCell: String = "--",
     val avgCell: String = "--",
@@ -226,6 +234,10 @@ object MockBms {
             totalVoltage = r.totalVoltage,
             current = r.current,
             power = r.powerW,
+            thisChargeSec = r.thisChargeSec,
+            lastChargeGapSec = r.lastChargeGapSec,
+            remainChargeMin = r.remainChargeMin,
+            remainDischargeMin = r.remainDischargeMin,
             maxCell = "%.3f".fmt(r.maxCellV),
             minCell = "%.3f".fmt(r.minCellV),
             avgCell = "%.3f".fmt(r.avgCellV),

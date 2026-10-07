@@ -31,8 +31,13 @@ private const val DENSITY = 2f
  * QA 数据：按 docs/05-实时数据.md 的字节布局拼一帧 0x11 应答（真机 ANT@BLE24CBUB-3547 的实测值：
  * 20 串三元锂 113Ah、单体 ~4.26V、MOS/均衡 22℃）。只用于离屏渲染，不进 Android 包。
  * [powerW] 默认真机实测的 8W；卡3 背景进度条验收时由调用方抬到可见档位的功率。
+ * [remainDisMin]/[lastGapSec] 进扩展段 88/82：真机待机帧实测 10584min / 5037s；
+ * 调用方按当拍电流换算成自洽值（113Ah ÷ 电流）。
  */
-private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int, powerW: Int = 8): ByteArray {
+private fun seedFrame(
+    voltOffsetMilli: Int, currentTenth: Int, powerW: Int = 8,
+    remainDisMin: Int = 0, lastGapSec: Long = 0,
+): ByteArray {
     val n = 20; val m = 4
     val t0 = 28 + 2 * n + 2 * m
     val d = ByteArray(t0 + 78 + 24)
@@ -69,6 +74,11 @@ private fun seedFrame(voltOffsetMilli: Int, currentTenth: Int, powerW: Int = 8):
     u16(t0 + 44, cellMv[minIdx - 1]); u16(t0 + 46, minIdx)
     u16(t0 + 48, cellMv[maxIdx - 1] - cellMv[minIdx - 1]); u16(t0 + 50, cellMv.average().toInt())
     u16(t0 + 60, 0xFAF1)                            // 三元锂
+    // 扩展段 78~89：本次充电时长 0 / 上次充电间隔 / 充电剩余 0 / 放电剩余（docs/05 §5.6）
+    u32(t0 + 78, 0L)
+    u32(t0 + 82, lastGapSec)
+    u16(t0 + 86, 0)
+    u16(t0 + 88, remainDisMin)
     return Frame.build(Proto.ADDR_MAIN, Proto.RSP_REALTIME, 0, d, 0)
 }
 
@@ -123,8 +133,12 @@ private fun seedUi() {
     io.github.lswlc33.maibms.data.Bms.repository.setRealTransport(ShotTransport())
     kotlinx.coroutines.runBlocking { io.github.lswlc33.maibms.data.Bms.repository.connect("F9:99:1B:2B:1B:70") }
     seedParamsAndIdentity()
-    // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子
-    listOf(seedFrame(0, 0) to 0, seedFrame(1, 175, powerW = 1500) to 1).forEach { (bytes, _) ->
+    // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子。
+    // 剩余时间同样按当拍电流换算：待机拍放真机实测值（10584min），放电拍 113Ah÷17.6A≈384min
+    listOf(
+        seedFrame(0, 0, lastGapSec = 5037, remainDisMin = 10584) to 0,
+        seedFrame(1, 175, powerW = 1500, lastGapSec = 5037, remainDisMin = 384) to 1,
+    ).forEach { (bytes, _) ->
         FrameParser().feed(bytes).filter { it.func == Proto.RSP_REALTIME }
             .forEach { MockBms.updateFromRealtime(RealtimeDecoder.decode(it.data)) }
     }

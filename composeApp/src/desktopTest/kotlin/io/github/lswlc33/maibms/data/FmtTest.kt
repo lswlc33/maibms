@@ -67,4 +67,31 @@ class FmtTest {
         assertEquals(String.format("%.2f", 85.245), formatFixed(85.245, 2))
         assertEquals(String.format("%.1f", -12.34), formatFixed(-12.34, 1))
     }
+
+    @Test fun remainingMinBuckets() {
+        // 卡3 小灰字的分钟粒度：0/负=设备未报 → "--"；分/时/天逐级进位，整单位省尾
+        assertEquals("--", fmtRemainingMin(0))
+        assertEquals("--", fmtRemainingMin(-1))
+        assertEquals("45分", fmtRemainingMin(45))
+        assertEquals("6时", fmtRemainingMin(360))
+        assertEquals("6时59分", fmtRemainingMin(419))
+        assertEquals("23时", fmtRemainingMin(1380))
+        assertEquals("23时59分", fmtRemainingMin(1439))
+        assertEquals("1天", fmtRemainingMin(1440))
+        assertEquals("2天3时", fmtRemainingMin(3075))
+    }
+
+    @Test fun durationSecBuckets() {
+        // 已充/距上次充电的秒粒度（分钟向下截断）：真机样例 2459s = 40分、5037s = 1时23分
+        assertEquals("--", fmtDurationSec(0))
+        assertEquals("<1分", fmtDurationSec(59))
+        assertEquals("1分", fmtDurationSec(60))
+        assertEquals("40分", fmtDurationSec(2459))
+        assertEquals("1时", fmtDurationSec(3600))
+        assertEquals("1时23分", fmtDurationSec(5037))
+        assertEquals("23时", fmtDurationSec(82_800))
+        assertEquals("23时59分", fmtDurationSec(86_399))
+        assertEquals("1天", fmtDurationSec(86400))
+        assertEquals("3天2时", fmtDurationSec(266_400))
+    }
 }

@@ -29,6 +29,8 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +43,8 @@ import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
 import io.github.lswlc33.maibms.data.fmt
+import io.github.lswlc33.maibms.data.fmtDurationSec
+import io.github.lswlc33.maibms.data.fmtRemainingMin
 import io.github.lswlc33.maibms.protocol.WriteAccess
 import io.github.lswlc33.maibms.ui.BmsColors
 import org.jetbrains.compose.resources.DrawableResource
@@ -456,6 +460,8 @@ data class Metric(val label: String, val value: String, val unit: String)
 
 /**
  * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下。
+ * 大读数下方是小灰字：充电剩余/放电剩余一行（扩展段 86/88，0=设备未报 → "--"），
+ * 有值时再补一行已充/距上次充电（扩展段 78/82）；两行都收在本列内，不往右挤立牌。
  * 进度条即**卡片背景本身**：每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
  * 整条切换（500W 用 0~1000 的条、1500W 切 0~2000 的条），配色=节能绿/均衡蓝/运动红；
  * 充电（功率为负）不计量，整条连轨道一起屏蔽，只留读数 + 「充电中」说明。
@@ -466,11 +472,12 @@ data class Metric(val label: String, val value: String, val unit: String)
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun MetricGridCard(
-    metrics: List<Metric>,
+    status: BmsStatus,
     modifier: Modifier = Modifier,
-    powerW: Int? = null,
-    hasData: Boolean = false,
 ) {
+    val metrics = status.metrics()
+    val powerW = status.power
+    val hasData = status.hasData
     var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
     var stages by remember { mutableStateOf(AppStore.powerStagesW) }
     var editing by remember { mutableStateOf(false) }
@@ -488,7 +495,7 @@ fun MetricGridCard(
     /** 表盘特性是否启用（开关 + 已设阶梯）：背景条与状态立牌都以它为前提 */
     val gaugeActive = gaugeOn && stages.isNotEmpty()
     /** 充电中（功率为负）：背景进度条整条屏蔽，但立牌切到充电图 */
-    val charging = powerW != null && powerW < 0
+    val charging = powerW < 0
     val bgOn = gaugeActive && !charging
     // 进度条作底时文字换用 onSurface 系：onSurfaceVariant 的灰在色块上对比度不足
     val labelColor = if (bgOn) MaterialTheme.colorScheme.onSurface.copy(alpha = .72f)
@@ -497,7 +504,7 @@ fun MetricGridCard(
     val sticker: DrawableResource? = when {
         !gaugeActive || !hasData -> null
         charging -> Res.drawable.power_charging
-        else -> when (powerGearNo(powerW ?: 0, stages)) {
+        else -> when (powerGearNo(powerW, stages)) {
             1 -> Res.drawable.power_gear1
             2 -> Res.drawable.power_gear2
             else -> Res.drawable.power_gear3
@@ -527,6 +534,23 @@ fun MetricGridCard(
                         CenterMetric(current, labelColor, Modifier.weight(1f))
                         CenterMetric(power, labelColor, Modifier.weight(1f))
                     }
+                    // 大读数下方的小灰字：充电/放电剩余（扩展段 86/88，0=设备未报 → "--"）。
+                    // 与上面两个大读数同列对分居中——文字全部收在本列，不往右挤立牌和卡1 的电量角标
+                    Row(Modifier.fillMaxWidth().padding(top = 1.dp)) {
+                        RemainTimeCell("充电剩余", status.remainChargeMin, labelColor, Modifier.weight(1f))
+                        RemainTimeCell("放电剩余", status.remainDischargeMin, labelColor, Modifier.weight(1f))
+                    }
+                    // 本次充电时长/上次充电间隔（扩展段 78/82）：有值才出现的一行，整行居中
+                    val statLine = buildList {
+                        if (status.thisChargeSec > 0) add("已充 " + fmtDurationSec(status.thisChargeSec))
+                        if (status.lastChargeGapSec > 0) add("距上次充电 " + fmtDurationSec(status.lastChargeGapSec))
+                    }
+                    if (statLine.isNotEmpty()) Text(
+                        statLine.joinToString(" · "),
+                        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
+                        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+                    )
                 }
                 // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）
                 sticker?.let { res ->
@@ -567,6 +591,17 @@ private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Mod
                  modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
         }
     }
+}
+
+/** 卡3 大读数下方的小灰字单元：与上方对应的读数居中对齐（分钟粒度，0=设备未报 → "--"） */
+@Composable
+private fun RemainTimeCell(label: String, min: Int, color: Color, modifier: Modifier = Modifier) {
+    Text(
+        label + " " + fmtRemainingMin(min),
+        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = color,
+        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        modifier = modifier.padding(horizontal = 6.dp),
+    )
 }
 
 /**

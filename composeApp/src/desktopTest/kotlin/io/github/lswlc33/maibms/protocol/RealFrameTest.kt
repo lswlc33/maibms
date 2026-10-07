@@ -69,6 +69,13 @@ class RealFrameTest {
 
         assertEquals(35516411L, r.runtimeSec)                // 单位秒=411天01:40:11（按 ms 误读会显示 09:51:56）
         assertTrue(r.hasExt)
+        // 真机扩展段 14B（数据区 154..167）：本次充电 0s（0000）、上次充电间隔 5037s（AD 13）、
+        // 充电剩余 0 min、放电剩余 10584 min（58 29，满电待机≈7天8时）；其后 ext+12 高速电流
+        // 0x0001=0.1A 与帧内实际电流一致——字段序以此互相印证
+        assertEquals(0L, r.thisChargeSec)
+        assertEquals(5037L, r.lastChargeGapSec)
+        assertEquals(0, r.remainChargeMin)
+        assertEquals(10584, r.remainDischargeMin)
         assertEquals(emptyList(), BitDict.decode(r.protectBits, BitDict.protectNames))
         // 真机帧告警位 0/23/24/26：2026-10-01 用户决定 MOS 开（bit23/24）为常态不上屏，
         // bit26（待机中）一直是状态位；MOS 关的提示由状态字节合成（见 mosClosedHints）

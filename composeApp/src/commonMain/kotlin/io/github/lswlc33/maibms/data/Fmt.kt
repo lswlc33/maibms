@@ -116,3 +116,38 @@ private fun asDouble(v: Any?): Double = when (v) {
     is Byte -> v.toDouble()
     else -> 0.0
 }
+
+/**
+ * 分钟 → 紧凑时长（充电/放电剩余时间，扩展段 86/88）：0/负=设备未报，显示 "--"。
+ * <60 "X分"；<1天 "X时Y分"（整时省分）；再大 "X天Y时"（整时省时）。
+ */
+internal fun fmtRemainingMin(min: Int): String = when {
+    min <= 0 -> "--"
+    min < 60 -> "${min}分"
+    min < 1440 -> {
+        val h = min / 60; val m = min % 60
+        if (m == 0) "${h}时" else "${h}时${m}分"
+    }
+    else -> {
+        val d = min / 1440; val h = min % 1440 / 60
+        if (h == 0) "${d}天" else "${d}天${h}时"
+    }
+}
+
+/**
+ * 秒 → 紧凑时长（本次充电时长/上次充电间隔，扩展段 78/82）：0/负="--"。
+ * 分钟粒度截断：<60 "<1分"；<1时 "X分"；<1天 "X时Y分"；再大 "X天Y时"。
+ */
+internal fun fmtDurationSec(sec: Long): String = when {
+    sec <= 0L -> "--"
+    sec < 60L -> "<1分"
+    sec < 3600L -> "${sec / 60}分"
+    sec < 86400L -> {
+        val h = sec / 3600; val m = sec % 3600 / 60
+        if (m == 0L) "${h}时" else "${h}时${m}分"
+    }
+    else -> {
+        val d = sec / 86400; val h = sec % 86400 / 3600
+        if (h == 0L) "${d}天" else "${d}天${h}时"
+    }
+}

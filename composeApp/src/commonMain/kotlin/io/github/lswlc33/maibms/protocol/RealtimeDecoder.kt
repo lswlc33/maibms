@@ -39,6 +39,12 @@ object RealtimeDecoder {
         val batteryType: Int,
         val totalDischargeCapAh: Double,
         val totalChargeCapAh: Double,
+        // 扩展段 t0+78 起（docs/05 §5.6）：标称 24B，实机有只有 14B 的固件——按数据区
+        // 剩余长度逐字段取，缺的按 0（界面对 0 显示 "--"，与「设备未报」同观感）
+        val thisChargeSec: Long,     // 本次充电时长 u32 秒
+        val lastChargeGapSec: Long,  // 上次充电间隔 u32 秒
+        val remainChargeMin: Int,    // 充电剩余时间 u16 分钟
+        val remainDischargeMin: Int, // 放电剩余时间 u16 分钟
         val hasExt: Boolean,
     )
 
@@ -104,6 +110,10 @@ object RealtimeDecoder {
         val totalDisCap = u32le(t0 + 62) / 1000.0
         val totalChgCap = u32le(t0 + 66) / 1000.0
         // t0+70/74: 累计放/充时间
+        // 扩展段 t0+78 起：本次充电时长/上次充电间隔（u32 秒）、充/放电剩余时间（u16 分钟）
+        val ext = t0 + 78
+        fun extU32(off: Int): Long = if (data.size >= ext + off + 4) u32le(ext + off) else 0L
+        fun extU16(off: Int): Int = if (data.size >= ext + off + 2) u16le(ext + off) else 0
 
         return Result(
             permission, battState, n, m, protect, warn,
@@ -111,7 +121,9 @@ object RealtimeDecoder {
             totalV, current, soc, soh, chMos, disMos, balanceState, bmsType,
             physicalCap, remainCap, cycleCap, power, runtimeSec, balanceBits,
             maxV, maxIdx, minV, minIdx, deltaV, avgV, batteryType,
-            totalDisCap, totalChgCap, hasExt
+            totalDisCap, totalChgCap,
+            extU32(0), extU32(4), extU16(8), extU16(10),
+            hasExt
         )
     }
 

@@ -234,9 +234,25 @@ class FrameTest {
         assertEquals(1, r.disMos)
         // 扩展段（24B）已包含：有效期 0xABCD、充电器输出占位
         assertTrue(r.hasExt)
+        // 扩展段 78~89（docs/05 §5.6）：本次充电时长 0s / 上次充电间隔 2459s / 充放剩余 0/0 min
+        assertEquals(0L, r.thisChargeSec)
+        assertEquals(2459L, r.lastChargeGapSec)
+        assertEquals(0, r.remainChargeMin)
+        assertEquals(0, r.remainDischargeMin)
         // 一致性自检
         assertTrue(kotlin.math.abs(r.avgCellV * r.cellCount - r.totalVoltage) < 0.1)
         assertTrue(kotlin.math.abs((r.maxCellV - r.minCellV) - r.deltaCellV) < 1e-9)
+    }
+
+    /** 扩展段按数据区剩余长度逐字段取：实机有只有 14B 扩展段的固件，截断不崩、缺的按 0 */
+    @Test fun realtimeExtTruncatedByField() {
+        val v = vec186.copyOf()
+        v[170] = 0x2E; v[171] = 0x01              // 充电剩余时间（ext+8）= 302 min
+        val r = RealtimeDecoder.decode(v.copyOfRange(0, 172))   // 扩展段只剩 10B：放电剩余被截
+        assertTrue(r.hasExt)
+        assertEquals(2459L, r.lastChargeGapSec)
+        assertEquals(302, r.remainChargeMin)
+        assertEquals(0, r.remainDischargeMin)
     }
 
     // ---- 日志遮蔽（密码不得进日志文件）----

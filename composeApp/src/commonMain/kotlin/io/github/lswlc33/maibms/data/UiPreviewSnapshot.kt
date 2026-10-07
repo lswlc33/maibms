@@ -37,6 +37,12 @@ object UiPreview {
             // 与「放电」状态自相矛盾
             current = 12.4,
             power = 1090,
+            // 卡3 小灰字：放电剩余与电流/容量自洽（86.6Ah ÷ 12.4A ≈ 6时59分）；
+            // 充电侧未报 → "--"；上次充电间隔取真机样例值（ANT@BLE24CBUB 实测 5037s）
+            thisChargeSec = 0,
+            lastChargeGapSec = 5037,
+            remainChargeMin = 0,
+            remainDischargeMin = 419,
             maxCell = "4.212", minCell = "4.153", avgCell = "4.184", deltaCell = "0.059",
             totalCycleAh = 68,
             battState = "放电",
