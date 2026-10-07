@@ -107,20 +107,27 @@ fun ClusterDashboard(
         // 厂家系统（MIUI/HyperOS 实测）在旋转配置变化后会重新显示系统栏——
         // 宽度落定（竖→横）后再挂一次隐藏
         LaunchedEffect(maxWidth) { systemBarsImmersive(true) }
-        // 异形屏避让：safeDrawing（挖孔/状态栏/手势条——需窗口开 ALWAYS cutout 才报告挖孔）；
-        // 圆角内缩只加给横贯全宽的顶/底条端点（见各自 padding），主区不加——否则六灯排被挤裁
+        // 左右对称安全区：两侧都可能有摄像头挖孔与屏幕圆角，内容只在两安全区之间显示
+        // （背景铺满全屏）。宽度取 max(左/右 safeDrawing, 屏幕圆角, 50dp)——用户基准约一个
+        // 状态栏高度、不小于 50dp。K90 实测：左=挖孔列，右=对称留白，表盘视觉居中。
         val insets = WindowInsets.safeDrawing.asPaddingValues()
+        val sideSafe = maxOf(
+            insets.calculateStartPadding(LayoutDirection.Ltr),
+            insets.calculateEndPadding(LayoutDirection.Ltr),
+            screenCornerRadius(),
+            50.dp,
+        )
         Column(
             Modifier.fillMaxSize().padding(
-                start = insets.calculateStartPadding(LayoutDirection.Ltr),
-                end = insets.calculateEndPadding(LayoutDirection.Ltr),
+                start = sideSafe,
+                end = sideSafe,
                 top = insets.calculateTopPadding(),
                 bottom = insets.calculateBottomPadding(),
             )
         ) {
             // ---- 顶条 ----
             Row(
-                Modifier.fillMaxWidth().padding(horizontal = u * 1.9f + screenCornerRadius(), vertical = u * 0.9f)
+                Modifier.fillMaxWidth().padding(horizontal = u * 1.9f, vertical = u * 0.9f)
                     .background(Color.Transparent),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(u * 2.2f),
@@ -164,7 +171,7 @@ fun ClusterDashboard(
                 ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
             }
             // ---- 底条 ----
-            ClusterBottomBar(status, u, screenCornerRadius())
+            ClusterBottomBar(status, u)
         }
     }
 }
@@ -298,8 +305,8 @@ private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: D
     val fillV = status.totalVoltage.toFloat()
     Canvas(modifier) {
         val cx = size.width / 2f
-        val cy = size.height * 0.46f
-        val r = min(size.width, size.height) * 0.36f
+        val cy = size.height * 0.50f
+        val r = min(size.width, size.height) * 0.335f
         val stroke = r * 0.133f
         dialTrack(cx, cy, r, stroke)
         // 琥珀（过放侧）/ 红（过充侧）警示带
@@ -334,8 +341,8 @@ private fun ClusterGaugeP(status: BmsStatus, useKw: Boolean, modifier: Modifier 
     val fillW = if (hasData) status.power.toFloat() else 0f
     Canvas(modifier) {
         val cx = size.width / 2f
-        val cy = size.height * 0.46f
-        val r = min(size.width, size.height) * 0.36f
+        val cy = size.height * 0.50f
+        val r = min(size.width, size.height) * 0.335f
         val stroke = r * 0.133f
         dialTrack(cx, cy, r, stroke)
         // 充电绿带（0 → -副档位）与放电三色带，弱化铺底
@@ -456,14 +463,22 @@ private fun fmt1(v: Double): String = "%.1f".fmt(v)
 /* ================= 底条 ================= */
 
 @Composable
-private fun ClusterBottomBar(status: BmsStatus, u: Dp, corner: Dp) {
+private fun ClusterBottomBar(status: BmsStatus, u: Dp) {
     val on = status.hasData
     val maxCell = status.cells.firstOrNull { it.isMax }
     val minCell = status.cells.firstOrNull { it.isMin }
+    // 背景横贯全屏；文字与主区同宽（左右对称安全区内不显示内容，只显背景）
+    val insets = WindowInsets.safeDrawing.asPaddingValues()
+    val sideSafe = maxOf(
+        insets.calculateStartPadding(LayoutDirection.Ltr),
+        insets.calculateEndPadding(LayoutDirection.Ltr),
+        screenCornerRadius(),
+        50.dp,
+    )
     Row(
         Modifier.fillMaxWidth()
             .background(ClusterLine.copy(alpha = 0.6f))
-            .padding(horizontal = u * 1.9f + corner, vertical = u * 0.9f),
+            .padding(horizontal = sideSafe + u * 0.5f, vertical = u * 0.9f),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(u * 2.0f),
     ) {
