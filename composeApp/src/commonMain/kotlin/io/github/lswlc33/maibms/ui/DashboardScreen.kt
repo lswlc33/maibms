@@ -73,13 +73,33 @@ fun DashboardScreen(
     val linkLost = link == io.github.lswlc33.maibms.transport.LinkState.Connected && stalled
     val linkDown = link != io.github.lswlc33.maibms.transport.LinkState.Connected
 
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    // 宽度断点拦截「横屏事件」：横屏/宽窗口（≥600dp）不再渲染竖屏布局，直接进横屏表盘；
+    // 竖屏顶栏的「横屏仪表」入口（锁向）与表盘内的「退出仪表」是手动进出的一对
+    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        if (maxWidth >= 600.dp) {
+            ClusterDashboard(status, onExit = { lockLandscape(false) })
+        } else {
         Column(Modifier.fillMaxSize()) {
             Spacer(Modifier.height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 4.dp))
-            // 顶栏：标题 + 加号菜单
+            // 顶栏：标题 + 横屏入口 + 加号菜单
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
                 Text("麻衣 BMS", fontSize = 19.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                 Spacer(Modifier.weight(1f))
+                if (supportsOrientationLock) {
+                    Box(
+                        Modifier.clip(RoundedCornerShape(99.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .clickable {
+                                lockLandscape(true)
+                                showSystemToast("已锁定横屏 · 转到横屏进入仪表")
+                            }
+                            .padding(horizontal = 11.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("横屏仪表", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                }
                 if (showScanEntry) {
                     // 直接开扫描面板（原先还要过一层「扫码连接/管理设备」菜单，两项指向同一个弹窗）
                     Box(
@@ -193,6 +213,7 @@ fun DashboardScreen(
                     }
                 }
             }
+        }
         }
     }
 }

@@ -13,6 +13,9 @@ import java.io.File
 /** 进程级 ApplicationContext：权限检查与 Toast 都要用（由 [MaibmsApp] 注入） */
 object AndroidApp {
     @Volatile var context: Context? = null
+
+    /** 当前前台 Activity：横屏锁定要设 requestedOrientation，Application context 不行 */
+    @Volatile var activity: android.app.Activity? = null
 }
 
 /**

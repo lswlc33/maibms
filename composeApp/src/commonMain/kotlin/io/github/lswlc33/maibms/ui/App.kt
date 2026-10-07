@@ -137,11 +137,13 @@ fun App(
             val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(bmsStatus.permissionLevel) && connected
             // 底栏在三个主标签（含仪表盘变体状态）显示
             val isTabRoot = backStack.isEmpty() && route.isTabRoot()
-            // 有底栏时，滚动内容末尾要留出底栏 + 系统导航栏的高度，否则最后一行被压在底栏下
-            val navBarPad = if (isTabRoot) BottomNavHeight else 20.dp
 
             Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
-                Box(Modifier.fillMaxSize()) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+            // 横屏表盘（宽屏 Dashboard）不显示底栏，表盘自己的底条取而代之
+            val onCluster = maxWidth >= 600.dp && route == Route.Dashboard
+            // 有底栏时，滚动内容末尾要留出底栏 + 系统导航栏的高度，否则最后一行被压在底栏下
+            val navBarPad = if (isTabRoot && !onCluster) BottomNavHeight else 20.dp
                     // 窗口过渡：压栈/出栈横向滑动，底栏标签之间按左右顺序横移 + 淡入淡出
                     AnimatedContent(
                         targetState = route,
@@ -236,9 +238,9 @@ fun App(
                             }
                         }
                     }
-                    // 底栏在三个主标签显示；压栈时随动画收起，返回时升起
+                    // 底栏在三个主标签显示；横屏表盘态随之隐藏；压栈时随动画收起，返回时升起
                     AnimatedVisibility(
-                        visible = isTabRoot,
+                        visible = isTabRoot && !onCluster,
                         enter = slideInVertically(tween(220)) { it } + fadeIn(tween(180)),
                         exit = slideOutVertically(tween(200)) { it } + fadeOut(tween(140)),
                         modifier = Modifier.align(Alignment.BottomCenter),

@@ -10,10 +10,16 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        AndroidApp.activity = this
         // 数据管线（持久化 + BLE 传输 + 自动重连）已在 MaibmsApp.onCreate 里装配并启动，
         // 与这里的界面创建并行；App() 里保留一次 start() 兜底（幂等，桌面端靠它挂收集器）
         requestBlePermissions()
         setContent { App() }
+    }
+
+    override fun onDestroy() {
+        if (AndroidApp.activity === this) AndroidApp.activity = null
+        super.onDestroy()
     }
 
     private fun requestBlePermissions() {

@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>麻衣 BMS · 横屏仪表原型（A 新能源简洁 / B 油车双盘）</title>
+<style>
+:root{
+  --paper:#F1F3F2; --ink:#1B1F1E; --ink-2:#4C5553; --ink-3:#7A8481;
+  --line:#D3DAD7; --line-2:#BEC7C3; --spec:#0B5E60; --spec-bg:#E0F1F0;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,"Courier New",monospace;
+  --sans:"PingFang SC","Microsoft YaHei UI","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  /* 仪表现代深色调 */
+  --face0:#0C1110; --face1:#141B1A; --face-line:#243030;
+  --fg:#ECF2F0; --fg2:#93A09D; --fg3:#5E6B68;
+  --track:#1D2827;
+  --green:#34D399; --teal:#2DD4BF; --blue:#60A5FA; --amber:#FBBF24; --red:#F87171;
+  --violet:#A78BFA;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.7;
+  background-image:radial-gradient(var(--line) .8px,transparent .8px);background-size:26px 26px}
+::selection{background:#B4ECED}
+.topbar{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--paper) 88%,white);
+  backdrop-filter:blur(8px);border-bottom:1.5px solid var(--line-2)}
+.topbar-in{max-width:1240px;margin:0 auto;padding:10px 24px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.topbar b{font-size:15px}
+.topbar nav{display:flex;gap:4px;flex-wrap:wrap}
+.topbar nav a{text-decoration:none;font-size:13px;color:var(--ink-2);padding:5px 12px;border-radius:99px}
+.topbar nav a:hover{background:var(--spec-bg);color:var(--spec)}
+.hero{max-width:1240px;margin:0 auto;padding:40px 24px 4px}
+.hero h1{font-size:clamp(26px,3.6vw,38px);font-weight:900;margin:8px 0 10px}
+.hero h1 span{color:var(--spec)}
+.hero p.sub{max-width:860px;color:var(--ink-2);font-size:15.5px}
+.wrap{max-width:1240px;margin:0 auto;padding:24px 24px 90px}
+section{margin-top:44px}
+h2{font-size:21px;font-weight:900;padding-left:12px;border-left:5px solid var(--spec);margin-bottom:6px}
+h2 small{font-family:var(--mono);font-size:12px;color:var(--ink-3);font-weight:400;margin-left:10px}
+p.note{color:var(--ink-2);max-width:940px;margin:6px 0 14px}
+b.spec{color:var(--spec)}
+
+/* ===== 控制台 ===== */
+.console{background:white;border:1.5px solid var(--line-2);border-radius:14px;padding:12px 16px;
+  display:flex;flex-direction:column;gap:9px;margin-bottom:14px}
+.console .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.console .lab{font-family:var(--mono);font-size:12px;color:var(--ink-3);min-width:64px}
+.seg{display:flex;border:1.5px solid var(--line-2);border-radius:99px;overflow:hidden}
+.seg button{font-family:var(--sans);font-size:13px;border:none;background:white;color:var(--ink-2);
+  padding:5px 16px;cursor:pointer}
+.seg button.on{background:var(--spec);color:white;font-weight:700}
+.console button.pill{font-family:var(--sans);font-size:12.5px;border:1.5px solid var(--line-2);background:white;
+  border-radius:99px;padding:4px 13px;cursor:pointer;color:var(--ink-2)}
+.console button.pill:hover{border-color:var(--spec);color:var(--spec)}
+.console button.pill.on{border-color:var(--spec);background:var(--spec-bg);color:var(--spec);font-weight:700}
+.console .hint{font-size:12px;color:var(--ink-3)}
+
+/* ===== 舞台（宽度可切换以演示响应式） ===== */
+.stage-outer{display:flex;justify-content:center}
+.stage{width:914px;max-width:100%;transition:width .35s ease;container-type:inline-size}
+
+/* ===== 仪表总成（A/B 共用骨架，容器查询驱动响应式） ===== */
+.cluster{background:linear-gradient(180deg,var(--face0),var(--face1));border-radius:18px;
+  width:100%;aspect-ratio:914/412;display:flex;flex-direction:column;overflow:hidden;position:relative;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 24px 48px -20px rgba(12,20,18,.55)}
+.cluster::after{content:"";position:absolute;inset:0;border-radius:18px;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% -10%,rgba(255,255,255,.05),transparent 55%)}
+.c-top{display:flex;align-items:center;gap:2.2cqw;padding:1.1cqw 1.9cqw .7cqw;
+  border-bottom:1px solid var(--face-line);font-size:1.35cqw;color:var(--fg2)}
+.c-top .dot{width:.95cqw;height:.95cqw;border-radius:99px;background:var(--green);box-shadow:0 0 .9cqw var(--green)}
+.c-top .dot.off{background:var(--fg3);box-shadow:none}
+.c-top b{color:var(--fg);font-weight:600}
+.c-top .sp{flex:1}
+.c-top .chip{font-family:var(--mono);font-size:1.25cqw;color:var(--fg2);border:1px solid var(--face-line);
+  border-radius:99px;padding:.15cqw .95cqw}
+.c-main{flex:1;display:flex;align-items:stretch;min-height:0}
+.c-dial{flex:1.08;display:flex;align-items:center;justify-content:center;min-width:0;padding:.4cqw 0}
+.c-dial svg{width:100%;height:100%;display:block}
+.c-mid{flex:1.18;display:flex;flex-direction:column;justify-content:center;gap:1.15cqw;
+  padding:.8cqw 1.6cqw;border-left:1px solid var(--face-line);border-right:1px solid var(--face-line);min-width:0}
+.c-soc-row{display:flex;align-items:baseline;justify-content:center;gap:1.4cqw}
+.c-soc{font-size:6.4cqw;font-weight:250;color:var(--fg);line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.c-soc i{font-style:normal;font-size:2.3cqw;color:var(--fg2);font-weight:400}
+.c-state{font-size:1.5cqw;font-weight:600;color:var(--green);border:1.5px solid var(--green);
+  border-radius:99px;padding:.25cqw 1.5cqw;white-space:nowrap}
+.c-state.charge{color:var(--teal);border-color:var(--teal)}
+.c-state.idle{color:var(--fg2);border-color:var(--face-line)}
+.c-bar{display:flex;gap:.34cqw;height:1.85cqw;padding:0 .8cqw}
+.c-bar .seg{flex:1;border-radius:.3cqw;background:var(--track);border:1px solid var(--face-line);
+  transition:background .4s,border-color .4s,box-shadow .4s}
+.c-bar .seg.lit{background:var(--green);border-color:var(--green);
+  box-shadow:0 0 .7cqw color-mix(in srgb,var(--green) 60%,transparent)}
+.c-bar.low .seg.lit{background:var(--red);border-color:var(--red);
+  box-shadow:0 0 .7cqw color-mix(in srgb,var(--red) 60%,transparent)}
+.c-bolt{display:flex;justify-content:center;gap:.5cqw;font-size:1.5cqw;height:1.8cqw;color:var(--amber)}
+.c-remain{display:flex;justify-content:center;gap:2.4cqw;font-size:1.45cqw;color:var(--fg2);flex-wrap:wrap}
+.c-remain b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.c-lights{display:flex;justify-content:center;gap:1.7cqw;flex-wrap:wrap}
+.c-light{display:flex;flex-direction:column;align-items:center;gap:.35cqw}
+.c-light .led{width:1.45cqw;height:1.45cqw;border-radius:99px;background:var(--track);border:1px solid var(--face-line);
+  transition:all .4s}
+.c-light span{font-size:1.05cqw;color:var(--fg3)}
+.c-light.on-green .led{background:var(--green);border-color:var(--green);box-shadow:0 0 .9cqw color-mix(in srgb,var(--green) 65%,transparent)}
+.c-light.on-teal .led{background:var(--teal);border-color:var(--teal);box-shadow:0 0 .9cqw color-mix(in srgb,var(--teal) 65%,transparent)}
+.c-light.on-blue .led{background:var(--blue);border-color:var(--blue);box-shadow:0 0 .9cqw color-mix(in srgb,var(--blue) 65%,transparent)}
+.c-light.on-amber .led{background:var(--amber);border-color:var(--amber);box-shadow:0 0 .9cqw color-mix(in srgb,var(--amber) 65%,transparent)}
+.c-light.on-amber span{color:var(--amber)}
+.c-light.on-red .led{background:var(--red);border-color:var(--red);box-shadow:0 0 .9cqw color-mix(in srgb,var(--red) 65%,transparent)}
+.c-light.on-red span{color:var(--red)}
+.c-bot{display:flex;align-items:center;gap:.9cqw 2cqw;flex-wrap:wrap;padding:.9cqw 1.9cqw;
+  border-top:1px solid var(--face-line);font-size:1.35cqw;color:var(--fg2)}
+.c-bot b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
+.c-bot .warn{color:var(--amber)}
+/* 容器查询：窄舞台时中央区移到双表下方，保持可读 */
+@container (max-width:600px){
+  .c-main{flex-direction:column}
+  .c-mid{border:none;border-top:1px solid var(--face-line);padding:.6cqw 2cqw}
+  .c-dial{flex:none;height:44cqw}
+  .cluster{aspect-ratio:auto}
+}
+
+/* ===== 表盘 SVG 元素样式（viewBox 300×262，随容器等比） ===== */
+svg .tick{stroke:#414D4A;stroke-width:1.2}
+svg .tick.major{stroke:#8A9693;stroke-width:2}
+svg .tick.zero{stroke:#ECF2F0;stroke-width:3.5}
+svg .ticklabel{fill:#93A09D;font-size:12.5px;font-family:var(--mono)}
+svg .dialval{fill:#ECF2F0;font-weight:650;font-family:var(--mono);font-variant-numeric:tabular-nums}
+svg .dialsub{fill:#93A09D;font-size:11.5px;font-family:var(--sans)}
+svg .needle{stroke:#F2F5F3;stroke-width:3;stroke-linecap:round;filter:drop-shadow(0 0 3px rgba(242,245,243,.35))}
+svg .hub{fill:#F2F5F3}
+/* A 案：弧量填充 */
+svg .nevTrack{fill:none;stroke:var(--track);stroke-width:14;stroke-linecap:round}
+svg .nevFill{stroke-width:14;stroke-linecap:round;filter:drop-shadow(0 0 6px rgba(45,212,191,.5))}
+svg .nevFillP{stroke-width:14;stroke-linecap:round;filter:drop-shadow(0 0 6px rgba(52,211,153,.45))}
+svg .nevAmber{fill:none;stroke:var(--amber);stroke-width:14;opacity:.5}
+svg .nevRed{fill:none;stroke:var(--red);stroke-width:14;opacity:.5}
+svg .nevChgBand{fill:none;stroke:var(--teal);stroke-width:14;opacity:.3}
+svg .nevZone{fill:none;stroke-width:14;opacity:.24}
+/* B 案：实体指针 */
+svg .iceTrack{fill:none;stroke:var(--track);stroke-width:3}
+svg .iceRed{fill:none;stroke:var(--red);stroke-width:4.5;opacity:.9}
+svg .iceAmber{fill:none;stroke:var(--amber);stroke-width:4.5;opacity:.85}
+svg .iceZone{fill:none;stroke-width:4.5;opacity:.9}
+svg .iceChgBand{fill:none;stroke:var(--teal);stroke-width:4.5;opacity:.55}
+
+/* ===== 说明表 ===== */
+table.spec-t{border-collapse:collapse;width:100%;background:white;font-size:13.5px}
+table.spec-t th{background:var(--spec-bg);color:var(--spec);text-align:left;padding:8px 12px;border:1px solid var(--line-2);
+  font-size:12.5px}
+table.spec-t td{border:1px solid var(--line-2);padding:8px 12px;vertical-align:top}
+table.spec-t td:first-child{white-space:nowrap;font-weight:700}
+table.spec-t .mono{font-family:var(--mono);font-size:12.3px}
+table.spec-t code{font-family:var(--mono);font-size:12.3px;background:var(--spec-bg);border-radius:4px;padding:1px 5px;color:var(--spec)}
+ul.tight{max-width:980px;padding-left:22px;color:var(--ink-2)}
+ul.tight li{margin:4px 0}
+ul.tight b{color:var(--ink)}
+.tag{font-family:var(--mono);font-size:11px;border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap}
+.tag.old{background:#E7EBE9;color:var(--ink-2);border:1px solid var(--line-2)}
+.tag.new{background:var(--spec-bg);color:var(--spec);border:1px solid color-mix(in srgb,var(--spec) 35%,white)}
+@media (max-width:760px){.c-top{font-size:2.4cqw}}
+</style>
+</head>
+<body>
+
+<div class="topbar"><div class="topbar-in">
+  <b>麻衣 BMS · 横屏仪表原型</b>
+  <nav><a href="#demo">交互原型</a><a href="#diff">两案差异</a><a href="#fn">静态函数表</a><a href="#resp">响应式规则</a></nav>
+  <span style="margin-left:auto;font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">2026-10-07 · 原型 v2 · 数据=随机模拟</span>
+</div></div>
+
+<div class="hero">
+  <h1>横屏仪表原型：<span>新能源简洁 · 定稿</span></h1>
+  <p class="sub">现代风格、真实随机数据驱动的可交互仪表。数值由 random 游走生成且互相自洽
+  （功率=电压×电流、SOC 随充放漂移、单体极值随压差摆动）；功率盘支持 <b>W / kW 单位切换（默认 W）</b>；
+  仪表按容器宽度等比伸缩，手机横屏 / 平板 / 桌面宽窗都有良好表现。文末整理了可直接移植 Kotlin 的<b>静态函数表</b>。
+  （曾并排对比的「油车双盘」方案已按定稿移除，本页为唯一表盘。）</p>
+</div>
+
+<div class="wrap">
+
+<!-- ============ 交互原型 ============ -->
+<section id="demo">
+  <h2>交互原型 <small>切方案 / 切场景 / 切宽度</small></h2>
+
+  <div class="console">
+    <div class="row">
+      <span class="lab">场景</span>
+      <span id="scnRow">
+        <button class="pill on" data-s="run">放电</button>
+        <button class="pill" data-s="chg">充电</button>
+        <button class="pill" data-s="idle">待机</button>
+        <button class="pill" data-s="big">重载</button>
+        <button class="pill" data-s="off">未连接</button>
+      </span>
+      <span class="lab" style="margin-left:14px">功率单位</span>
+      <span class="seg" id="unitSeg">
+        <button data-u="w" class="on">W（默认）</button>
+        <button data-u="kw">kW</button>
+      </span>
+      <button class="pill" id="pauseBtn">暂停</button>
+    </div>
+    <div class="row">
+      <span class="lab">容器宽</span>
+      <span id="wRow">
+        <button class="pill" data-w="640">手机横 640</button>
+        <button class="pill on" data-w="914">基准 914</button>
+        <button class="pill" data-w="1180">平板 1180</button>
+        <button class="pill" data-w="100%">随窗口</button>
+      </span>
+      <span class="hint">当前 <b class="mono" id="wNow">914px</b> · 仪表内部按容器宽度等比缩放（容器查询），≤600px 自动折行</span>
+    </div>
+  </div>
+
+  <div class="stage-outer"><div class="stage" id="stage">
+    <div class="cluster" id="cluster">
+      <div class="c-top">
+        <span class="dot" id="topDot"></span><b id="topName">UI 预览 · 72114 锂电池</b>
+        <span class="chip" id="topPerm">权限 3 级</span>
+        <span class="chip" id="topRun">运行 12天 03:26:15</span>
+        <span class="sp"></span>
+        <span class="chip">配置 ›</span><span class="chip">设置 ›</span>
+      </div>
+      <div class="c-main">
+        <div class="c-dial"><svg id="dialV" viewBox="0 0 300 262"></svg></div>
+        <div class="c-mid">
+          <div class="c-soc-row">
+            <span class="c-soc"><span id="socNum">76</span><i>%</i></span>
+            <span class="c-state" id="stateChip">放电</span>
+          </div>
+          <div class="c-bar" id="socBar"></div>
+          <div class="c-bolt" id="boltRow"></div>
+          <div class="c-remain">
+            <span>充电剩余 <b id="remChg">--</b></span>
+            <span>放电剩余 <b id="remDis">--</b></span>
+          </div>
+          <div class="c-lights">
+            <span class="c-light" id="ledLink"><span class="led"></span><span>连接</span></span>
+            <span class="c-light" id="ledChgMos"><span class="led"></span><span>充电MOS</span></span>
+            <span class="c-light" id="ledDisMos"><span class="led"></span><span>放电MOS</span></span>
+            <span class="c-light" id="ledBal"><span class="led"></span><span>均衡</span></span>
+            <span class="c-light" id="ledWarn"><span class="led"></span><span>告警</span></span>
+            <span class="c-light" id="ledProt"><span class="led"></span><span>保护</span></span>
+          </div>
+        </div>
+        <div class="c-dial"><svg id="dialP" viewBox="0 0 300 262"></svg></div>
+      </div>
+      <div class="c-bot">
+        <span>单体 <b id="bCellHi">--</b>@<span id="bCellHiIdx">-</span> / <b id="bCellLo">--</b>@<span id="bCellLoIdx">-</span></span>
+        <span>压差 <b id="bDelta">--</b>V</span>
+        <span>平均 <b id="bAvg">--</b>V</span>
+        <span>MOS <b id="bMos">--</b>°</span>
+        <span>剩余 <b id="bCap">--</b>/<span id="bCapTotal">114</span>Ah</span>
+        <span>电流 <b id="bAmp">--</b>A</span>
+        <span class="warn" id="bWarn"></span>
+      </div>
+    </div>
+  </div></div>
+</section>
+
+<!-- ============ 定稿口径 ============ -->
+<section id="diff">
+  <h2>定稿口径 <small>曾并排对比「油车双盘」，已按定稿移除，本节记录保留项的最终口径</small></h2>
+  <table class="spec-t">
+    <tr><th style="width:150px">部位</th><th>定稿口径</th></tr>
+    <tr><td>表盘语言</td><td><b>弧量填充</b>：细弧轨道 + 发光渐变填充，无指针、无环上数字；数值大字居于盘心，纯数字仪表观感（现代新能源风格）</td></tr>
+    <tr><td>左盘 · 电压</td><td>量程 = 串数 × 2.5~4.5V（21 串 → 52.5~94.5V）；红区 &gt; 过充保护 4.30V/串 × 串数、琥珀区 &lt; 过放保护 2.80V/串 × 串数，警示带压在填充之上——填充进入区间即被染色</td></tr>
+    <tr><td>右盘 · 功率（=转速）</td><td>中零双向，<b>内部统一 W 域</b>：量程 ±max(副档位, 末档) = ±5000W（阶梯 -1500/1000/3000/5000W）；充电半区 0→-1500W 绿带，放电半区 1000/3000/5000W 绿→蓝→红三段；<b>显示单位 W/kW 可切换，默认 W</b>（环上数字：W 每 2000W 一标、kW 每 1000W 一标；盘心同步切换）；盘心小字同时给电流 A</td></tr>
+    <tr><td>中央芯区</td><td>SOC 大字（细字重）+ 状态章 + 10 段电量条（充电亮 ⚡、&lt;15% 转红）+ 充/放剩余 + 六灯排</td></tr>
+    <tr><td>顶/底横条</td><td>顶条=设备名/连接点/权限/运行时间/导航；底条=单体极值/压差/平均/MOS 温度/剩余容量/电流/告警文字</td></tr>
+  </table>
+</section>
+
+<!-- ============ 静态函数表 ============ -->
+<section id="fn">
+  <h2>静态函数表 <small>移植 Kotlin 的唯一口径 · 本页 JS 就是参照实现</small></h2>
+  <p class="note">角度坐标系 <b>SVG 与 Compose 完全同口径</b>：0° = 3 点钟方向、顺时针为正，
+  <code>drawArc(startAngle = a0, sweepAngle = a1 - a0)</code> 与 <code>SVG arc</code> 逐点一致，可直迁。
+  标 <code class="mono">[已有]</code> 的在仓库里现成、标 <code class="mono">[新建]</code> 的进新文件
+  <code>ClusterMath.kt</code>（纯函数、全部可单测）。</p>
+  <table class="spec-t">
+    <tr><th style="width:290px">函数（Kotlin 签名）</th><th>定义 / 公式</th><th>参考值（21 串 · 阶梯 -1500/1000/3000/5000W）</th></tr>
+    <tr><td class="mono">[新建] sweepAngle(min, max, v): Float</td><td class="mono">135f + ((v-min)/(max-min)).coerceIn(0f,1f) × 270f</td><td class="mono">sweepAngle(52.5, 94.5, 87.87) = 362.4°<br>sweepAngle(-5, 5, 1.09) = 299.4°</td></tr>
+    <tr><td class="mono">[新建] polar(cx, cy, r, angleDeg): Offset</td><td class="mono">(cx + r·cosθ, cy + r·sinθ)，θ = angleDeg·π/180</td><td class="mono">polar(150,140,105,135°) = (75.7, 214.3)</td></tr>
+    <tr><td class="mono">[新建] REST_ANGLE: Float</td><td>未连接/无数据的指针静默位 = 扫弧起点</td><td class="mono">135°（盘面左下）</td></tr>
+    <tr><td class="mono">[新建] voltageRange(cellCount): ClosedRange&lt;Float&gt;</td><td class="mono">cellCount×2.5f .. cellCount×4.5f</td><td class="mono">(21) → 52.5 .. 94.5 V</td></tr>
+    <tr><td class="mono">[新建] vRedFrom(cellCount): Float<br>[新建] vAmberTo(cellCount): Float</td><td class="mono">过充保护 4.30V/串 × n；过放保护 2.80V/串 × n<br>（实机读参数表保护值，此为默认）</td><td class="mono">红区起点 90.3V；琥珀区终点 58.8V</td></tr>
+    <tr><td class="mono">[新建] powerRangeW(stages): ClosedRange&lt;Int&gt;</td><td class="mono">±max(|stages.first()|, stages.last())，取整到 500W（内部统一 W 域）</td><td class="mono">[-1500,1000,3000,5000] → -5000 .. 5000 W</td></tr>
+    <tr><td class="mono">[新建] chargeBandFromW(stages): Int</td><td class="mono">-|stages.first()|（充电绿带左端）</td><td class="mono">→ -1500 W</td></tr>
+    <tr><td class="mono">[新建] dischargeZonesW(stages): List&lt;Zone&gt;</td><td class="mono">放电半区按阶梯切：0→s₁ 绿，s₁→s₂ 蓝，s₂→s₃ 红；带端超出量程截断</td><td class="mono">0..1000 绿 / 1000..3000 蓝 / 3000..5000 红（W）</td></tr>
+    <tr><td class="mono">[新建] ticksV(range): List&lt;Tick&gt;</td><td class="mono">副刻度 1V、主刻度 5V、数字 10V 一标（A 案环上不标，仅 B 案用）</td><td class="mono">数字 60/70/80/90</td></tr>
+    <tr><td class="mono">[新建] ticksP(rangeW, useKw): List&lt;Tick&gt;</td><td class="mono">副刻度 250W、主刻度 500W；数字：W 模式每 2000W 一标（"0/±2000/±4000"），kW 模式每 1000W 一标（"0/±1..±5"）；0 位加粗</td><td class="mono">W: -4000/-2000/0/2000/4000<br>kW: -5..+5</td></tr>
+    <tr><td class="mono">[新建] fmtPower(w, useKw): String</td><td class="mono">W 模式取整加符号（"+1310"）；kW 模式两位小数（"+1.31"）</td><td class="mono">1310W → "+1310" / "+1.31"</td></tr>
+    <tr><td class="mono">[新建] socSegments(soc): Int</td><td class="mono">round(soc/10f).coerceIn(0, 10)</td><td class="mono">76 → 8 段亮</td></tr>
+    <tr><td class="mono">[新建] socLow(soc): Boolean</td><td class="mono">soc &lt; 15（与卡1 低电红同阈值）</td><td class="mono">14 → true（整条转红）</td></tr>
+    <tr><td class="mono">[已有] fmtRemainingMin(min): String</td><td class="mono">Fmt.kt：0→"--"，&lt;60 X分，&lt;1440 X时Y分，否则 X天Y时</td><td class="mono">419 → "6时59分"</td></tr>
+    <tr><td class="mono">[已有] powerGaugeBarIndex/Fill(stages, w)</td><td class="mono">PowerGaugeMath.kt：档位判定与平方填充，色带配色直接复用其三色语义</td><td class="mono">1.09kW → 1 档（绿）</td></tr>
+    <tr><td class="mono">[新建·演示] simTick(state): State</td><td class="mono">随机游走（<b>仅原型，不进 App</b>）：OCV=(3.0+1.2·soc/100)·n，压降 −0.03·I，SOC 漂移 ×240 加速，功率=V·I，剩余时间=剩余Ah/|I|</td><td class="mono">soc=76 → V≈87.9 + sag；<br>I=12.4A → P≈1.09kW → 剩余 6时59分</td></tr>
+  </table>
+  <p class="note">常量约定：<b>单体窗口 2.5~4.5V</b>（三元锂默认，化学体系后续从电池类型校准）、<b>过充 4.30 / 过放 2.80 V/串</b>、
+  <b>低 SOC 15%</b>、<b>扫弧 270°（135°→405°）开口朝下</b>、<b>色带半径 = 刻度半径 + 7</b>、
+  <b>指针 600ms easeOutCubic 缓动</b>（与卡3 填充动画同量级）。以上任何一个常量改动都只动 ClusterMath.kt 一处。</p>
+</section>
+
+<!-- ============ 响应式规则 ============ -->
+<section id="resp">
+  <h2>响应式规则 <small>一部仪表，处处等比</small></h2>
+  <ul class="tight">
+    <li><b>等比缩放</b>：表盘整体画在 SVG viewBox（300×262）里，随容器宽度无损缩放；HTML 部分全部用容器查询单位
+    <code class="mono">cqw</code>（容器宽的 1%）定字号/间距——914px 容器与 640px 容器上是同一张表按比例缩放，布局不重排。</li>
+    <li><b>折行断点</b>：容器 ≤600px（手机竖屏误入）时中央芯区移到双表下方纵向排列，仪表不挤压、不截断；
+    真机竖屏仍走现有竖屏布局（App 内断点 ≥600dp 才进仪表），这条只是原型在浏览器里的兜底。</li>
+    <li><b>高度自适应</b>：总成 aspect-ratio 914/412；平板/桌面更宽的容器（1180+）同一构图继续等比放大，字号/弧宽随 cqw 增长，不出现「小字浮在大卡上」。</li>
+    <li><b>App 落地</b>：Compose 内用 BoxWithConstraints 拿 maxWidth，Canvas 尺寸直接取约束，字号用
+    <code class="mono">maxWidth × 系数</code>（等价于这里的 cqw），断点同为 600dp。</li>
+  </ul>
+</section>
+
+</div>
+
+<script>
+/* ================================================================
+   共享几何（= 文档「静态函数表」的 JS 参照实现）
+   ================================================================ */
+const START = 135, SWEEP = 270;          // 270° 扫弧，开口朝下
+const CX = 150, CY = 138, R = 105;       // 表盘 viewBox 300×262
+const NS = "http://www.w3.org/2000/svg";
+const CELL_N = 21, CAP_AH = 114;
+const V_MIN = CELL_N * 2.5, V_MAX = CELL_N * 4.5;      // 52.5 .. 94.5
+const V_RED = 4.30 * CELL_N, V_AMBER = 2.80 * CELL_N;  // 90.3 / 58.8
+const STAGES_W = [-1500, 1000, 3000, 5000];            // AppStore.powerStagesW 同构
+const P_MAX_W = Math.max(Math.abs(STAGES_W[0]), STAGES_W[STAGES_W.length - 1]);   // 5000 W
+const P_CHG_W = Math.abs(STAGES_W[0]);                 // 1500 W
+const ZONES_W = [                                      // 放电半区色带（W），hex：SVG 属性不吃 CSS var()
+  {from:0, to:STAGES_W[1], color:"#34D399"},
+  {from:STAGES_W[1], to:STAGES_W[2], color:"#60A5FA"},
+  {from:STAGES_W[2], to:STAGES_W[3], color:"#F87171"},
+];
+
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const ang = (min, max, v) => START + clamp01((v - min) / (max - min)) * SWEEP;
+const rad = d => d * Math.PI / 180;
+const polar = (r, aDeg) => [CX + r * Math.cos(rad(aDeg)), CY + r * Math.sin(rad(aDeg))];
+function arcPath(r, a0, a1){
+  const [x0,y0] = polar(r, a0), [x1,y1] = polar(r, a1);
+  return `M ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${(a1-a0)>180?1:0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+}
+function el(tag, attrs, css){
+  const e = document.createElementNS(NS, tag);
+  for(const k in attrs) e.setAttribute(k, attrs[k]);
+  if(css) e.setAttribute("class", css);
+  return e;
+}
+
+/* ===== 通用刻度环生成：fmtLabel(t) 返回 null = 不标数字；首根对齐 minor 网格 ===== */
+function buildTicks(svg, min, max, minor, major, fmtLabel, showLabels, zeroBold){
+  for(let t = Math.ceil(min / minor - 1e-9) * minor; t <= max + 1e-9; t += minor){
+    const isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
+    const a = ang(min, max, t), len = isMajor ? 13 : 6;
+    const [x0,y0] = polar(R, a), [x1,y1] = polar(R - len, a);
+    const zero = zeroBold && Math.abs(t) < 1e-9;
+    svg.appendChild(el("line", {x1:x0.toFixed(2), y1:y0.toFixed(2), x2:x1.toFixed(2), y2:y1.toFixed(2),
+      class: zero ? "tick zero" : (isMajor ? "tick major" : "tick minor")}));
+    if(showLabels && isMajor){
+      const lab = fmtLabel ? fmtLabel(t) : String(Math.round(t));
+      if(lab == null) continue;
+      const [lx,ly] = polar(R - 26, a);
+      const txt = el("text", {x:lx.toFixed(2), y:(ly+4).toFixed(2), "text-anchor":"middle", class:"ticklabel"});
+      txt.textContent = lab;
+      svg.appendChild(txt);
+    }
+  }
+}
+/* ===== 通用盘心文字 ===== */
+function buildCenter(svg, valSize){
+  const val = el("text", {x:CX, y:CY+42, "text-anchor":"middle", class:"dialval"});
+  val.setAttribute("font-size", valSize);
+  const sub = el("text", {x:CX, y:CY+62, "text-anchor":"middle", class:"dialsub"});
+  svg.appendChild(val); svg.appendChild(sub);
+  return {val, sub};
+}
+/* ===== 缓动指针/弧动画器：值 → 渲染回调 ===== */
+function animator(render){
+  let cur = null, from = null, to = null, t0 = 0, raf = 0;
+  const ease = t => 1 - Math.pow(1 - t, 3);
+  function frame(ts){
+    if(!t0) t0 = ts;
+    const k = Math.min(1, (ts - t0) / 600);
+    render(from + (to - from) * ease(k));
+    if(k < 1) raf = requestAnimationFrame(frame); else cur = to;
+  }
+  return {
+    set(v){
+      if(cur === null){ cur = v; render(v); return; }
+      from = cur; to = v; t0 = 0;
+      cancelAnimationFrame(raf); raf = requestAnimationFrame(frame);
+    },
+    snap(v){ cur = v; cancelAnimationFrame(raf); render(v); }
+  };
+}
+
+/* ================================================================
+   A · 新能源简洁（弧量填充，无指针）
+   ================================================================ */
+function buildNev(svgV, svgP){
+  const defs = el("defs", {});
+  defs.innerHTML =
+    `<linearGradient id="gv" x1="0" y1="1" x2="1" y2="0">
+       <stop offset="0" stop-color="#2DD4BF"/><stop offset="1" stop-color="#34D399"/></linearGradient>`;
+  svgV.appendChild(defs);
+  // 电压：满弧轨道 + 值弧 + 红/琥珀端
+  svgV.appendChild(el("path", {d:arcPath(R-10, START, START+SWEEP), class:"nevTrack"}));
+  const amberV = el("path", {d:arcPath(R-10, START, ang(V_MIN,V_MAX,V_AMBER)), class:"nevAmber"});
+  const redV = el("path", {d:arcPath(R-10, ang(V_MIN,V_MAX,V_RED), START+SWEEP), class:"nevRed"});
+  const fillV = el("path", {d:"", class:"nevFill", fill:"none", stroke:"url(#gv)"});
+  svgV.appendChild(fillV);
+  // 警示带压在填充之上：填充进入区间即被染色（低电琥珀 / 过充红）
+  svgV.appendChild(amberV); svgV.appendChild(redV);
+  buildTicks(svgV, V_MIN, V_MAX, 1, 5, 10, false, false);
+  const cv = buildCenter(svgV, 30);
+  // 功率：满弧轨道 + 中零双向填充（W 域；0 位右侧按阶梯三色带、左侧充电绿带）
+  svgP.appendChild(el("path", {d:arcPath(R-10, START, START+SWEEP), class:"nevTrack"}));
+  svgP.appendChild(el("path", {d:arcPath(R-10, ang(-P_MAX_W,P_MAX_W,-P_CHG_W), ang(-P_MAX_W,P_MAX_W,0)), class:"nevChgBand"}));
+  ZONES_W.forEach(z => svgP.appendChild(el("path", {
+    d:arcPath(R-10, ang(-P_MAX_W,P_MAX_W,z.from), ang(-P_MAX_W,P_MAX_W,z.to)), class:"nevZone", stroke:z.color})));
+  const fillP = el("path", {d:"", class:"nevFillP"});
+  svgP.appendChild(fillP);
+  buildTicks(svgP, -P_MAX_W, P_MAX_W, 250, 500, fmtLabelP, false, true);
+  const cp = buildCenter(svgP, 30);
+  const av = animator(f => fillV.setAttribute("d", f <= V_MIN ? "" :
+      arcPath(R-10, START, ang(V_MIN, V_MAX, f))));
+  const ap = animator(w => {
+    const zero = ang(-P_MAX_W, P_MAX_W, 0), a = ang(-P_MAX_W, P_MAX_W, w);
+    fillP.setAttribute("d", Math.abs(w) < 1 ? "" : arcPath(R-10, Math.min(zero, a), Math.max(zero, a)));
+    fillP.setAttribute("stroke", w < -2 ? "var(--teal)" : w > 2 ? zoneColorW(w) : "var(--fg2)");
+  });
+  return {
+    setV(v){ av.set(v); cv.val.textContent = v.toFixed(2); cv.sub.textContent = "总电压 V"; },
+    setP(w, subTxt){ ap.set(w);
+      cp.val.textContent = fmtPowerVal(w);
+      cp.sub.textContent = subTxt; },
+    rest(){ av.snap(V_MIN); ap.snap(0); cv.val.textContent = "--"; cv.sub.textContent = "";
+      cp.val.textContent = "--"; cp.sub.textContent = ""; }
+  };
+}
+const zoneColorW = w => { for(const z of ZONES_W) if(w <= z.to + 1e-9) return z.color; return "#F87171"; };
+
+/* ===== 功率显示单位（W 默认 / kW 可切换，localStorage 记忆） ===== */
+let useKw = localStorage.getItem("maibmsPowerKw") === "1";   // 默认 W
+const fmtLabelP = t => {                                     // 环上数字：W 每 2k 一标，kW 每 1k 一标
+  if (t % 2000 !== 0) return null;
+  if (useKw) return (t > 0 ? "+" : "") + t / 1000;
+  return t === 0 ? "0" : String(t);
+};
+const fmtPowerVal = w => useKw ? (w > 0 ? "+" : "") + (w / 1000).toFixed(2)
+                              : (w > 0 ? "+" : "") + Math.round(w);
+const fmtPowerSub = (w, a) => (w < 0 ? "充电 " : "") +
+  (useKw ? Math.abs(w / 1000).toFixed(2) + "kW" : Math.round(Math.abs(w)) + "W") +
+  " · " + (a > 0 ? "+" : "") + a.toFixed(1) + "A";
+
+/* ===== 当前仪表实例与渲染 ===== */
+const svgV = document.getElementById("dialV"), svgP = document.getElementById("dialP");
+let inst = null;
+function initCluster(){
+  svgV.innerHTML = ""; svgP.innerHTML = "";
+  inst = buildNev(svgV, svgP);
+  render();
+}
+
+/* ================================================================
+   随机数据模拟（仅原型演示）：随机游走 + 物理自洽
+   ================================================================ */
+const SCN = {
+  run:  {iMin:8,  iMax:25},                       // 放电
+  chg:  {iMin:-18, iMax:-8},                      // 充电
+  idle: {iMin:-1, iMax:1},                        // 待机
+  big:  {iMin:35, iMax:50, warnOver:42},          // 重载（超 42A 挂过流告警）
+};
+const S = { mode:"nev", scn:"run", paused:false, connected:true,
+  soc:76, i:12.4, v:87.9, mos:38, runSec:12*86400+3*3600+26*60+15, warn:false,
+  cellJit: Array.from({length:CELL_N}, () => (Math.random()-0.5) * 0.02) };
+
+function simStep(){
+  const sc = SCN[S.scn];
+  // 电流随机游走并平滑；SOC 触底/充满时模拟保护板切断（放电 MOS 停发）
+  const empty = S.soc <= 0.05 && S.i > 0, full = S.soc >= 99.95 && S.i < 0;
+  if (!empty && !full) {
+    const target = sc.iMin + Math.random() * (sc.iMax - sc.iMin);
+    S.i += (target - S.i) * 0.35 + (Math.random() - 0.5) * 1.2;
+    S.i = Math.max(sc.iMin - 1, Math.min(sc.iMax + 1, S.i));
+  } else {
+    S.i += (0 - S.i) * 0.5;                     // MOS 切断，电流归零
+  }
+  // SOC 漂移（演示 ×240 加速）
+  S.soc -= S.i / 3600 / CAP_AH * 100 * 240 * 0.9;
+  S.soc = Math.max(0, Math.min(100, S.soc));
+  // 电压 = OCV − 压降 + 抖动
+  const ocv = (3.0 + 1.2 * S.soc / 100) * CELL_N;
+  S.v = Math.max(V_MIN + 1.5, Math.min(V_MAX - 1.5, ocv - S.i * 0.03 + (Math.random() - 0.5) * 0.12));
+  // 温度随机游走：重载偏高
+  const mosBase = S.scn === "big" ? 44 : 33;
+  S.mos = Math.max(25, Math.min(60, S.mos + (Math.random()-0.45) * 0.8 + (mosBase - S.mos) * 0.06));
+  S.runSec += 1;
+  S.warn = !!(sc.warnOver && S.i > sc.warnOver);
+  // 单体抖动缓慢漂移（压差 5~60mV）
+  S.cellJit = S.cellJit.map(j => Math.max(-0.03, Math.min(0.03, j + (Math.random()-0.5) * 0.006)));
+  render();
+}
+
+function fmtRemainMin(min){
+  if(!(min > 0)) return "--";
+  if(min < 60) return Math.round(min) + "分";
+  if(min < 1440){ const h = min/60|0, m = Math.round(min%60); return m ? h+"时"+m+"分" : h+"时"; }
+  const d = min/1440|0, h = Math.round(min%1440/60); return h ? d+"天"+h+"时" : d+"天";
+}
+
+function render(){
+  const on = S.connected;
+  const powerW = S.v * S.i;
+  // 双盘
+  if(on){
+    inst.setV(S.v);
+    inst.setP(powerW, fmtPowerSub(powerW, S.i));
+  } else inst.rest();
+  // 中央芯区
+  document.getElementById("socNum").textContent = on ? Math.round(S.soc) : "--";
+  const chip = document.getElementById("stateChip");
+  chip.textContent = !on ? "未连接" : S.i < -0.2 ? "充电" : S.i > 0.2 ? "放电" : "待机";
+  chip.className = "c-state" + (!on ? " idle" : S.i < -0.2 ? " charge" : S.i > 0.2 ? "" : " idle");
+  const bar = document.getElementById("socBar");
+  const lit = on ? Math.round(S.soc / 10) : 0;
+  [...bar.children].forEach((s, i2) => s.classList.toggle("lit", i2 < lit));
+  bar.classList.toggle("low", on && S.soc < 15);
+  document.getElementById("boltRow").textContent = (on && S.i < -0.2) ? "⚡ ⚡" : "";
+  const remainAh = S.soc / 100 * CAP_AH;
+  document.getElementById("remChg").textContent = (on && S.i < -0.5) ?
+    fmtRemainMin((CAP_AH - remainAh) / Math.abs(S.i) * 60) : "--";
+  document.getElementById("remDis").textContent = (on && S.i > 0.5) ?
+    fmtRemainMin(remainAh / S.i * 60) : "--";
+  // 灯
+  const L = (id, cls, on2) => document.getElementById(id).className = "c-light" + (on2 ? " " + cls : "");
+  L("ledLink", "on-green", on);
+  L("ledChgMos", "on-teal", on && S.i < -0.2);
+  L("ledDisMos", "on-green", on && S.i > 0.2);
+  L("ledBal", "on-blue", on && S.soc > 60 && S.soc < 95);   // 演示：高电量段均衡
+  L("ledWarn", "on-amber", on && S.warn);
+  L("ledProt", "on-red", false);
+  // 顶/底条
+  document.getElementById("topDot").className = "dot" + (on ? "" : " off");
+  document.getElementById("bWarn").textContent = on && S.warn ? "⚠ 放电过流告警" : "";
+  const vc = S.v / CELL_N;
+  const hi = vc + Math.max(...S.cellJit), lo = vc + Math.min(...S.cellJit);
+  document.getElementById("bCellHi").textContent = on ? hi.toFixed(3) : "--";
+  document.getElementById("bCellHiIdx").textContent = on ? S.cellJit.indexOf(Math.max(...S.cellJit)) + 1 : "-";
+  document.getElementById("bCellLo").textContent = on ? lo.toFixed(3) : "--";
+  document.getElementById("bCellLoIdx").textContent = on ? S.cellJit.indexOf(Math.min(...S.cellJit)) + 1 : "-";
+  document.getElementById("bDelta").textContent = on ? (hi - lo).toFixed(3) : "--";
+  document.getElementById("bAvg").textContent = on ? vc.toFixed(3) : "--";
+  document.getElementById("bMos").textContent = on ? S.mos.toFixed(1) : "--";
+  document.getElementById("bCap").textContent = on ? remainAh.toFixed(1) : "--";
+  document.getElementById("bAmp").textContent = on ? (S.i > 0 ? "+" : "") + S.i.toFixed(1) : "--";
+  document.getElementById("topRun").textContent = "运行 " + fmtRun(S.runSec);
+  document.getElementById("cluster").style.opacity = on ? 1 : .82;
+}
+function fmtRun(sec){
+  const d = sec/86400|0;
+  const hms = [sec%86400/3600|0, sec%3600/60|0, sec%60|0].map(x => String(x).padStart(2,"0")).join(":");
+  return (d ? d+"天 " : "") + hms;
+}
+
+/* ===== 控制台接线 ===== */
+document.getElementById("unitSeg").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  document.querySelectorAll("#unitSeg button").forEach(x => x.classList.toggle("on", x === b));
+  useKw = b.dataset.u === "kw";
+  localStorage.setItem("maibmsPowerKw", useKw ? "1" : "0");
+  initCluster();                       // 刻度标签与盘心格式随单位，整盘重建
+});
+document.getElementById("scnRow").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  document.querySelectorAll("#scnRow button").forEach(x => x.classList.toggle("on", x === b));
+  S.scn = b.dataset.s; S.connected = S.scn !== "off"; render();
+});
+document.getElementById("pauseBtn").addEventListener("click", e => {
+  S.paused = !S.paused; e.target.classList.toggle("on", S.paused);
+  e.target.textContent = S.paused ? "继续" : "暂停";
+});
+document.getElementById("wRow").addEventListener("click", e => {
+  const b = e.target.closest("button"); if(!b) return;
+  document.querySelectorAll("#wRow button").forEach(x => x.classList.toggle("on", x === b));
+  const w = b.dataset.w;
+  document.getElementById("stage").style.width = w === "100%" ? "100%" : w + "px";
+  document.getElementById("wNow").textContent = w === "100%" ? "随窗口" : w + "px";
+});
+
+/* ===== SOC 段初始化 + 启动 ===== */
+const bar = document.getElementById("socBar");
+for(let i2 = 0; i2 < 10; i2++) bar.appendChild(Object.assign(document.createElement("span"), {className:"seg"}));
+document.querySelectorAll("#unitSeg button").forEach(x =>
+  x.classList.toggle("on", (x.dataset.u === "kw") === useKw));
+initCluster();
+setInterval(() => { if(!S.paused && S.connected) simStep(); }, 900);
+</script>
+</body>
+</html>

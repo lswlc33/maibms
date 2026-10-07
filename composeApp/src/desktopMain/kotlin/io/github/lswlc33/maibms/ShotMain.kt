@@ -264,12 +264,21 @@ private fun shoot(shot: Shot, outDir: File) {
 }
 
 fun main(args: Array<String>) {
-    val size = System.getenv("SHOT_SIZE")?.toIntOrNull()
-    if (size != null) {
-        // 窄屏档：MI6 实测 360x640dp，用于发现 411dp 下看不出来的挤压
-        shotW = size
-        shotH = (size * 640 / 360)
-        shotSuffix = "-${size}"
+    val sizeSpec = System.getenv("SHOT_SIZE")
+    if (sizeSpec != null) {
+        // 两种口径：纯数字 = 窄屏档（宽 size、高按 640/360 比例）；"WxH" = 任意画布（横屏表盘 914x411 用这个）
+        val wxh = sizeSpec.split('x', 'X').mapNotNull { it.trim().toIntOrNull() }
+        if (wxh.size == 2) {
+            shotW = wxh[0]; shotH = wxh[1]
+            shotSuffix = "-${wxh[0]}x${wxh[1]}"
+        } else {
+            val size = sizeSpec.toIntOrNull()
+            if (size != null) {
+                shotW = size
+                shotH = (size * 640 / 360)
+                shotSuffix = "-${size}"
+            }
+        }
     }
     val outDir = File(args.firstOrNull() ?: "build/shots").apply { mkdirs() }
     val only = args.drop(1)

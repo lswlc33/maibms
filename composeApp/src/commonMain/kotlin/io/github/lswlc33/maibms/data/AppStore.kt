@@ -184,6 +184,15 @@ object AppStore {
     private const val KEY_POWER_GAUGE = "ui.powerGauge"
     private const val KEY_POWER_STAGES = "ui.powerStagesW"
 
+    // ---- 横屏表盘 ----
+
+    /** 表盘功率盘显示单位：true=kW，false=W（默认，即「瓦」） */
+    var clusterPowerKw: Boolean
+        get() = get(KEY_CLUSTER_POWER_KW) == "1"
+        set(v) = put(KEY_CLUSTER_POWER_KW, if (v) "1" else "0")
+
+    private const val KEY_CLUSTER_POWER_KW = "cluster.powerKw"
+
     private const val KEY_AUTOCONN = "device.autoReconnect"
     private const val KEY_AUTOUP = "device.autoUpgradeTarget"
     internal const val KEY_PROFILES_V1 = "device.profiles.v1"   // 历史设备档案 JSON（DeviceProfiles 读写）
