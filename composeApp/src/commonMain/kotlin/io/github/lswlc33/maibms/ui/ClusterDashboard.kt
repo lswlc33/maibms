@@ -10,12 +10,15 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -92,7 +95,10 @@ fun ClusterDashboard(
             .background(Brush.verticalGradient(listOf(ClusterFace0, ClusterFace1)))
     ) {
         val u = maxWidth / 100f   // 容器宽的 1%（原型 cqw 的等价物），全部字号/间距由它派生
-        Column(Modifier.fillMaxSize()) {
+        // 横屏是全屏 edge-to-edge：让开刘海/状态栏与手势条（K90 实测顶条压状态栏）
+        Column(
+            Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())
+        ) {
             // ---- 顶条 ----
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = u * 1.9f, vertical = u * 0.9f)
