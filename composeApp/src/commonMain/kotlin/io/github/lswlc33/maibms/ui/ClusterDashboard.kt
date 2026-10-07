@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -46,6 +48,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.data.AppStore
@@ -89,15 +92,28 @@ fun ClusterDashboard(
     val stalled by Bms.repository.stalled.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
     val linkLost = connected && stalled
+    // 沉浸：表盘在组合期间隐藏状态栏+手势条（边缘滑动临时呼出），离开表盘自动恢复
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        systemBarsImmersive(true)
+        onDispose { systemBarsImmersive(false) }
+    }
 
     BoxWithConstraints(
         modifier.fillMaxSize()
             .background(Brush.verticalGradient(listOf(ClusterFace0, ClusterFace1)))
     ) {
         val u = maxWidth / 100f   // 容器宽的 1%（原型 cqw 的等价物），全部字号/间距由它派生
-        // 横屏是全屏 edge-to-edge：让开刘海/状态栏与手势条（K90 实测顶条压状态栏）
+        // 异形屏避让：safeDrawing（挖孔/状态栏/手势条——需窗口开 ALWAYS cutout 才报告挖孔）
+        // + 屏幕圆角半径（四角最大值），背景仍铺满全屏，只有内容内缩
+        val insets = WindowInsets.safeDrawing.asPaddingValues()
+        val corner = screenCornerRadius()
         Column(
-            Modifier.fillMaxSize().padding(WindowInsets.safeDrawing.asPaddingValues())
+            Modifier.fillMaxSize().padding(
+                start = insets.calculateStartPadding(LayoutDirection.Ltr) + corner,
+                end = insets.calculateEndPadding(LayoutDirection.Ltr) + corner,
+                top = insets.calculateTopPadding(),
+                bottom = insets.calculateBottomPadding(),
+            )
         ) {
             // ---- 顶条 ----
             Row(
