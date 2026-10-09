@@ -454,6 +454,12 @@ class BmsRepository(
         manualDisconnect.value = false
         AppStore.autoReconnect = true
         resetSessionState()
+        // resetSessionState 里的 clearForRealDevice() 会清掉设备名（本意是防快照预览的名字残留），
+        // 但这里连的就是同一台设备，必须立刻回填——否则重连成功后大卡的设备名和电量百分比
+        // 会一直显示「--」（百分比以设备名判断"是否见过设备"）。
+        // 注：connectTo() 虽先设了名字，但它末尾也调本函数，一样会被 reset 清掉，所以修复点在这里
+        MockBms.connectedDeviceName.value =
+            DeviceProfiles.find(address ?: MockBms.savedAddress)?.displayName ?: AppStore.savedDeviceName
         // 清空会话后立刻回灌该设备的配置缓存：连接期间配置页不至于从有值闪回空值，
         // 连接失败（板子不在）时也还留着上次成功连接的设置项可看
         loadParamsCacheIntoSession(address ?: MockBms.savedAddress)

@@ -313,6 +313,15 @@ fun BatteryCard(
     // 文字前景用 onSurface（不是 onSurfaceVariant）：轨道/填充都是同色系淡底，
     // 灰字对比度不足，只有主前景色才够
     val fillAlpha = if (dark) 0.50f else 0.40f
+    // 设备名/见过设备：广播名可能是空串（部分设备常见），空白行看着像"名字丢了"——
+    // 有连接/有数据时兜底「未命名设备」；「见过设备」也不再看名字这一项，
+    // 已连接或已有数据都算，避免名字缺失把电量百分比一起带成 "--"
+    val devName = when {
+        status.deviceName.isNotBlank() && status.deviceName != "--" -> status.deviceName
+        status.connected || status.hasData -> "未命名设备"
+        else -> "--"
+    }
+    val everConnected = status.deviceName != "--" || status.connected || status.hasData
     Box(
         modifier
             .fillMaxWidth()
@@ -347,7 +356,7 @@ fun BatteryCard(
                     )
                 }
                 Text(
-                    status.deviceName,
+                    devName,
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
@@ -382,7 +391,6 @@ fun BatteryCard(
                         .padding(horizontal = 10.dp, vertical = 3.dp)
                 ) {
                     // 右下小块：连接态 + 电量；从未收到数据时显示「未连接 · --」而非误导性的「重连中 · 0%」
-                    val everConnected = status.deviceName != "--"
                     val conn = connLabel ?: when {
                         status.connected -> "已连接"
                         everConnected -> "重连中"
@@ -460,8 +468,9 @@ data class Metric(val label: String, val value: String, val unit: String)
 
 /**
  * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下。
- * 大读数下方是小灰字：充电剩余/放电剩余一行（扩展段 86/88，0=设备未报 → "--"），
- * 有值时再补一行已充/距上次充电（扩展段 78/82）；两行都收在本列内，不往右挤立牌。
+ * 大读数下方是小灰字：**按状态只显示一项**剩余时间——充电中给「充电剩余」、放电/静置给
+ * 「放电剩余」（扩展段 86/88，0=设备未报 → "--"），有值时再补一行已充/距上次充电
+ * （扩展段 78/82）；两行都收在本列内，不往右挤立牌。
  * 进度条即**卡片背景本身**：每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
  * 整条切换（500W 用 0~1000 的条、1500W 切 0~2000 的条），配色=节能绿/均衡蓝/运动红；
  * 充电（功率为负）不计量，整条连轨道一起屏蔽，只留读数 + 「充电中」说明。
@@ -535,11 +544,17 @@ fun MetricGridCard(
                         CenterMetric(power, labelColor, Modifier.weight(1f))
                     }
                     // 大读数下方的小灰字：充电/放电剩余（扩展段 86/88，0=设备未报 → "--"）。
-                    // 与上面两个大读数同列对分居中——文字全部收在本列，不往右挤立牌和卡1 的电量角标
-                    Row(Modifier.fillMaxWidth().padding(top = 1.dp)) {
-                        RemainTimeCell("充电剩余", status.remainChargeMin, labelColor, Modifier.weight(1f))
-                        RemainTimeCell("放电剩余", status.remainDischargeMin, labelColor, Modifier.weight(1f))
-                    }
+                    // 只显示与当前状态相关的一项：充电中（P < -20W，与横屏表盘同一死区）给
+                    // 「充电剩余」，放电/静置给「放电剩余」——不再两项并列，免掉恒有一项 "--" 的噪音。
+                    // 文字整行居中收在本列内，不往右挤立牌和卡1 的电量角标
+                    val chargingNow = hasData && powerW < -20
+                    Text(
+                        (if (chargingNow) "充电剩余 " else "放电剩余 ") +
+                            fmtRemainingMin(if (chargingNow) status.remainChargeMin else status.remainDischargeMin),
+                        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
+                        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
+                    )
                     // 本次充电时长/上次充电间隔（扩展段 78/82）：有值才出现的一行，整行居中
                     val statLine = buildList {
                         if (status.thisChargeSec > 0) add("已充 " + fmtDurationSec(status.thisChargeSec))
@@ -591,17 +606,6 @@ private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Mod
                  modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
         }
     }
-}
-
-/** 卡3 大读数下方的小灰字单元：与上方对应的读数居中对齐（分钟粒度，0=设备未报 → "--"） */
-@Composable
-private fun RemainTimeCell(label: String, min: Int, color: Color, modifier: Modifier = Modifier) {
-    Text(
-        label + " " + fmtRemainingMin(min),
-        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = color,
-        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
-        modifier = modifier.padding(horizontal = 6.dp),
-    )
 }
 
 /**
