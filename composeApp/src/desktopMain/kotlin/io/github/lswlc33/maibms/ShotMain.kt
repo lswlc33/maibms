@@ -223,12 +223,12 @@ private fun paramItem(name: String): io.github.lswlc33.maibms.data.ParamItem {
 }
 
 /**
- * 卡3 背景进度条：固定配一套 1/2/3kW 阶梯并确保开启——否则卡面只有「双击关闭」提示、
- * 验收看不到换挡形态；空态截图（SHOT_SEED=0）也要能看出未连接时的中性灰格子。
+ * 卡3 换挡表盘：固定配一套默认四档（副档位 -1500 + 一/二/三档 1/3/5kW）并确保开启——
+ * 否则卡面看不到换挡形态；空态截图（SHOT_SEED=0）也要能看出未连接时的中性灰轨道。
  * 只在截图进程内存里改（ShotMain 不注入落盘 store），不影响桌面端真实偏好。
  */
 private fun seedGaugePrefs() {
-    io.github.lswlc33.maibms.data.AppStore.powerStagesW = listOf(1000, 2000, 3000)
+    io.github.lswlc33.maibms.data.AppStore.powerStagesW = listOf(-1500, 1000, 3000, 5000)
     io.github.lswlc33.maibms.data.AppStore.powerGaugeEnabled = true
 }
 

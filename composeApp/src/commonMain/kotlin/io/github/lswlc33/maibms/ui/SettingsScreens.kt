@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.data.POLL_INTERVAL_PRESETS_MS
 import kotlinx.coroutines.launch
 
 /* ---------- S10 设置主页（外观/连接/关于 的设置项平铺在本页，不再进二级页） ---------- */
@@ -469,6 +470,38 @@ fun DeveloperScreen(onBack: () -> Unit) {
         if (actionNote != null) { kotlinx.coroutines.delay(2000); actionNote = null }
     }
     ScreenScaffold(title = "开发者", onBack = onBack) {
+        // 轮询频率三档：900 更稳更省电 / 600 默认 / 300 数据最跟手（弱信号下可能丢帧）
+        SectionCard {
+            SectionHeader("轮询频率", tail = "默认 600ms")
+            var poll by remember { mutableStateOf(AppStore.pollIntervalMs) }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                POLL_INTERVAL_PRESETS_MS.forEach { ms ->
+                    val selected = poll == ms
+                    Box(
+                        Modifier.weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            .clickable { poll = ms; AppStore.pollIntervalMs = ms }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("${ms}ms", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Text("300ms 数据更跟手（弱信号下可能丢帧）；900ms 更稳更省电",
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp))
+        }
         SectionCard {
             SettingRow(
                 title = "帧级日志（TX/RX 报文）",

@@ -1,7 +1,12 @@
 package io.github.lswlc33.maibms.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -25,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -42,6 +48,7 @@ import ant_bms_open.composeapp.generated.resources.power_gear3
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
+import io.github.lswlc33.maibms.data.DEFAULT_POWER_STAGES
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtDurationSec
 import io.github.lswlc33.maibms.data.fmtRemainingMin
@@ -471,11 +478,14 @@ data class Metric(val label: String, val value: String, val unit: String)
  * 大读数下方是小灰字：**按状态只显示一项**剩余时间——充电中给「充电剩余」、放电/静置给
  * 「放电剩余」（扩展段 86/88，0=设备未报 → "--"），有值时再补一行已充/距上次充电
  * （扩展段 78/82）；两行都收在本列内，不往右挤立牌。
- * 进度条即**卡片背景本身**：每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
+ * 进度条即**卡片背景本身**：放电时每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
  * 整条切换（500W 用 0~1000 的条、1500W 切 0~2000 的条），配色=节能绿/均衡蓝/运动红；
- * 充电（功率为负）不计量，整条连轨道一起屏蔽，只留读数 + 「充电中」说明。
- * 右下角状态立牌随状态切图（充电/一档/二档/三档，composeResources 贴纸），读数随之左移。
- * **双击卡片**开/关（Toast 提示开/关成功）；长按弹窗设置阶梯（第 1 档必填，2/3 档可空）。
+ * **副档位**（充电与动能回收共用，默认 -1500W）画成节能绿的反向条（右→左），
+ * 静置（|功率|<20W）当 0 显示第 1 档空条。
+ * 右下角状态立牌随状态切图（充电/一档/二档/三档，composeResources 贴纸），读数左移；
+ * 功率顶破末档上限时立牌左右轻摇表示到顶。
+ * **双击卡片**开/关（关闭后右上角留一个小圆点提示，Toast 提示开/关成功）；
+ * 长按弹窗设置阶梯（副档位 + 三档必填，默认 -1500/1000/3000/5000）。
  * 其余指标（总压/循环/平均/最高/最低/压差）已由别的卡片展示，这里不再重复。
  */
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -501,32 +511,41 @@ fun MetricGridCard(
         },
         onLongClick = { editing = true },
     )
-    /** 表盘特性是否启用（开关 + 已设阶梯）：背景条与状态立牌都以它为前提 */
+    /** 表盘特性是否启用（双击开关）：背景条、状态立牌、关闭圆点都以它为前提 */
     val gaugeActive = gaugeOn && stages.isNotEmpty()
-    /** 充电中（功率为负）：背景进度条整条屏蔽，但立牌切到充电图 */
-    val charging = powerW < 0
-    val bgOn = gaugeActive && !charging
+    val bgOn = gaugeActive
+    /** 当前条号：0 = 副档位（充电/动能回收，反向绿条）；1/2/3 = 放电档 */
+    val barIdx = if (hasData) powerGaugeBarIndex(powerW, stages) else 1
+    /** 顶破末档上限：立牌左右轻摇表示到顶 */
+    val overTop = hasData && powerGaugeOverTop(powerW, stages)
     // 进度条作底时文字换用 onSurface 系：onSurfaceVariant 的灰在色块上对比度不足
     val labelColor = if (bgOn) MaterialTheme.colorScheme.onSurface.copy(alpha = .72f)
                      else MaterialTheme.colorScheme.onSurfaceVariant
-    /** 右侧状态立牌（充电/一档/二档/三档各一张）：表关了、没设阶梯或未连接时不占位 */
+    // 立牌「到顶」左右轻摇：只在 overTop 时才挂载无限动画——常驻的无限动画会让
+    // 仪表盘永不空闲、一直满帧刷新（纯耗电）；未到顶时角度恒 0，视觉完全一致
+    val shakeDeg = rememberTopShakeDeg(overTop)
+    /** 状态立牌（充电/一档/二档/三档各一张）：表关了或未连接时不占位 */
     val sticker: DrawableResource? = when {
         !gaugeActive || !hasData -> null
-        charging -> Res.drawable.power_charging
-        else -> when (powerGearNo(powerW, stages)) {
-            1 -> Res.drawable.power_gear1
-            2 -> Res.drawable.power_gear2
-            else -> Res.drawable.power_gear3
-        }
+        barIdx == 0 -> Res.drawable.power_charging
+        barIdx == 1 -> Res.drawable.power_gear1
+        barIdx == 2 -> Res.drawable.power_gear2
+        else -> Res.drawable.power_gear3
     }
 
     Column(
         modifier.fillMaxWidth().clip(CardShape)
-            .background(MaterialTheme.colorScheme.surface)   // 档位格之间的分档缝就是这层底
+            .background(MaterialTheme.colorScheme.surface)   // 底色：进度条未覆盖时的轨道区
             .then(cardClickable)
     ) {
         Box(Modifier.fillMaxWidth()) {
             if (bgOn) PowerGaugeBackground(powerW, stages, hasData, Modifier.matchParentSize())
+            // 关闭态提示点：卡片被双击关掉后右上角留一个小圆点（再次双击即恢复）
+            if (!gaugeOn) Box(
+                Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 9.dp)
+                    .size(6.dp).clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = .45f))
+            )
             // 上下内边距压到 2dp：卡片高度尽量由读数决定，立牌靠右下角
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = CardPadding, vertical = 2.dp)
@@ -567,12 +586,16 @@ fun MetricGridCard(
                         modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
                     )
                 }
-                // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）
+                // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）；
+                // 顶破末档时左右轻摇表示到顶
                 sticker?.let { res ->
                     Image(
                         painterResource(res),
                         contentDescription = null,
-                        modifier = Modifier.align(Alignment.Bottom).size(80.dp),
+                        modifier = Modifier
+                            .align(Alignment.Bottom)
+                            .size(80.dp)
+                            .graphicsLayer { rotationZ = shakeDeg },
                     )
                 }
             }
@@ -584,7 +607,7 @@ fun MetricGridCard(
             onDismiss = { editing = false },
             onConfirm = { v ->
                 stages = v; AppStore.powerStagesW = v; editing = false
-                showSystemToast(if (v.isEmpty()) "未设置功率阶梯" else "功率阶梯已设置：${v.joinToString("/")}W")
+                showSystemToast("功率阶梯已设置：${v.joinToString("/")}W")
             },
         )
     }
@@ -609,29 +632,54 @@ private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Mod
 }
 
 /**
- * 全卡背景进度条（整条切换制）：每个档位一条**完整**进度条，刻度 0~本档上限，
- * 功率落在哪个档整条就切到哪条——500W 用 0~1000 的条、1500W 切 0~2000 的条，
- * 填充 = 功率/本档上限，跨档瞬间整条换色：节能绿 → 均衡蓝 → 运动红（单档恒绿）。
+ * 「到顶摇晃」角度：仅在 [active] 期间挂载无限动画（-5°↔+5° 往复），否则返回 0。
+ * 关键在**条件挂载**——`rememberInfiniteTransition` 一旦组合就永远驱动帧循环，
+ * 会让仪表盘常年满帧刷新（纯耗电）；把动画关进 `if (active)` 后，未到顶时
+ * 这块组合没有任何动画在跑，到顶才起振、离顶即停。
+ */
+@Composable
+private fun rememberTopShakeDeg(active: Boolean): Float {
+    if (!active) return 0f
+    val shake = rememberInfiniteTransition(label = "topShake")
+    val deg by shake.animateFloat(
+        initialValue = -5f, targetValue = 5f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 130, easing = LinearEasing), RepeatMode.Reverse),
+        label = "shakeDeg",
+    )
+    return deg
+}
+
+/**
+ * 全卡背景进度条：放电档 = 每个档位一条**完整**进度条（刻度 0~本档上限），功率到档整条
+ * 切换，填充 = (功率/本档上限)²（前段压缩后段冲刺），跨档整条换色：节能绿 → 均衡蓝 → 运动红。
+ * **副档位**（充电/动能回收共用）= 节能绿同款配色、固定量程（默认 1500W）、**反向填充**
+ * （右→左），填充 = (|功率|/副档位量程)²；静置死区内为第 1 档空条。
  * 未连接/无数据整条中性灰——空态别看着像低电/告警。
  */
 @Composable
 private fun PowerGaugeBackground(powerW: Int?, stages: List<Int>, hasData: Boolean, modifier: Modifier = Modifier) {
     val dark = isDarkScheme()
-    val barIdx = if (hasData && stages.isNotEmpty()) powerGaugeBarIndex(powerW ?: 0, stages) else 0
+    val caps = powerGaugeCaps(stages)
+    val barIdx = if (hasData && powerW != null) powerGaugeBarIndex(powerW, stages) else 1
     val fill = if (hasData && powerW != null) powerGaugeBarFill(powerW, stages) else 0f
+    val reversed = barIdx == 0   // 副档位：充电/动能回收，反向（右→左）
     val base = when {
         !hasData -> BmsColors.OffGray
-        stages.size <= 1 || barIdx == 0 -> BmsColors.GreenFill           // 节能档
-        barIdx == stages.lastIndex -> BmsColors.BadRed                   // 运动档（末档=红区）
+        reversed -> BmsColors.GreenFill                                  // 副档位=节能绿同款
+        caps.size <= 1 || barIdx == 1 -> BmsColors.GreenFill             // 节能档
+        barIdx >= caps.size -> BmsColors.BadRed                          // 运动档（末档=红区）
         else -> BmsColors.ChartBlue                                      // 均衡档
     }
-    // 填充与换色都走短动画：拖测试滑条时进度跟手，跨档瞬间是整条渐变而非硬切
+    // 填充与换色都走短动画：进度跟手，跨档瞬间是整条渐变而非硬切
     val animFill by animateFloatAsState(fill, tween(180))
     val animBase by animateColorAsState(base, tween(250))
     // 填充明度与卡1 电池大卡完全同参：.40（深色 .50）叠在同色 .18/.22 轨道上，
     // 两张卡的色块亮度一致——不过纯也不过淡
     val fillAlpha = if (dark) 0.50f else 0.40f
-    Box(modifier.background(animBase.copy(alpha = if (dark) .22f else .18f))) {   // 轨道=同色淡底
+    Box(
+        modifier.background(animBase.copy(alpha = if (dark) .22f else .18f)),   // 轨道=同色淡底
+        contentAlignment = if (reversed) Alignment.CenterEnd else Alignment.CenterStart,
+    ) {
         if (animFill > 0f) Box(
             Modifier.fillMaxHeight().fillMaxWidth(animFill.coerceIn(0f, 1f))
                 .background(animBase.copy(alpha = fillAlpha))
@@ -639,33 +687,41 @@ private fun PowerGaugeBackground(powerW: Int?, stages: List<Int>, hasData: Boole
     }
 }
 
-/** 功率阶梯设置弹窗：3 个输入位放各档的**上限**（W），第 1 档必填，2/3 档留空即不设；非空必须为正整数 */
+/**
+ * 功率阶梯设置弹窗：**四个档位全部必填**——副档位（充电/动能回收共用，负数或填正数自动取负）
+ * ＋ 三个放电档上限（正整数、互不相同）。不需要的档位可以把上限设得很高。
+ */
 @Composable
 private fun PowerStageDialog(
     initial: List<Int>,
     onDismiss: () -> Unit,
     onConfirm: (List<Int>) -> Unit,
 ) {
-    var s1 by remember { mutableStateOf(initial.getOrNull(0)?.toString() ?: "1000") }
-    var s2 by remember { mutableStateOf(initial.getOrNull(1)?.toString() ?: "") }
-    var s3 by remember { mutableStateOf(initial.getOrNull(2)?.toString() ?: "") }
+    val sub0 = initial.firstOrNull { it < 0 } ?: DEFAULT_POWER_STAGES.first()
+    val caps0 = powerGaugeCaps(initial).ifEmpty { DEFAULT_POWER_STAGES.drop(1) }
+    var sub by remember { mutableStateOf(sub0.toString()) }
+    var s1 by remember { mutableStateOf(caps0.getOrNull(0)?.toString() ?: "1000") }
+    var s2 by remember { mutableStateOf(caps0.getOrNull(1)?.toString() ?: "3000") }
+    var s3 by remember { mutableStateOf(caps0.getOrNull(2)?.toString() ?: "5000") }
     var error by remember { mutableStateOf<String?>(null) }
     fun parsed(): List<Int>? {
-        val out = mutableListOf<Int>()
-        listOf(s1, s2, s3).forEachIndexed { i, t ->
-            val trimmed = t.trim()
-            if (trimmed.isEmpty()) { if (i == 0) return null; return@forEachIndexed }
-            val v = trimmed.toIntOrNull() ?: return null
-            if (v <= 0) return null
-            out.add(v)
-        }
-        // 必须在这里排序：onConfirm 把返回值原样赋给卡面状态（AppStore 的 setter 不排序，
-        // getter 才排），乱序值会让背景条出现 1 单位宽的负差格子，档位语义崩坏到重启才自愈
-        return out.distinct().sorted()
+        val subV = sub.trim().toIntOrNull() ?: return null
+        if (subV == 0) return null
+        val caps = listOf(s1, s2, s3).map { it.trim().toIntOrNull() ?: return null }
+        if (caps.any { it <= 0 }) return null
+        if (caps.distinct().size < 3) return null
+        // 副档位统一存负数；正档排序在这里做（onConfirm 把返回值原样赋给卡面状态）
+        return listOf(-kotlin.math.abs(subV)) + caps.sorted()
     }
-    val fields = listOf("第 1 档上限（W）" to s1, "第 2 档上限（W，可选）" to s2, "第 3 档上限（W，可选）" to s3)
+    val fields = listOf(
+        "副档位上限（W，充电/动能回收）" to sub,
+        "一档上限（W）" to s1,
+        "二档上限（W）" to s2,
+        "三档上限（W）" to s3,
+    )
     val setters = listOf<(String) -> Unit>(
-        { s1 = it; error = null }, { s2 = it; error = null }, { s3 = it; error = null },
+        { sub = it; error = null }, { s1 = it; error = null },
+        { s2 = it; error = null }, { s3 = it; error = null },
     )
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -673,12 +729,14 @@ private fun PowerStageDialog(
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
             Text("功率阶梯（换挡进度条）", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-            Text("每个数字是该档上限（W）：功率升到上限就换下一档。第 1 档必填，后两档可留空（如 1000/2000/3000）",
+            Text("副档位=充电/动能回收共用的量程（如 -1500，填正数也按负值存）；" +
+                    "三个放电档填上限，功率升到上限就换下一档，不需要的档位可以把上限设得很高",
                 fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
             fields.forEachIndexed { i, (label, value) ->
                 OutlinedTextField(
                     value = value,
-                    onValueChange = { setters[i](it.filter { ch -> ch.isDigit() }.take(6)) },
+                    // 副档位框允许前导负号；其余只收数字。6 位上限（999999W）足够覆盖实际量程
+                    onValueChange = { setters[i](it.filter { ch -> ch.isDigit() || (i == 0 && ch == '-') }.take(7)) },
                     label = { Text(label, fontSize = 11.sp) },
                     singleLine = true,
                     textStyle = TextStyle(
@@ -693,7 +751,7 @@ private fun PowerStageDialog(
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = {
                     val v = parsed()
-                    if (v == null) error = "第 1 档必填，且填写的档位都须为正整数（W）"
+                    if (v == null) error = "四个档位都要填：副档位为非零整数，三个放电档为正整数且互不相同"
                     else onConfirm(v)
                 }) { Text("确定", fontWeight = FontWeight.Bold) }
             }
@@ -763,31 +821,54 @@ private fun PwCard(
     }
 }
 
+/** 协议约定 -40℃ = 该路未接传感器（RealtimeDecoder 同注），界面直接隐藏 */
+private const val TEMP_NOT_CONNECTED = -40.0
+
 /**
- * 温度卡：左列 MOS/均衡 两行，右侧 T1~T4 两行两列。
- * 窄屏（360dp 实测）上 T 块一字排开会被挤成「T122.0」，故右侧取 2×2。
+ * 温度卡。未接的 -40 路不显示（通常是 T1~T4 没装探头），按 T 剩余路数收排：
+ * 缺 0/1 个：左列 MOS/均衡 两行 + 右侧 T 两行两列（窄屏 360dp 实测一字排开会挤成「T122.0」）；
+ * 缺 2 个：四块收成 2×2，MOS/均衡 上排、两路 T 下排；缺 3 个：一行 3 个；缺 4 个：一行 2 个。
  */
 @Composable
 fun TempCard(temps: List<Pair<String, Double>>, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
-        SectionHeader("温度", tail = if (temps.isEmpty()) "--" else temps.size.toString() + " 路")
+        val present = temps.filter { it.second != TEMP_NOT_CONNECTED }
+        SectionHeader("温度", tail = if (temps.isEmpty()) "--" else present.size.toString() + " 路")
         if (temps.isEmpty()) {
             Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 2.dp))
             return@SectionCard
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(0.9f)) {
-                TempBox("MOS", temps.firstOrNull { it.first == "MOS" }?.second)
-                TempBox("均衡", temps.firstOrNull { it.first == "均衡" }?.second)
+        val mosEq = present.filter { it.first == "MOS" || it.first == "均衡" }
+        val sensors = present.filter { it.first.startsWith("T") }
+        when (sensors.size) {
+            // 缺 3/4 个：一行 3 个 / 一行 2 个
+            0, 1 -> Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                (mosEq + sensors).forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
             }
-            val sensors = temps.filter { it.first.startsWith("T") }
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(2.1f)) {
-                sensors.chunked(2).forEach { pair ->
+            // 缺 2 个：MOS/均衡 + 两路 T 正好收成 2×2
+            2 -> Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                (mosEq + sensors).chunked(2).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                        pair.forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
-                        // 奇数个时补占位，避免最后一个块被拉宽
-                        if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        row.forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
+                        if (row.size == 1) Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+            // 缺 0/1 个：常规布局——左列 MOS/均衡，右侧 T 两行两列
+            else -> Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                if (mosEq.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(0.9f)) {
+                        mosEq.forEach { (k, v) -> TempBox(k, v) }
+                    }
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(2.1f)) {
+                    sensors.chunked(2).forEach { pair ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                            pair.forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
+                            // 奇数个时补占位，避免最后一个块被拉宽
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
                     }
                 }
             }

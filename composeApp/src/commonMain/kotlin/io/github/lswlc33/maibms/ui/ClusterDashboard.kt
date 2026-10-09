@@ -59,6 +59,7 @@ import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtRemainingMin
 import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.PI
 import kotlin.math.sin
 
 /**
@@ -467,7 +468,7 @@ private fun DrawScope.drawCenterText(
 }
 
 private fun pointOn(cx: Float, cy: Float, r: Float, angleDeg: Float): Offset {
-    val rad = angleDeg * Math.PI / 180.0
+    val rad = angleDeg * PI / 180.0
     return Offset(cx + (r * cos(rad)).toFloat(), cy + (r * sin(rad)).toFloat())
 }
 
