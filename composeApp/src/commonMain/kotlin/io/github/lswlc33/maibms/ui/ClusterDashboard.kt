@@ -216,7 +216,8 @@ private fun ClusterMidColumn(
     val remainAh = status.remainCapAh
     Column(
         modifier,
-        verticalArrangement = Arrangement.spacedBy(u * 1.15f),
+        // 居中而不是贴顶：中央列比内容高（16:9 盒里内容只占约一半高度），贴顶会显得整体偏上
+        verticalArrangement = Arrangement.spacedBy(u * 1.15f, Alignment.CenterVertically),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // SOC 大字 + 状态章
@@ -262,18 +263,15 @@ private fun ClusterMidColumn(
         Box(Modifier.height(u * 1.8f)) {
             if (charging) Text("⚡ ⚡", fontSize = (u.value * 1.5).sp, color = ClusterAmber)
         }
-        // 剩余时间（扩展段 86/88；0=设备未报 → "--"）
-        Row(horizontalArrangement = Arrangement.spacedBy(u * 2.4f)) {
-            Text("充电剩余 ", fontSize = (u.value * 1.45).sp, color = ClusterFg2)
-            Text(
-                if (connected && charging) fmtRemainingMin(status.remainChargeMin) else "--",
-                fontSize = (u.value * 1.45).sp, fontWeight = FontWeight.SemiBold, color = ClusterFg,
-            )
-            Text("放电剩余 ", fontSize = (u.value * 1.45).sp, color = ClusterFg2)
-            Text(
-                if (connected && status.power > 20) fmtRemainingMin(status.remainDischargeMin) else "--",
-                fontSize = (u.value * 1.45).sp, fontWeight = FontWeight.SemiBold, color = ClusterFg,
-            )
+        // 剩余时间（扩展段 86/88；0=设备未报 → "--"）：**两行**显示——中央列宽度按 16:9 盒定，
+        // 手机横屏（比 16:9 宽）时一行里塞两组「标签+值」会把末尾的值压成逐字换行，
+        // 改成每个状态各占一行、各自居中
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(u * 0.5f),
+        ) {
+            ClusterRemainLine("充电剩余", if (connected && charging) fmtRemainingMin(status.remainChargeMin) else "--", u)
+            ClusterRemainLine("放电剩余", if (connected && status.power > 20) fmtRemainingMin(status.remainDischargeMin) else "--", u)
         }
         // 六灯排
         // 六灯排：SpaceEvenly 随列宽自适应分布（fixed 间距在 16:9 盒的中央列里会溢出被裁）
@@ -288,6 +286,22 @@ private fun ClusterMidColumn(
         // 剩余 Ah 供剩余时间旁证（占用空间小，跟随底条数据）
         if (linkLost) Text("设备失联 · 数据停流", fontSize = (u.value * 1.2).sp, color = ClusterAmber)
         else if (remainAh > 0) Text("剩余 ${fmt1(remainAh)}Ah", fontSize = (u.value * 1.2).sp, color = ClusterFg3)
+    }
+}
+
+/** 中央芯区「剩余时间」的一行：标签 + 值居中、单行不换行（列窄时靠两行排版，不靠断字） */
+@Composable
+private fun ClusterRemainLine(label: String, value: String, u: Dp) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(u * 0.9f),
+    ) {
+        Text(label, fontSize = (u.value * 1.45).sp, color = ClusterFg2, maxLines = 1, softWrap = false)
+        Text(
+            value,
+            fontSize = (u.value * 1.45).sp, fontWeight = FontWeight.SemiBold, color = ClusterFg,
+            maxLines = 1, softWrap = false,
+        )
     }
 }
 

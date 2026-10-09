@@ -97,6 +97,10 @@
   `Math.PI`，commonMain 的平台中立性门禁（`compileCommonMainKotlinMetadata`）从
   `2ecb080`（横屏表盘上线）起一直失败——后面的 framework 编译、未签名 ipa、模拟器启动
   冒烟全部被跳过，iOS 线实际没再产出过可安装包。改为 `kotlin.math.PI`，本地门禁已过。
+- **横屏仪表中央芯区两处排布修正**：①「充电剩余 / 放电剩余」由一行并排改为**各占一行**
+  ——中央列宽度按 16:9 盒定，手机横屏（比 16:9 宽）时一行塞不下两组「标签+值」，末尾的值
+  此前会被压成逐字换行（933x437 断 2 行、1200x500 断 4 行），现在两行居中、单行不换行；
+  ②中央芯区改为**垂直居中**（原先 Column 贴顶排列，内容在 16:9 盒里显得整体偏上）。
 - **未签名 ipa 自签安装后一点就闪退（Xcode 16 的 debug dylib）**：`xcodebuild` 用 Debug 配置
   打出的 `.app` 里，App 代码（SwiftUI 外壳 + 整个 Kotlin/Compose 运行时，58MB）实际装在
   `iosApp.debug.dylib` 里，主执行文件只是个 71KB 的壳、启动时用 `@rpath` 去加载它。自签工具
