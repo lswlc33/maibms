@@ -29,7 +29,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  # 需要写权限：把未签名 ipa 挂到本次推送对应的 Release 上（见「Attach ipa to release」）
+  contents: write
 
 concurrency:
   group: ios-${{ github.ref }}
@@ -237,6 +238,35 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # 把未签名 ipa 挂到本次推送对应的 Release 上。Release 由 Beta 工作流在同一次推送里
+      # 创建（预发布 v<版本>-beta.N），它通常比 iOS 快得多；这里仍轮询等它出现（最多 8 分钟），
+      # 免得两条工作流竞速时 ipa 又被漏在 Actions 制品里——此前 Release 只有 APK，就是因为
+      # ipa 只上传成了制品。只对 main 的推送生效（ios-target 的推送不产生 Release）。
+      - name: Attach ipa to release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          IPA=build/ipa/maibms-unsigned.ipa
+          SINCE="${{ github.run_started_at }}"
+          for i in $(seq 1 16); do
+            TAG=$(gh release list --limit 20 --json tagName,createdAt \
+              | jq -r --arg since "$SINCE" 'map(select(.createdAt >= $since)) | .[0].tagName // empty')
+            if [ -n "$TAG" ]; then
+              ASSET="maibms-${TAG#v}-unsigned.ipa"
+              cp "$IPA" "build/ipa/$ASSET"
+              gh release upload "$TAG" "build/ipa/$ASSET" --clobber
+              echo "ipa 已挂到 Release $TAG（$ASSET）"
+              exit 0
+            fi
+            echo "等待本次推送的 Release 出现…（第 $i/16 次）"
+            sleep 30
+          done
+          echo "::error::8 分钟内没等到 Release（Beta 工作流是否失败？），ipa 只留在 Actions 制品 ios-unsigned-ipa 里"
+          exit 1
+
       - name: Summary
         run: |
           {
@@ -250,5 +280,6 @@ jobs:
             echo ""
             echo "产物：\`ios-frameworks\`（两档 debugFramework）、\`ios-unsigned-ipa\`（可直接自签安装）、"
             echo "\`ios-smoke-screenshot\`（模拟器启动后的界面截图）"
+            echo "main 的推送还会把 ipa 以 \`maibms-<版本>-unsigned.ipa\` 挂到对应的 Release 上。"
             echo "注：ipa 未签名，需用 Sideloadly/爱思 等工具以你的 Apple ID 自签后安装。"
           } >> "$GITHUB_STEP_SUMMARY"

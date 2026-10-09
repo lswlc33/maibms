@@ -6,6 +6,11 @@
 ## [未发布]
 
 ### 变更
+- **iOS 未签名 ipa 自动挂到 Release**：此前 ipa 只上传成 Actions 制品（`ios-unsigned-ipa`，
+  保留 14 天），Release 里只有 APK——所以每次发布都容易漏掉 iOS 包。现在 main 的推送里，
+  iOS 工作流打包后会等 Beta 工作流建好本次预发布（最多 8 分钟），把 ipa 以
+  `maibms-<版本>-unsigned.ipa` 挂到该 Release；等不到只报一条 error 注解（作业不红），
+  Actions 制品照旧保留。
 - **公共代码去 JVM 化（为 iOS 目标铺路，行为等价）**：commonMain 此前直接用了一批 JVM 专属
   API（`String.format`、`SimpleDateFormat`/`java.time`、`java.io.File`、`HttpURLConnection`、
   `synchronized`、`AtomicBoolean`、`Charsets.US_ASCII`），它们在 Kotlin/Native 上不存在。
