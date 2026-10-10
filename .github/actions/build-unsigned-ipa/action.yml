@@ -34,6 +34,14 @@ runs:
         fi
         cd iosApp && xcodegen generate && cd ..
 
+    - name: 确保 gradlew 可执行
+      shell: bash
+      run: |
+        set -euo pipefail
+        # 工程里的构建阶段会直接调 ./gradlew：仓库里 gradlew 的可执行位如果丢了
+        # （Windows 上检出的常见情况），Xcode 侧会以 "Permission denied" 整段失败
+        chmod +x ./gradlew
+
     - name: 编译 iOS framework 并产出 .app
       shell: bash
       run: |
