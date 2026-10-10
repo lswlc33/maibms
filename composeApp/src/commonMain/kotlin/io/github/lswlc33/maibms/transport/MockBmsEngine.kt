@@ -349,8 +349,11 @@ class MockBmsTransport(
 
     override suspend fun scan(onFound: (ScanDevice) -> Unit) {
         delay(200)
-        onFound(ScanDevice("ANT-BMS-16S", "AA:BB:CC:0E:56:C2", -52))
+        onFound(ScanDevice("ANT-BMS-16S", "AA:BB:CC:0E:56:C2", -52, DeviceFamily.Ant))
         delay(150)
-        onFound(ScanDevice("ANT-BMS-24S", "AA:BB:CC:11:9A:07", -78))
+        onFound(ScanDevice("ANT-BMS-24S", "AA:BB:CC:11:9A:07", -78, DeviceFamily.Ant))
+        // 虚拟电量计（中继器）：信号更强，用于验证“识别/连接/降级”链路（协议在后续阶段接）
+        delay(120)
+        onFound(ScanDevice("EM2APP-1234", "AA:BB:CC:0E:56:C3", -41, DeviceFamily.LuXing))
     }
 }

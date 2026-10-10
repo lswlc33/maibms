@@ -55,6 +55,10 @@ data class BmsStatus(
     val cells: List<CellV> = emptyList(),
     val trendCurrent: List<Float> = emptyList(),
     val trendVolt: List<Float> = emptyList(),
+    /** 电量计中继的保护板品牌（如"蚂蚁保护板"）；保护板直连/未知 = "--" */
+    val relayBoardBrand: String = "--",
+    /** 电量计中继的保护板 MAC；未知 = "--" */
+    val relayBoardMac: String = "--",
 )
 
 /** 参数条目（配置页） */
@@ -284,4 +288,54 @@ object MockBms {
     val chargeSwitch = MutableStateFlow(false)
     val dischargeSwitch = MutableStateFlow(true)
     val balanceSwitch = MutableStateFlow(false)
+
+    /** 当前设备能力位（电量计/保护板不同）；首页按它显隐卡片 */
+    val caps = MutableStateFlow(DeviceCapabilities.Board)
+
+    /**
+     * 电量计读数 → UI 状态（增量合并：只覆盖本次提供的字段，其余保留）。
+     * 与 [updateFromRealtime] 并列，由 [BmsRepository] 在电量计模式下调用。
+     */
+    fun applyMeterReading(r: io.github.lswlc33.maibms.protocol.meter.MeterReading) {
+        if (r.isEmpty) return
+        r.totalVoltage?.let { v -> r.current?.let { c -> pushTrend(v, c) } }
+        r.chMos?.let { chargeSwitch.value = it }
+        r.disMos?.let { dischargeSwitch.value = it }
+        r.balancing?.let { balanceSwitch.value = it }
+        val cur = _status.value
+        val newCells = r.cells?.mapIndexed { i, v -> CellV(index = i + 1, volt = v, isMax = false, isMin = false, balancing = false) }
+        val maxV = r.maxCell ?: r.cells?.maxOrNull()
+        val minV = r.minCell ?: r.cells?.minOrNull()
+        val avgV = r.avgCell ?: r.cells?.takeIf { it.isNotEmpty() }?.average()
+        val deltaV = r.deltaCell ?: if (maxV != null && minV != null) maxV - minV else null
+        _status.value = cur.copy(
+            hasData = true,
+            connected = true,
+            deviceName = r.deviceName ?: cur.deviceName,
+            totalVoltage = r.totalVoltage ?: cur.totalVoltage,
+            current = r.current ?: cur.current,
+            power = r.power ?: cur.power,
+            soc = r.soc ?: cur.soc,
+            totalCapAh = r.totalCapAh ?: cur.totalCapAh,
+            remainCapAh = r.remainCapAh ?: cur.remainCapAh,
+            cycles = r.cycles ?: cur.cycles,
+            battState = r.battState ?: cur.battState,
+            chMos = r.chMos?.let { if (it) "开启" else "关闭" } ?: cur.chMos,
+            disMos = r.disMos?.let { if (it) "开启" else "关闭" } ?: cur.disMos,
+            balance = r.balancing?.let { if (it) "均衡中" else "关闭" } ?: cur.balance,
+            temps = r.temps ?: cur.temps,
+            cells = newCells ?: cur.cells,
+            maxCell = maxV?.let { "%.3f".fmt(it) } ?: cur.maxCell,
+            minCell = minV?.let { "%.3f".fmt(it) } ?: cur.minCell,
+            avgCell = avgV?.let { "%.3f".fmt(it) } ?: cur.avgCell,
+            deltaCell = deltaV?.let { "%.3f".fmt(it) } ?: cur.deltaCell,
+            remainChargeMin = r.remainChargeMin ?: cur.remainChargeMin,
+            remainDischargeMin = r.remainDischargeMin ?: cur.remainDischargeMin,
+            relayBoardBrand = r.relayBoardBrand ?: cur.relayBoardBrand,
+            relayBoardMac = r.relayBoardMac ?: cur.relayBoardMac,
+            trendCurrent = norm(histCurr.toList(), includeZero = true),
+            trendVolt = norm(histVolt.toList(), includeZero = false),
+        )
+        connected.value = true
+    }
 }

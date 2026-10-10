@@ -50,6 +50,7 @@ fun SettingsHomeScreen(
     val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
     val hint by io.github.lswlc33.maibms.data.Bms.repository.connectHint.collectAsState()
     val manual by io.github.lswlc33.maibms.data.Bms.repository.manualDisconnect.collectAsState()
+    val channelActive by io.github.lswlc33.maibms.data.Bms.repository.activeChannel.collectAsState()
     val saved by MockBms.plainPasswords.collectAsState()
     // 关于（身份区）
     val status by MockBms.status.collectAsState()
@@ -57,6 +58,8 @@ fun SettingsHomeScreen(
     val reading by MockBms.paramsReading.collectAsState()
     val bleName by MockBms.connectedDeviceName.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
+    // 电量计（中继器）没有"备用通道"概念：隐藏通信通道入口，避免误导
+    val meterMode = io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value.isMeter
     /** 身份区/状态里的值，空则显示 --（原设备信息页的逻辑） */
     fun v(real: String?, fallback: String) = real?.ifBlank { null } ?: fallback.ifBlank { "--" }
 
@@ -107,6 +110,20 @@ fun SettingsHomeScreen(
                     else -> "未连接"
                 },
             )
+            // 通信通道：真机 BLE 才有（默认 / 备用 A / 备用 B，docs/02 §2.2）；电量计模式不适用
+            if (!meterMode) {
+                val chActive = channelActive
+                SettingRow(
+                    title = "通信通道",
+                    inlineValue = when {
+                        !io.github.lswlc33.maibms.data.Bms.repository.supportsChannelSwitch -> "需真机 BLE"
+                        chActive != null -> "${chActive.label}（${chActive.id}）"
+                        else -> "连接后自动探测"
+                    },
+                    trailing = { Chevron() },
+                    onClick = { onOpen(Route.Channels) },
+                )
+            }
             // 历史设备入口：列表/备注/密码/删除/自动重连目标都在二级页管理
             SettingRow(
                 title = "历史设备",
@@ -143,7 +160,7 @@ fun SettingsHomeScreen(
         SectionCard {
             SectionHeader("关于", tail = "身份区")
             if (reading) InfoBanner("身份区读取中…", kind = "info")
-            else if (!connected && id.isEmpty()) InfoBanner("未连接保护板 · 连接后自动读取身份区", kind = "warn")
+            else if (!connected && id.isEmpty()) InfoBanner("未连接设备 · 连接后自动读取身份区", kind = "warn")
             else if (!connected) InfoBanner("未连接 · 以下为「${MockBms.deviceLabel}」上次成功连接的缓存", kind = "info")
             else if (id.isEmpty()) InfoBanner("身份区暂时读不到（权限不足或设备未就绪）", kind = "warn")
             SettingRow(title = "软件版本", inlineValue = v(id["swVersion"], status.swVersion))
@@ -268,7 +285,7 @@ private fun AboutAppCard() {
             )
             else -> {}
         }
-        InfoBanner("应用只与保护板通信；检查更新时仅访问 GitHub/镜像的公开接口", kind = "info", action = "了解")
+        InfoBanner("应用只与设备通信；检查更新时仅访问 GitHub/镜像的公开接口", kind = "info", action = "了解")
     }
 }
 
@@ -349,7 +366,7 @@ fun PasswordScreen(onBack: () -> Unit) {
             }
         }
         if (!connected) {
-            InfoBanner("未连接保护板 · 密码可先存本地，连上后自动校验并升权", kind = "warn")
+            InfoBanner("未连接设备 · 密码可先存本地，连上后自动校验", kind = "warn")
         } else if (saved.isEmpty()) {
             InfoBanner("尚未记住任何密码 · 点上方等级设置，保存时直接向设备校验", kind = "warn")
         } else {
@@ -541,6 +558,51 @@ fun DeveloperScreen(onBack: () -> Unit) {
             }
         }
         // 操作行放在日志框「上面」：日志满时日志框近六屏高，放下面够不着
+        // 电量计调试：陆行寄存器探测（只读）——连上 EM2APP 后点一下，结果进日志，导出即可分析
+        SectionCard {
+            SectionHeader("电量计调试", tail = "只读")
+            var probing by remember { mutableStateOf(false) }
+            val scope = rememberCoroutineScope()
+            SettingRow(
+                title = "陆行寄存器探测",
+                inlineValue = if (probing) "探测中…" else "约 22 秒",
+                trailing = { Chevron() },
+                onClick = {
+                    if (!probing) {
+                        probing = true
+                        actionNote = "开始探测（只读），完成后导出日志"
+                        scope.launch {
+                            io.github.lswlc33.maibms.data.Bms.repository.probeMeterRegisters()
+                            probing = false
+                            actionNote = "探测完成，请导出日志"
+                        }
+                    }
+                },
+            )
+            Text("连上陆行电量计（EM2APP）后使用：依次扫描从机号与寄存器地址，结果写入日志（tag=PROBE），不会写设备。",
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp))
+            // 蓝宝匹配码：官方默认 06 06 06 06 06 06；改过的话必须填对，否则读不到数据
+            var secret by remember { mutableStateOf(io.github.lswlc33.maibms.data.Bms.repository.meterSecretFor()) }
+            var secretSaved by remember { mutableStateOf(false) }
+            OutlinedTextField(
+                value = secret,
+                onValueChange = { secret = it; secretSaved = false },
+                label = { Text("蓝宝匹配码（6 位数字 / 12 位十六进制）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            )
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.End) {
+                Button(onClick = {
+                    val addr = MockBms.savedAddress
+                    if (addr != null && secret.isNotBlank()) {
+                        io.github.lswlc33.maibms.data.Bms.repository.setMeterSecret(addr, secret.trim())
+                        secretSaved = true
+                        actionNote = "已保存匹配码（下次连接生效）"
+                    }
+                }) { Text(if (secretSaved) "已保存" else "保存匹配码") }
+            }
+        }
         SectionCard {
             SettingRow(
                 title = "清空日志",
@@ -593,7 +655,7 @@ fun DeveloperScreen(onBack: () -> Unit) {
             val shown = entries.filter { it.level.ordinal >= minLevel.ordinal }
             if (shown.isEmpty()) {
                 Text(
-                    "（暂无记录：连接保护板后此处显示收发帧与操作记录）",
+                    "（暂无记录：连接设备后此处显示收发帧与操作记录）",
                     fontSize = 9.5.sp, fontFamily = FontFamily.Monospace,
                     color = androidx.compose.ui.graphics.Color(0xFF6E8A7C),
                     modifier = Modifier.padding(vertical = 1.dp)

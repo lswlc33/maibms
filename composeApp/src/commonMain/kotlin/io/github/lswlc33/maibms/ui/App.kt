@@ -45,6 +45,7 @@ sealed class Route(val key: String) {
     data object Developer : Route("developer")       // S15
     data object Snapshots : Route("snapshots")       // S16 快照管理与预览
     data object Devices : Route("devices")           // S17 历史设备（档案/密码/自动重连目标）
+    data object Channels : Route("channels")         // 通信通道（默认 / 备用 A / 备用 B，docs/02 §2.2）
 }
 
 /** 弹窗种类 */
@@ -135,6 +136,15 @@ fun App(
             val bmsLink by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
             val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
             val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(bmsStatus.permissionLevel) && connected
+            // 电量计（中继器）模式：隐藏"配置"标签（参数/控制/升级对电量计无意义），深链也重定向到仪表盘
+            val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
+            val meterMode = family.isMeter
+            LaunchedEffect(meterMode) {
+                if (meterMode) {
+                    if (currentTab.value == Route.Config) currentTab.value = Route.Dashboard
+                    backStack.removeAll { it is Route.ParamGroup || it == Route.ControlTools }
+                }
+            }
             // 底栏在三个主标签（含仪表盘变体状态）显示
             val isTabRoot = backStack.isEmpty() && route.isTabRoot()
 
@@ -231,6 +241,7 @@ fun App(
                                 Route.Password -> PasswordScreen(onBack = popBack)
                                 Route.Developer -> DeveloperScreen(onBack = popBack)
                                 Route.Devices -> DeviceScreen(onBack = popBack)
+                                Route.Channels -> ChannelScreen(onBack = popBack)
                                 Route.Snapshots -> SnapshotScreen(
                                     onBack = popBack,
                                     onPreviewed = { currentTab.value = Route.Dashboard; backStack.clear() },
@@ -248,6 +259,7 @@ fun App(
                         BottomNav(
                             current = currentTab.value,
                             onSelect = { currentTab.value = it; backStack.clear() },
+                            showConfig = !meterMode,
                         )
                     }
                 }
@@ -311,7 +323,13 @@ val BottomNavHeight: Dp
  * 视觉沿用定稿的 M3 语言：选中项是药丸指示器（缩到 44x22）。
  */
 @Composable
-fun BottomNav(current: Route, onSelect: (Route) -> Unit, modifier: Modifier = Modifier) {
+fun BottomNav(
+    current: Route,
+    onSelect: (Route) -> Unit,
+    modifier: Modifier = Modifier,
+    /** 电量计模式隐藏"配置"标签 */
+    showConfig: Boolean = true,
+) {
     val inset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     // 底栏要和卡片分得开：深色下用比卡面亮一档的灰，浅色下靠加强投影，否则白条压白卡会糊在一起
     val barColor = if (isDarkScheme()) MaterialTheme.colorScheme.surfaceContainerHighest
@@ -327,9 +345,9 @@ fun BottomNav(current: Route, onSelect: (Route) -> Unit, modifier: Modifier = Mo
             .height(64.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        listOf(
+        listOfNotNull(
             Triple(Route.Dashboard, "麻衣 BMS", BmsIcons.Gauge),
-            Triple(Route.Config, "配置", BmsIcons.Tune),
+            Triple(Route.Config, "配置", BmsIcons.Tune).takeIf { showConfig },
             Triple(Route.Settings, "设置", BmsIcons.Gear),
         ).forEach { (r, label, icon) ->
             val selected = current::class == r::class

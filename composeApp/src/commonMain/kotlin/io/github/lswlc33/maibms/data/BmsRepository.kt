@@ -2,6 +2,9 @@ package io.github.lswlc33.maibms.data
 
 import kotlin.concurrent.Volatile
 import io.github.lswlc33.maibms.protocol.*
+import io.github.lswlc33.maibms.protocol.meter.MeterProtocol
+import io.github.lswlc33.maibms.protocol.meter.modbusReadFrame
+import io.github.lswlc33.maibms.protocol.meter.LuXingProtocol
 import io.github.lswlc33.maibms.transport.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -24,6 +27,12 @@ class BmsRepository(
         private set
 
     private var realTransport: BmsTransport? = null
+
+    /** 电量计协议实现（家族为电量计时非空）；为空走保护板（ANT）协议栈 */
+    @Volatile private var meter: MeterProtocol? = null
+    @Volatile private var meterInitSent = false
+    /** 寄存器探测进行中：暂停常规轮询，避免与探测帧抢应答 */
+    @Volatile private var meterProbeActive = false
 
     fun setRealTransport(t: BmsTransport) {
         realTransport = t
@@ -54,6 +63,23 @@ class BmsRepository(
 
     /** 用户主动断开（区别于掉线）：置位后不再自动重连，界面也不再显示「正在重连」 */
     val manualDisconnect = MutableStateFlow(false)
+
+    // ---- 通信通道（docs/02 §2.2）：传输层探测结果镜像 + 手动切换 ----
+
+    /** 当前正在使用的通道（null = 未连接或尚未探明） */
+    private val _activeChannel = MutableStateFlow<BleChannel?>(null)
+    val activeChannel: StateFlow<BleChannel?> = _activeChannel
+
+    /** 本设备提供且可用的通道（真实 BLE 发现服务后得出） */
+    private val _availableChannels = MutableStateFlow<List<BleChannel>>(emptyList())
+    val availableChannels: StateFlow<List<BleChannel>> = _availableChannels
+
+    /** 当前连接设备的家族（按广播名判定）：Unknown 视作保护板；电量计 = 中继器 */
+    private val _currentFamily = MutableStateFlow(DeviceFamily.Unknown)
+    val currentFamily: StateFlow<DeviceFamily> = _currentFamily
+
+    /** 是否支持手动切换通道（桌面/虚拟后端为 false，界面据此隐藏入口） */
+    val supportsChannelSwitch: Boolean get() = realTransport?.supportsChannelSwitch == true
 
     // ---- 快照预览模式：载入快照后置位，进程存活期间不解除（重启后自动连接按原状态恢复） ----
 
@@ -170,12 +196,15 @@ class BmsRepository(
                 if (st == LinkState.Connected) {
                     // 建链成功即刷新档案的最近连接时间（扫描直连与自动重连都会走到这里）
                     DeviceProfiles.touch(MockBms.savedAddress)
-                    // 连后序列：首帧 → 升权 → 参数区读回。必须放独立协程跑——
-                    // 以前直接在收集器里 await 升权，0x43 弱信号下 2s 才回，这段
-                    // 时间链路状态镜像被卡住，掉线了界面还显示「已连接」
-                    firstFrameSignal = CompletableDeferred()
-                    postConnectJob?.cancel()
-                    postConnectJob = scope.launch { postConnectFlow() }
+                    // 保护板才有「首帧 → 升权 → 参数区读回」的连后序列；电量计跳过（不读蚂蚁参数区）
+                    if (meter == null) {
+                        // 连后序列：首帧 → 升权 → 参数区读回。必须放独立协程跑——
+                        // 以前直接在收集器里 await 升权，0x43 弱信号下 2s 才回，这段
+                        // 时间链路状态镜像被卡住，掉线了界面还显示「已连接」
+                        firstFrameSignal = CompletableDeferred()
+                        postConnectJob?.cancel()
+                        postConnectJob = scope.launch { postConnectFlow() }
+                    }
                     // 唤醒轮询立刻发首拍。放在最后：首帧信号已就位，不会漏接
                     pollWake.trySend(Unit)
                 } else {
@@ -190,12 +219,29 @@ class BmsRepository(
             real.incoming.collect { bytes ->
                 // 预览中丢弃一切残余帧：断开瞬间在途的报文不得覆盖快照数据
                 if (previewActive.value) return@collect
-                for (f in parser.feed(bytes)) handleFrame(f)
+                val m = meter
+                if (m != null) {
+                    // 电量计：走各家族的协议解码，直接喂给 UI 状态
+                    val rd = runCatching { m.onData(bytes) }.getOrNull()
+                    if (rd != null) {
+                        lastFrameAt = epochMillisNow()
+                        MockBms.applyMeterReading(rd)
+                        MockBms.connected.value = true
+                    } else {
+                        // 未识别（如匹配码错误/异常帧）：记 DEBUG，便于对照
+                        BmsLog.d("METER", "未识别帧(${bytes.size}B) ${BmsLog.hex(bytes.take(24).toByteArray())}")
+                    }
+                } else {
+                    for (f in parser.feed(bytes)) handleFrame(f)
+                }
             }
         }
         scope.launch {
             real.connectHint.collect { _connectHint.value = it }
         }
+        scope.launch { real.activeChannel.collect { _activeChannel.value = it } }
+        scope.launch { real.availableChannels.collect { _availableChannels.value = it } }
+        scope.launch { real.currentFamily.collect { _currentFamily.value = it } }
         // 用户上次是主动断开的话，就别自作主张再连上（但记忆设备仍然保留）
         val wantAuto = target != null && AppStore.autoReconnect && !previewActive.value
         if (wantAuto && !canAutoConnect()) {
@@ -356,7 +402,7 @@ class BmsRepository(
         _scanError.value = null
         _scanning.value = true
         // 扫描窗口：到点自动停。否则板子不在时界面会永远停在「正在搜索…」，
-        // 那句「未发现 ANT 设备」的提示永远出不来（用户开板前必然遇到）
+        // 那句「未发现保护板/电量计」的提示永远出不来（用户开设备前必然遇到）
         scanTimeoutJob?.cancel()
         scanTimeoutJob = scope.launch {
             delay(SCAN_WINDOW_MS)
@@ -413,12 +459,17 @@ class BmsRepository(
         AppStore.savedAddress = address
         if (name != null) AppStore.savedDeviceName = name
         val prev = DeviceProfiles.find(address)
+        // 家族按广播名判定：优先取本轮扫描结果，其次沿用档案；都判不出则回退保护板
+        val family = _scanResults.value.firstOrNull { it.address == address }?.family
+            ?: prev?.family
+            ?: io.github.lswlc33.maibms.transport.DeviceFamily.Unknown
         DeviceProfiles.upsert(DeviceProfile(
             address = address,
             name = name ?: prev?.name.orEmpty(),
             alias = prev?.alias,
             lastConnectedAt = epochMillisNow(),
             passwords = prev?.passwords ?: emptyMap(),
+            family = family,
         ))
         restorePasswords(address)
         stopScan()
@@ -435,6 +486,7 @@ class BmsRepository(
         DeviceProfiles.remove(address)
         AppStore.deleteSnapshotsForDevice(address)
         AppStore.deleteParamsCache(address)   // 配置缓存也是该设备的数据，一并清除
+        AppStore.saveChannel(address, null)   // 通道偏好同样跟设备走，删除即清除
         if (AppStore.autoConnectAddress == address) AppStore.autoConnectAddress = null
         if (AppStore.savedAddress == address) {
             AppStore.savedAddress = null
@@ -467,6 +519,23 @@ class BmsRepository(
         postConnectJob?.cancel()
         postConnectJob = null
         firstFrameSignal = null
+        // 通道偏好：按设备记忆（用户手动切过就优先它），没有记忆则按默认顺序探测
+        val targetAddr = address ?: MockBms.savedAddress
+        transport.preferChannel(AppStore.channelFor(targetAddr))
+        // 目标家族：本轮扫描结果 → 设备档案；都判不出按保护板（保持既有行为）
+        val family = _scanResults.value.firstOrNull { it.address == targetAddr }?.family
+            ?: DeviceProfiles.find(targetAddr)?.family
+            ?: io.github.lswlc33.maibms.transport.DeviceFamily.Ant
+        transport.setTargetFamily(family)
+        BmsLog.i("CONN", "目标家族：${family.label}（${family.kind}）")
+        // 电量计：选协议实现（保护板为 null）；能力位供首页显隐
+        val secret = AppStore.loadPassword(targetAddr ?: "", 0)
+        meter = MeterProtocol.forFamily(family, secret)
+        meterInitSent = false
+        MockBms.caps.value = meter?.caps ?: DeviceCapabilities.forFamily(family)
+        if (family.isMeter) {
+            BmsLog.i("CONN", "电量计模式：${family.label}" + if (meter == null) "（协议待实现，仅连接）" else "（协议 ${meter!!::class.simpleName}）")
+        }
         transport.connect(address)
         // check-then-launch 的竞态：两次并发 connect() 都看到 isActive==false 会各起一条轮询，
         // 轮询与命令共用一个应答槽，双管线会把会话搅崩（与 start() 双跑同一类故障）。
@@ -493,21 +562,39 @@ class BmsRepository(
         // 立刻唤醒一次——首帧不用白等这个相位
         while (currentCoroutineContext().isActive) {
             if (_linkState.value == LinkState.Connected) {
-                try {
-                    requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
-                } catch (e: Exception) {
-                    // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
-                    BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
+                val m = meter
+                if (m != null) {
+                    // 电量计：写轮询帧（不等待应答，靠通知回调解码）；寄存器探测期间暂停
+                    if (!meterProbeActive) {
+                        try {
+                            if (!meterInitSent) {
+                                m.initialFrames().forEach { transport.write(it) }
+                                meterInitSent = true
+                            }
+                            m.nextPollFrames().forEach { transport.write(it) }
+                        } catch (e: Exception) {
+                            BmsLog.d("POLL", "电量计轮询写入失败：${e.message ?: e::class.simpleName}")
+                        }
+                    }
+                } else {
+                    try {
+                        requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
+                    } catch (e: Exception) {
+                        // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
+                        BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
+                    }
                 }
                 // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
                 val since = epochMillisNow() - lastFrameAt
                 if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
                     if (!_stalled.value) {
                         _stalled.value = true
-                        BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（链路保持，继续轮询）")
+                        BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（尝试轮切其它通道）")
+                        rotateChannelOnStall()
                     }
                 } else if (_stalled.value) {
                     _stalled.value = false
+                    stallRotations = 0
                     BmsLog.i("LINK", "实时帧恢复")
                 }
             }
@@ -532,6 +619,134 @@ class BmsRepository(
         MockBms.connected.value = false
     }
 
+    /** 失联轮切：本会话已轮切次数（实时帧恢复即清零） */
+    private var stallRotations = 0
+
+    /**
+     * 失联时按顺序试其它通道（对应官方的「通道轮切」，docs/02 §2.2）：
+     * 全部候选都试过仍不通就只提示重启蓝牙，不再无限轮切。
+     */
+    private fun rotateChannelOnStall() {
+        if (!supportsChannelSwitch) return
+        val avail = _availableChannels.value
+        if (avail.size <= 1) {
+            _connectHint.value = "设备无应答，且只提供默认通道：请断电重启蓝牙后重试"
+            return
+        }
+        if (stallRotations >= avail.size) {
+            _connectHint.value = "所有通道都试过仍无应答：请断电重启蓝牙后重试"
+            return
+        }
+        val cur = _activeChannel.value
+        val next = avail.firstOrNull { it != cur } ?: return
+        stallRotations++
+        // 给新通道一个完整的失联窗口：切完就重连，不能让旧的时间戳立刻再触发一次轮切
+        lastFrameAt = epochMillisNow()
+        _stalled.value = false
+        BmsLog.w("LINK", "失联 → 轮切到${next.label}（第 $stallRotations 次）")
+        scope.launch {
+            transport.preferChannel(next)
+            transport.switchChannel(next)
+        }
+    }
+
+    /**
+     * 手动切换通道（设置 → 通信通道）：按设备记住选择，再断开重连到目标通道。
+     * 未连接时只记偏好，下次连接生效；切换过程会短暂中断通信（随后自动重连 + 重新升权）。
+     */
+    suspend fun switchChannel(channel: BleChannel) {
+        if (previewActive.value) {
+            _connectHint.value = "正在预览快照，通道切换已停用（重启应用恢复）"
+            return
+        }
+        val addr = MockBms.savedAddress
+        AppStore.setChannelFor(addr, channel)
+        BmsLog.i("CONN", "手动切换通道 → ${channel.label}（${channel.id}）")
+        _connectHint.value = "正在切换到${channel.label}…"
+        transport.preferChannel(channel)
+        transport.switchChannel(channel)
+    }
+
+    /** 该设备记忆的通道（界面用；null = 未记忆，按默认顺序探测） */
+    fun savedChannelFor(address: String? = MockBms.savedAddress): BleChannel? =
+        AppStore.channelFor(address)
+
+    /**
+     * 记住某电量计的设备密码/匹配码（存 level 0），下次连接自动带上——
+     * 蓝宝=6 位匹配码、陆行=无。保护板不使用这一槽。
+     */
+    fun setMeterSecret(address: String, secret: String) {
+        AppStore.savePassword(address, 0, secret)
+        if (MockBms.savedAddress == address) meter?.setSecret(secret)
+        BmsLog.i("SEC", "已记住电量计密码（${address.takeLast(5)}），长度 ${secret.length}")
+    }
+
+    /** 当前设备已记住的电量计密码/匹配码（蓝宝 6 位数字或 12 位十六进制；无则空串） */
+    fun meterSecretFor(address: String? = MockBms.savedAddress): String =
+        address?.let { AppStore.loadPassword(it, 0) } ?: ""
+
+    /**
+     * 陆行寄存器探测（**只读 FC03**）：摸清设备的真实从机号与寄存器表，结果全部打到日志（tag=PROBE）。
+     *
+     * 顺序：① 官方 5 块原样复测 → ② 从机号 1..8 → ③ 地址 0..47 单寄存器 → ④ 从首个可用地址起长度递增。
+     * 探测期间暂停常规轮询（避免抢应答）。约 22 秒；完成后在「设置 → 开发者」导出日志即可分析。
+     */
+    suspend fun probeMeterRegisters() {
+        val real = realTransport
+        val m = meter
+        if (m !is LuXingProtocol) {
+            BmsLog.w("PROBE", "当前不是陆行电量计模式，跳过探测")
+            return
+        }
+        if (real == null || _linkState.value != LinkState.Connected) {
+            BmsLog.w("PROBE", "链路未就绪，跳过探测")
+            return
+        }
+        if (meterProbeActive) {
+            BmsLog.w("PROBE", "探测进行中，忽略重复触发")
+            return
+        }
+        meterProbeActive = true
+        BmsLog.i("PROBE", "=== 陆行寄存器探测开始（只读 FC03）===")
+        val mu = Mutex()
+        val buf = mutableListOf<ByteArray>()
+        val collectJob = scope.launch { real.incoming.collect { b -> mu.withLock { buf.add(b) } } }
+        suspend fun ask(label: String, frame: ByteArray): ByteArray? {
+            mu.withLock { buf.clear() }
+            BmsLog.i("PROBE", "$label → ${BmsLog.hex(frame)}")
+            runCatching { transport.write(frame) }
+            delay(PROBE_STEP_MS)
+            val replies = mu.withLock { val r = buf.toList(); buf.clear(); r }
+            if (replies.isEmpty()) {
+                BmsLog.i("PROBE", "$label ← (无应答)")
+            } else {
+                replies.forEach { BmsLog.i("PROBE", "$label ← ${BmsLog.hex(it)}") }
+            }
+            return replies.firstOrNull()
+        }
+        fun isOk(r: ByteArray?): Boolean = r != null && r.size >= 5 && ((r[1].toInt() and 0x80) == 0)
+        try {
+            // ① 协议自身的轮询帧（EM2APP = 4000/4092/4200/4152）
+            m.nextPollFrames().forEachIndexed { i, fr -> ask("A命令${i + 1}", fr) }
+            // ② 从机号 1..8
+            val unitsOk = mutableListOf<Int>()
+            for (u in 1..8) if (isOk(ask("B从机$u", modbusReadFrame(u, 0, 1)))) unitsOk.add(u)
+            BmsLog.i("PROBE", "从机号扫描结果：$unitsOk")
+            val unit = unitsOk.firstOrNull() ?: 1
+            // ③ 地址扫描：EM2APP 的真实寄存器区在 4000 附近，扫 3995..4012
+            val addrOk = mutableListOf<Int>()
+            for (a in 3995..4012) if (isOk(ask("C地址$a", modbusReadFrame(unit, a, 1)))) addrOk.add(a)
+            BmsLog.i("PROBE", "地址扫描结果（从机 $unit）：$addrOk")
+            // ④ 长度试读
+            val base = addrOk.firstOrNull() ?: 0
+            listOf(1, 2, 4, 8, 16, 30, 50).forEach { c -> ask("D长度$c", modbusReadFrame(unit, base, c)) }
+            BmsLog.i("PROBE", "=== 探测结束：可用从机=$unitsOk 可用地址=$addrOk ===")
+        } finally {
+            collectJob.cancel()
+            meterProbeActive = false
+        }
+    }
+
     /** 失联判定阈值：链路在但 X 毫秒没有实时帧（≈连续 7 拍超时） */
     private var lastFrameAt = 0L
     private val _stalled = MutableStateFlow(false)
@@ -544,6 +759,8 @@ class BmsRepository(
 
     companion object {
         const val STALL_MS = 7_000L
+        /** 寄存器探测每步等待应答的时间（ms） */
+        const val PROBE_STEP_MS = 320L
         /** 连后序列等首个实时帧的上限；等不到就跳过升权与参数区读回 */
         const val FIRST_FRAME_WAIT_MS = 10_000L
         /** BLE 扫描窗口：够扫到弱信号设备，又不至于让用户干等 */

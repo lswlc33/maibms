@@ -45,6 +45,9 @@ fun DashboardScreen(
 ) {
     val liveStatus by MockBms.status.collectAsState()
     val status = liveStatus
+    val caps by MockBms.caps.collectAsState()
+    // 当前设备家族（电量计品牌名，用于"中继信息卡"标题）
+    val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
     // 冷启动首屏耗时：第一次带着实时数据完成组合时上报一次（此刻数值已经画上屏），
     // 20s 内出数再弹个系统 Toast 把秒数直接摆出来。每进程只会上报一次，重连反复不影响。
     LaunchedEffect(status.hasData) {
@@ -144,6 +147,10 @@ fun DashboardScreen(
                     linkLost ->
                         InfoBanner("设备失联：链路仍在但收不到数据，请靠近电池或检查干扰（以下为最后数据）", kind = "err")
                 }
+                // 电量计模式：显示这台中继器正在中继哪块保护板（品牌/MAC）
+                if (status.relayBoardBrand != "--" || status.relayBoardMac != "--") {
+                    RelayBoardCard(family.label, status.relayBoardBrand, status.relayBoardMac)
+                }
             }
             Column(
                 Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState())
@@ -161,7 +168,10 @@ fun DashboardScreen(
                 // 温度
                 TempCard(status.temps)
                 // 单体电压
-                CellGridCard(status.cells, avgCell = status.avgCell, deltaCell = status.deltaCell)
+                CellGridCard(
+                    status.cells, avgCell = status.avgCell, deltaCell = status.deltaCell,
+                    maxCell = status.maxCell, minCell = status.minCell,
+                )
                 // 趋势 + 控制
                 SectionCard {
                     SectionHeader("趋势 · 近 1 分钟", tail = "— 电流 ─ 电压")
@@ -177,7 +187,7 @@ fun DashboardScreen(
                         TrendLines(status.trendCurrent, status.trendVolt)
                     }
                     Spacer(Modifier.height(6.dp))
-                    ControlButtonsRow(
+                    if (caps.controlCharge || caps.controlDischarge) ControlButtonsRow(
                         chargeOn = chargeOn,
                         dischargeOn = dischargeOn,
                         onCharge = {
@@ -296,8 +306,8 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                 when {
                     !canScan -> "当前平台没有蓝牙扫描（桌面端）"
                     scanError != null -> scanError!!
-                    scanning -> "扫描中… 名称前缀 ANT · 信号强度排序"
-                    results.isEmpty() -> "扫描结束 · 未发现 ANT 开头的设备"
+                    scanning -> "扫描中… 保护板 / 电量计 · 信号强度排序"
+                    results.isEmpty() -> "扫描结束 · 未发现保护板/电量计"
                     else -> "已发现 ${results.size} 台设备"
                 },
                 fontSize = 11.5.sp,
@@ -305,7 +315,7 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
             )
             if (canScan && scanError == null && !scanning && results.isEmpty()) {
-                Text("未发现 ANT 开头的设备。确认保护板已上电、手机蓝牙已打开且在附近。",
+                Text("未发现保护板/电量计。确认设备已上电、手机蓝牙已打开且在附近。",
                     fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 6.dp))
             }
@@ -341,7 +351,11 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                     RadioDot(selected == d.address)
                     Column(Modifier.weight(1f).padding(start = 9.dp)) {
                         Text(d.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Text(d.address, fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (d.family == io.github.lswlc33.maibms.transport.DeviceFamily.Unknown) d.address
+                            else "${d.address} · ${d.family.label}",
+                            fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     Text("${d.rssi} dBm", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }

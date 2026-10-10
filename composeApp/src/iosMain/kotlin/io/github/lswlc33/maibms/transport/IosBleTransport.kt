@@ -62,16 +62,12 @@ import platform.posix.memcpy
 class IosBleTransport : BmsTransport {
 
     companion object {
-        /** 服务与通道候选（与 Android 完全一致，docs/02 §2.2） */
+        /** 服务（通道定义统一放在 commonMain 的 BleChannel，见 docs/02 §2.2） */
         const val SERVICE_FFE0 = "FFE0"
-        val CHANNELS = listOf(
-            "FFE1" to "FFE1",
-            "FFF3" to "FFF4",
-            "FFF5" to "FFF6",
-        )
+        /** 通道探测：超时 8s、切通道间隔 200ms（与 Android / 官方一致，docs/02 §2.2） */
+        const val PROBE_TIMEOUT_MS = 8_000L
+        const val PROBE_SETTLE_MS = 200L
 
-        /** 设备广播名前缀（ANT BMS 的板子都以此开头） */
-        const val NAME_PREFIX = "ANT"
         /** 单次 GATT 写分片上限：与 Android 同值，避免部分从机静默丢包 */
         const val MAX_CHUNK = 240
         const val WRITE_GAP_MS = 12L
@@ -91,6 +87,41 @@ class IosBleTransport : BmsTransport {
     private val _connectHint = MutableStateFlow<String?>(null)
     override val connectHint: StateFlow<String?> = _connectHint
 
+    // ---- 通信通道（docs/02 §2.2）：候选 → 逐个探测 → 选中的才置「就绪」----
+
+    private val _activeChannel = MutableStateFlow<BleChannel?>(null)
+    override val activeChannel: StateFlow<BleChannel?> = _activeChannel
+    private val _availableChannels = MutableStateFlow<List<BleChannel>>(emptyList())
+    override val availableChannels: StateFlow<List<BleChannel>> = _availableChannels
+    override val supportsChannelSwitch: Boolean get() = true
+
+    // ---- 设备家族（按广播名判定；决定服务/通道/握手策略）----
+
+    private val _currentFamily = MutableStateFlow(DeviceFamily.Unknown)
+    override val currentFamily: StateFlow<DeviceFamily> = _currentFamily
+
+    /** 本次连接的目标家族；由上层在 connect() 前用 setTargetFamily() 写入 */
+    @Volatile private var targetFamily: DeviceFamily = DeviceFamily.Ant
+
+    override fun setTargetFamily(family: DeviceFamily) {
+        targetFamily = family
+    }
+
+    /** 一组候选：通道定义 + 实际拿到的写/通知特征 */
+    private data class Candidate(
+        val channel: BleChannel,
+        val write: CBCharacteristic,
+        val notify: CBCharacteristic,
+    )
+
+    private var candidates: List<Candidate> = emptyList()
+    private var candidateIndex = 0
+    private var probeStarted = false
+    @Volatile private var probeSignal: CompletableDeferred<Boolean>? = null
+
+    /** 下次连接优先尝试的通道（手动切换或按设备记忆；仅本进程有效） */
+    @Volatile private var preferred: BleChannel? = null
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** 用户想要连接的目标（iOS 上是外设标识串）；null = 已主动断开 */
@@ -107,6 +138,8 @@ class IosBleTransport : BmsTransport {
 
     /** 本次尝试的「就绪」信号：true=服务/订阅就绪，false=就绪前断开 */
     private var readySignal: CompletableDeferred<Boolean>? = null
+    /** 服务发现完成信号：让「建链 + 发现服务」与「通道探测」两段超时分开算 */
+    @Volatile private var servicesSignal: CompletableDeferred<Unit>? = null
     /** 已就绪后的断开信号 */
     private var dropSignal: CompletableDeferred<Unit>? = null
 
@@ -150,10 +183,12 @@ class IosBleTransport : BmsTransport {
             val name = didDiscoverPeripheral.name
                 ?: (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
                 ?: return
-            if (!name.startsWith(NAME_PREFIX, ignoreCase = true)) return
+            // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
+            if (!DeviceFamily.isTarget(name)) return
+            val family = DeviceFamily.matchName(name) ?: return
             val id = didDiscoverPeripheral.identifier.UUIDString
-            logD("scan 发现 $name $id rssi=${RSSI.intValue}")
-            scanHandler?.invoke(ScanDevice(name, id, RSSI.intValue))
+            logD("scan 发现 $name $id rssi=${RSSI.intValue} → ${family.label}")
+            scanHandler?.invoke(ScanDevice(name, id, RSSI.intValue, family))
 
             if (pendingPeripheral != null) return
             val want = desiredAddress
@@ -183,6 +218,7 @@ class IosBleTransport : BmsTransport {
             error: NSError?,
         ) {
             logE("连接失败：${error?.localizedDescription ?: "未知原因"}")
+            servicesSignal?.complete(Unit)
             readySignal?.complete(false)
         }
 
@@ -199,6 +235,7 @@ class IosBleTransport : BmsTransport {
                 notifyChar = null
             }
             _linkState.value = LinkState.Disconnected
+            servicesSignal?.complete(Unit)
             readySignal?.complete(false)
             dropSignal?.complete(Unit)
         }
@@ -207,6 +244,8 @@ class IosBleTransport : BmsTransport {
 
         @ObjCSignatureOverride
         override fun peripheral(peripheral: CBPeripheral, didDiscoverServices: NSError?) {
+            // 阶段一结束（无论成败）
+            servicesSignal?.complete(Unit)
             if (didDiscoverServices != null) {
                 logE("发现服务失败：${didDiscoverServices.localizedDescription}")
                 readySignal?.complete(false)
@@ -216,7 +255,7 @@ class IosBleTransport : BmsTransport {
             logD("服务列表: " + services.joinToString { shortUuid(it.UUID.UUIDString) })
             val service = services.firstOrNull { it.UUID.UUIDString.equals(SERVICE_FFE0, ignoreCase = true) }
             if (service == null) {
-                logE("设备没有 FFE0 服务（不是 ANT 保护板？）")
+                logE("设备没有 FFE0 服务（不是已知的保护板/电量计？）")
                 readySignal?.complete(false)
                 return
             }
@@ -236,31 +275,40 @@ class IosBleTransport : BmsTransport {
             }
             val chars = didDiscoverCharacteristicsForService.characteristics
                 .orEmpty().mapNotNull { it as? CBCharacteristic }
-            logD("特征列表: " + chars.joinToString { shortUuid(it.UUID.UUIDString) })
-            for ((w, n) in CHANNELS) {
-                val wc = chars.firstOrNull { it.UUID.UUIDString.equals(w, ignoreCase = true) }
-                val nc = chars.firstOrNull { it.UUID.UUIDString.equals(n, ignoreCase = true) }
-                if (wc != null && nc != null) {
-                    writeChar = wc
-                    notifyChar = nc
-                    break
-                }
-            }
-            val wc = writeChar
-            val nc = notifyChar
-            if (wc == null || nc == null) {
-                logE("FFE0 下没有可用的写/通知通道")
-                readySignal?.complete(false)
-                return
-            }
-            logI("通道选中 写=${shortUuid(wc.UUID.UUIDString)} 通知=${shortUuid(nc.UUID.UUIDString)}")
+            logI("特征列表: " + chars.joinToString { shortUuid(it.UUID.UUIDString) })
             maxWriteLen = peripheral
                 .maximumWriteValueLengthForType(CBCharacteristicWriteWithoutResponse)
                 .toInt()
             logD("单次写上限 $maxWriteLen 字节")
-            // 先订阅通知（docs 硬性顺序）；就绪要等订阅落地（见 didUpdateNotificationState）
-            peripheral.setNotifyValue(true, forCharacteristic = nc)
-            armReadyFallback()
+            // 候选通道：先按官方规则判定这块硬件有没有备用通道（存在 FFF5 特征；
+            // Android 侧还校验了"可写"属性，iOS 的属性校验待真机验证），再按实际特征过滤
+            val found: List<Candidate> = if (targetFamily.isMeter) {
+                // 电量计：FFE0 下就一对 写 FFE2 / 通知 FFE1（三家实测都提供这对特征）
+                val wc = chars.firstOrNull { it.UUID.UUIDString.equals(BleChannel.Meter.writeUuid, ignoreCase = true) }
+                val nc = chars.firstOrNull { it.UUID.UUIDString.equals(BleChannel.Meter.notifyUuid, ignoreCase = true) }
+                if (wc != null && nc != null) listOf(Candidate(BleChannel.Meter, wc, nc)) else emptyList()
+            } else {
+                val hasFff5 = chars.any { it.UUID.UUIDString.equals("FFF5", ignoreCase = true) }
+                bleChannelCandidates(hasFff5).mapNotNull { ch ->
+                    val wc = chars.firstOrNull { it.UUID.UUIDString.equals(ch.writeUuid, ignoreCase = true) }
+                    val nc = chars.firstOrNull { it.UUID.UUIDString.equals(ch.notifyUuid, ignoreCase = true) }
+                    if (wc != null && nc != null) Candidate(ch, wc, nc) else null
+                }
+            }
+            _availableChannels.value = found.map { it.channel }.ifEmpty { listOf(BleChannel.Default) }
+            if (found.isEmpty()) {
+                logE("FFE0 下没有可用的写/通知特征")
+                readySignal?.complete(false)
+                return
+            }
+            logI("可用通道：" + found.joinToString { it.channel.id } +
+                if (found.size == 1) "（设备只提供默认通道，无备用通道）" else "")
+            // 上次用过/手动指定的通道优先，其余按默认 → 备用 A → 备用 B 顺序
+            val pref = preferred
+            candidates = listOfNotNull(found.firstOrNull { it.channel == pref }) +
+                found.filter { it.channel != pref }
+            candidateIndex = 0
+            probeNext(peripheral)
         }
 
         @ObjCSignatureOverride
@@ -270,15 +318,16 @@ class IosBleTransport : BmsTransport {
             error: NSError?,
         ) {
             if (error != null) {
-                // 订阅没落地 = 设备不会主动上报，链路"通着"也收不到任何帧：按本轮失败重连
-                logE("订阅通知失败：${error.localizedDescription}（本轮按失败重连）")
-                readySignal?.complete(false)
+                // 订阅没落地 = 这条通道收不到任何帧：换下一个候选（没有下一个则本轮连接失败）
+                logE("订阅通知失败：${error.localizedDescription}（换下一个候选通道）")
+                candidateIndex++
+                probeNext(peripheral)
                 return
             }
             val uuid = didUpdateNotificationStateForCharacteristic.UUID.UUIDString
             if (uuid.equals(notifyChar?.UUID?.UUIDString, ignoreCase = true)) {
-                logD("订阅已落地")
-                completeReady()
+                logD("订阅已落地，开始发探测帧")
+                candidates.getOrNull(candidateIndex)?.let { afterSubscribed(peripheral, it) }
             }
         }
 
@@ -295,19 +344,89 @@ class IosBleTransport : BmsTransport {
             val data = didUpdateValueForCharacteristic.value ?: return
             val bytes = data.toByteArray()
             logD("← ${hex(bytes)}")
+            noteProbeResponse(bytes)
             _incoming.tryEmit(bytes)
         }
 
-        /** 订阅确认兜底：个别固件不回调通知状态，超时放行，绝不把连接卡死 */
-        private fun armReadyFallback() {
+        /**
+         * 试下一个候选通道：订阅通知 → 发探测帧等应答。
+         * 全部候选都失败就按本轮连接失败处理，交给重连循环退避重试。
+         */
+        private fun probeNext(p: CBPeripheral) {
+            val c = candidates.getOrNull(candidateIndex)
+            if (c == null) {
+                logE("候选通道全部探测失败（共 ${candidates.size} 条）")
+                _activeChannel.value = null
+                readySignal?.complete(false)
+                return
+            }
+            writeChar = c.write
+            notifyChar = c.notify
+            probeStarted = false
+            logI("通道探测 ${candidateIndex + 1}/${candidates.size}：${c.channel.id}（写 ${shortUuid(c.write.UUID.UUIDString)} / 通知 ${shortUuid(c.notify.UUID.UUIDString)}）")
+            _connectHint.value = "通道探测：${c.channel.label}…"
+            // 先订阅通知（docs 硬性顺序）
+            p.setNotifyValue(true, forCharacteristic = c.notify)
+            // 订阅确认个别固件不回调：超时也按「订阅已发出」进入探测，绝不把连接卡死
             scope.launch {
                 delay(READY_FALLBACK_MS)
-                val s = readySignal
-                if (s != null && !s.isCompleted) {
-                    logW("订阅确认 ${READY_FALLBACK_MS}ms 未回调，按「订阅已发出」继续（兜底）")
+                afterSubscribed(p, c)
+            }
+        }
+
+        /**
+         * 订阅落地后的动作：保护板走 ANT 探测；电量计暂无探测帧，直接按“FFE0 + 写/通知就绪”判就绪。
+         */
+        private fun afterSubscribed(p: CBPeripheral, c: Candidate) {
+            if (p !== peripheral) return
+            if (targetFamily.isMeter) {
+                _activeChannel.value = c.channel
+                logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
+                _linkState.value = LinkState.Connected
+                readySignal?.complete(true)
+            } else {
+                startProbe(p, c)
+            }
+        }
+
+        /** 发探测帧并等应答；通过就置「就绪」，否则换下一个候选 */
+        private fun startProbe(p: CBPeripheral, c: Candidate) {
+            if (probeStarted) return
+            // 迟到的兜底（候选已经翻页）不能再探：否则会拿旧候选的写特征去发帧
+            if (candidates.getOrNull(candidateIndex) !== c) return
+            probeStarted = true
+            val signal = CompletableDeferred<Boolean>()
+            probeSignal = signal
+            scope.launch {
+                delay(PROBE_SETTLE_MS)   // 等订阅生效，与官方 200ms 切通道间隔一致
+                runCatching {
+                    p.writeValue(
+                        Frame.readRealtime().toNSData(),
+                        forCharacteristic = c.write,
+                        type = CBCharacteristicWriteWithoutResponse,
+                    )
+                }.onFailure { logW("探测帧写入失败：${it.message}") }
+                val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
+                probeSignal = null
+                if (ok) {
+                    _activeChannel.value = c.channel
+                    logI("通道就绪：${c.channel.label}（${c.channel.id}）")
                     completeReady()
+                } else {
+                    logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
+                    runCatching { p.setNotifyValue(false, forCharacteristic = c.notify) }   // 退订这条通道
+                    candidateIndex++
+                    probeNext(p)
                 }
             }
+        }
+
+        /** 探测期间：第一条 0x11/0x12 应答即视为该通道可用（应答照旧投给上层解析） */
+        private fun noteProbeResponse(b: ByteArray) {
+            val s = probeSignal ?: return
+            if (!s.isCompleted && b.size >= 3 && b[0] == 0x7E.toByte() &&
+                (b[2] == 0x11.toByte() || b[2] == 0x12.toByte())
+            ) s.complete(true)
         }
 
         private fun completeReady() {
@@ -346,7 +465,7 @@ class IosBleTransport : BmsTransport {
         }
         runCatching { c.stopScan() }
         scanHandler = onFound
-        logI("开始扫描 ANT 设备")
+        logI("开始扫描（保护板 ANT + 电量计 蓝宝/陆行）")
         c.scanForPeripheralsWithServices(null, null)
     }
 
@@ -360,6 +479,7 @@ class IosBleTransport : BmsTransport {
     override suspend fun connect(address: String?) {
         manualStop = false
         desiredAddress = address
+        _currentFamily.value = targetFamily
         _linkState.value = LinkState.Connecting
         _connectHint.value = "正在连接…"
         loopJob?.cancel()
@@ -377,7 +497,7 @@ class IosBleTransport : BmsTransport {
             // 1) 先扫到设备（CoreBluetooth 必须先持有 CBPeripheral 才能连接）
             val target = runCatching { findPeripheral(address) }.getOrNull()
             if (target == null) {
-                _connectHint.value = if (address.isNullOrBlank()) "没有扫描到 ANT 设备"
+                _connectHint.value = if (address.isNullOrBlank()) "没有扫描到目标设备"
                                     else "没有扫描到目标设备（可能不在范围内或未上电）"
                 logW("扫描未找到设备（尝试 #$attempt）")
                 if (manualStop || !currentCoroutineContext().isActive) break
@@ -388,15 +508,23 @@ class IosBleTransport : BmsTransport {
             // 2) 建链 + 等订阅就绪
             val ready = CompletableDeferred<Boolean>()
             readySignal = ready
+            val servicesFound = CompletableDeferred<Unit>()
+            servicesSignal = servicesFound
             dropSignal = null
             peripheral = target
             logI("连接目标 ${target.name ?: "未命名"} ${target.identifier.UUIDString}")
             central.connectPeripheral(target, null)
-            val outcome = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { ready.await() }
+            // 两段超时：① 建链 + 发现服务用连接超时；② 通道探测按候选条数给预算
+            //（每条候选最多 PROBE_TIMEOUT_MS，与 Android/官方同量级）
+            val discovered = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { servicesFound.await() } != null
+            val outcome: Boolean? = if (!discovered) null else {
+                val probeBudget = PROBE_TIMEOUT_MS * candidates.size.coerceAtLeast(1) + 2_000L
+                withTimeoutOrNull(probeBudget) { ready.await() }
+            }
             if (outcome == true) {
                 _connectHint.value = null
                 _linkState.value = LinkState.Connected
-                logI("链路就绪（单次写上限 $maxWriteLen 字节）")
+                logI("链路就绪（通道 ${_activeChannel.value?.id ?: "?"}，单次写上限 $maxWriteLen 字节）")
                 val dropped = CompletableDeferred<Unit>()
                 dropSignal = dropped
                 val connectedAt = epochMillisNow()
@@ -416,6 +544,7 @@ class IosBleTransport : BmsTransport {
                 _connectHint.value = if (outcome == null) "连接超时，正在重试…" else "连接失败，正在重试…"
             }
             readySignal = null
+            servicesSignal = null
             if (manualStop || !currentCoroutineContext().isActive) break
             delay(backoffMs(attempt))
         }
@@ -463,6 +592,12 @@ class IosBleTransport : BmsTransport {
         peripheral = null
         writeChar = null
         notifyChar = null
+        probeSignal = null
+        servicesSignal = null
+        probeStarted = false
+        candidates = emptyList()
+        candidateIndex = 0
+        _activeChannel.value = null
         p.delegate = null
         runCatching { central.cancelPeripheralConnection(p) }
     }
@@ -501,6 +636,24 @@ class IosBleTransport : BmsTransport {
         closePeripheral()
         _linkState.value = LinkState.Disconnected
         _connectHint.value = null
+    }
+
+    /** 记住下次连接优先尝试的通道（手动切换或按设备记忆） */
+    override fun preferChannel(channel: BleChannel?) {
+        preferred = channel
+    }
+
+    /** 手动切换通道：断开当前链路，交给重连循环按新通道重连 */
+    override suspend fun switchChannel(channel: BleChannel) {
+        preferred = channel
+        val p = peripheral
+        if (p == null) {
+            logI("已记录通道偏好 ${channel.id}（未连接，下次连接生效）")
+            return
+        }
+        logI("手动切换通道 → ${channel.label}（${channel.id}），断开后按新通道重连")
+        _connectHint.value = "正在切换到${channel.label}…"
+        runCatching { central.cancelPeripheralConnection(p) }
     }
 }
 

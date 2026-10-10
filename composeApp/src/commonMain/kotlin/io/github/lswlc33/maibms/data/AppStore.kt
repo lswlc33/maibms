@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms.data
 
+import io.github.lswlc33.maibms.transport.BleChannel
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -95,6 +96,22 @@ object AppStore {
     var autoUpgradeTarget: Int
         get() = get(KEY_AUTOUP)?.toIntOrNull() ?: 0
         set(v) = put(KEY_AUTOUP, v.toString())
+
+    // ---- BLE 通道偏好（按设备记住；docs/02-蓝牙链路.md §2.2）----
+
+    /** 该设备上次使用的通道 id（用户手动切换后写入）；null = 按默认优先顺序探测 */
+    fun loadChannel(address: String?): String? = address?.let { get("ble.channel.$it") }
+
+    fun saveChannel(address: String?, channelId: String?) {
+        if (address.isNullOrBlank()) return
+        put("ble.channel.$address", channelId)
+    }
+
+    /** 该设备记忆的通道（非法/未记录返回 null） */
+    fun channelFor(address: String?): BleChannel? = BleChannel.byId(loadChannel(address))
+
+    /** 记住该设备使用的通道 */
+    fun setChannelFor(address: String?, channel: BleChannel) = saveChannel(address, channel.id)
 
     // ---- 数据快照（JSON 全文存 KV；索引行管理列表，新在前，上限自动滚动） ----
 

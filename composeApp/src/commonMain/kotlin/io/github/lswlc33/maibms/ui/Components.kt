@@ -22,6 +22,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +50,7 @@ import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
 import io.github.lswlc33.maibms.data.DEFAULT_POWER_STAGES
+import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtDurationSec
 import io.github.lswlc33.maibms.data.fmtRemainingMin
@@ -302,6 +304,7 @@ fun BatteryCard(
 ) {
     // 填充色 = 电量进度色，未填充部分用同色淡底（截图里的「绿 + 淡绿」进度背景），不再是空卡底
     // 未连接/无数据时用中性灰：真实 0% 才是低电红，别让空态看着像报警
+    val caps = MockBms.caps.collectAsState().value
     val fill = fillColor ?: when {
         !status.hasData -> BmsColors.OffGray
         status.soc <= 15 -> BmsColors.BadRed
@@ -368,8 +371,15 @@ fun BatteryCard(
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                 )
-                Text(
-                    "${status.totalCycleAh}Ah 循环 · ${status.runtime}",
+                // 保护板：累计循环容量 + 运行时间（实时帧扩展段）。
+                // 电量计没有"运行时间"这个字段（协议里没有）——只显示循环次数，不留 "--" 占位。
+                val cycleLine = when {
+                    caps.extTimes -> "${status.totalCycleAh}Ah 循环 · ${status.runtime}"
+                    status.cycles > 0 -> "循环 ${status.cycles} 次"
+                    else -> ""
+                }
+                if (cycleLine.isNotEmpty()) Text(
+                    cycleLine,
                     fontSize = 10.sp, fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = .72f),
                     maxLines = 1,
@@ -380,7 +390,7 @@ fun BatteryCard(
                 verticalArrangement = Arrangement.SpaceBetween,
                 horizontalAlignment = Alignment.End
             ) {
-                if (showPerm) Row(
+                if (showPerm && caps.permission) Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
                         .clip(RoundedCornerShape(99.dp))
@@ -423,6 +433,33 @@ fun SmallChip(text: String) {
     ) { Text(text, fontSize = 9.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
 }
 
+/**
+ * 中继信息卡（仅电量计模式显示）。
+ *
+ * **标题 = 当前电量计品牌**（如"陆行电量计"/"蓝宝电量计"）——这样连上电量计后一眼能看出是哪家的模块；
+ * 内容 = 它正在中继的保护板品牌 / MAC（蓝宝可报品牌+MAC，陆行能报品牌+MAC）。
+ */
+@Composable
+fun RelayBoardCard(meterLabel: String, brand: String, mac: String, modifier: Modifier = Modifier) {
+    SectionCard(modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(meterLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.weight(1f))
+            SmallChip("电量计中继")
+        }
+        Spacer(Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("中继保护板", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
+            Text(brand, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        }
+        Spacer(Modifier.height(2.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("MAC", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
+            Text(mac, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
+        }
+    }
+}
+
 /* ---------- 卡2：状态 + 容量 ---------- */
 
 @Composable
@@ -430,20 +467,22 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         // 没收到过数据就一律 "--"：拿 0.0Ah / 0% 当读数是误导
         fun v(text: String) = if (status.hasData) text else "--"
+        val caps = MockBms.caps.collectAsState().value
         // 左=MOS/均衡，右=电池状态+容量，左右各三行（SOH 已按需求移除）。
         // 每行必须是同一个 Row：此前左右各一个 Column 自堆自的，行高由各行内容
         // （中文 vs 拉丁数字的字体行高）决定，两列从第二行起逐行错位。
+        // 电量计没有 MOS/均衡 → 只保留右侧的状态/容量列（不显示读不到的 MOS 行）
         val rows = listOf(
-            listOf(
-                Triple(BmsColors.OffGray, "充电 MOS", v(status.chMos)),
+            listOfNotNull(
+                Triple(BmsColors.OffGray, "充电 MOS", v(status.chMos)).takeIf { caps.mos },
                 Triple(BmsColors.WarnAmber, "电池状态", v(status.battState)),
             ),
-            listOf(
-                Triple(BmsColors.OkGreen, "放电 MOS", v(status.disMos)),
+            listOfNotNull(
+                Triple(BmsColors.OkGreen, "放电 MOS", v(status.disMos)).takeIf { caps.mos },
                 Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".fmt(status.remainCapAh) + " Ah" else "--"),
             ),
-            listOf(
-                Triple(BmsColors.OffGray, "均衡状态", v(status.balance)),
+            listOfNotNull(
+                Triple(BmsColors.OffGray, "均衡状态", v(status.balance)).takeIf { caps.balance },
                 Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".fmt(status.totalCapAh) + " Ah" else "--"),
             ),
         )
@@ -497,6 +536,7 @@ fun MetricGridCard(
     val metrics = status.metrics()
     val powerW = status.power
     val hasData = status.hasData
+    val caps = MockBms.caps.collectAsState().value
     var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
     var stages by remember { mutableStateOf(AppStore.powerStagesW) }
     var editing by remember { mutableStateOf(false) }
@@ -567,7 +607,7 @@ fun MetricGridCard(
                     // 「充电剩余」，放电/静置给「放电剩余」——不再两项并列，免掉恒有一项 "--" 的噪音。
                     // 文字整行居中收在本列内，不往右挤立牌和卡1 的电量角标
                     val chargingNow = hasData && powerW < -20
-                    Text(
+                    if (caps.extTimes) Text(
                         (if (chargingNow) "充电剩余 " else "放电剩余 ") +
                             fmtRemainingMin(if (chargingNow) status.remainChargeMin else status.remainDischargeMin),
                         fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
@@ -579,7 +619,7 @@ fun MetricGridCard(
                         if (status.thisChargeSec > 0) add("已充 " + fmtDurationSec(status.thisChargeSec))
                         if (status.lastChargeGapSec > 0) add("距上次充电 " + fmtDurationSec(status.lastChargeGapSec))
                     }
-                    if (statLine.isNotEmpty()) Text(
+                    if (caps.extTimes && statLine.isNotEmpty()) Text(
                         statLine.joinToString(" · "),
                         fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
                         textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
@@ -775,6 +815,8 @@ fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
 
 @Composable
 fun ProtectAlarmCards(status: BmsStatus, onSeeAll: () -> Unit, modifier: Modifier = Modifier) {
+    // 电量计没有保护/告警位域：整块隐藏（否则永远是两张空卡）
+    if (!MockBms.caps.collectAsState().value.protectAlarm) return
     // 连接后两卡都空 → 整块隐藏（父列 spacedBy(8dp) 自动吸收间距）；未连接保留占位
     if (status.hasData && status.protectList.isEmpty() && status.alarmList.isEmpty()) return
     // IntrinsicSize.Min：两卡按内容较多的一侧撑齐高度（一侧空一侧有条目时不再一高一低）
@@ -893,7 +935,8 @@ private fun TempBox(label: String, value: Double?, modifier: Modifier = Modifier
 
 @Composable
 fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
-                 avgCell: String = "--", deltaCell: String = "--") {
+                 avgCell: String = "--", deltaCell: String = "--",
+                 maxCell: String = "--", minCell: String = "--") {
     SectionCard(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
             Text(if (cells.isEmpty()) "单体电压" else "单体电压 × ${cells.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -907,8 +950,19 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
             }
         }
         if (cells.isEmpty()) {
-            Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 2.dp))
+            // 电量计（蓝宝）没有逐串，但有最高/最低/压差：这里退化为一行汇总，而不是空卡
+            val hasMinMax = maxCell != "--" || minCell != "--"
+            if (hasMinMax) {
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
+                    MiniStat("最高", maxCell, Modifier.weight(1f))
+                    MiniStat("最低", minCell, Modifier.weight(1f))
+                    MiniStat("平均", avgCell, Modifier.weight(1f))
+                    MiniStat("压差", deltaCell, Modifier.weight(1f))
+                }
+            } else {
+                Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 2.dp))
+            }
             return@SectionCard
         }
         // 5 列：20 串正好 4 行（4 列要 5 行，仪表盘上白白多一排）。窄屏 360dp 实测每格仍容得下 4.263
@@ -926,6 +980,17 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
             fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 3.dp),
         )
+    }
+}
+
+@Composable
+private fun MiniStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(vertical = 5.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(label, fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+        Text(value, fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
     }
 }
 

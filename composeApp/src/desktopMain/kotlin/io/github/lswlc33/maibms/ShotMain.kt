@@ -93,6 +93,18 @@ private class ShotTransport : io.github.lswlc33.maibms.transport.BmsTransport {
     private val _incoming = kotlinx.coroutines.flow.MutableSharedFlow<ByteArray>(extraBufferCapacity = 4)
     override val incoming: kotlinx.coroutines.flow.SharedFlow<ByteArray> = _incoming
     override val supportsScan: Boolean get() = false
+    // 通信通道页的截图态：模拟"这块硬件有备用通道、当前正跑在备用 A 上"
+    override val activeChannel = kotlinx.coroutines.flow.MutableStateFlow<io.github.lswlc33.maibms.transport.BleChannel?>(
+        io.github.lswlc33.maibms.transport.BleChannel.BackupA
+    )
+    override val availableChannels = kotlinx.coroutines.flow.MutableStateFlow(
+        listOf(
+            io.github.lswlc33.maibms.transport.BleChannel.Default,
+            io.github.lswlc33.maibms.transport.BleChannel.BackupA,
+            io.github.lswlc33.maibms.transport.BleChannel.BackupB,
+        )
+    )
+    override val supportsChannelSwitch: Boolean get() = true
     override suspend fun connect(address: String?) { _link.value = io.github.lswlc33.maibms.transport.LinkState.Connected }
     override suspend fun disconnect() { _link.value = io.github.lswlc33.maibms.transport.LinkState.Disconnected }
     override suspend fun write(frame: ByteArray) { /* 静默：截图不依赖设备应答 */ }
@@ -207,6 +219,8 @@ private val shots = listOf(
     Shot("15-dialog-perm", dark = true, dialog = { DialogKind.PermLevels }),
     Shot("17-config-light", dark = false, route = Route.Config),
     Shot("18-settings-light", dark = false, route = Route.Settings),
+    Shot("19-channels", dark = true, route = Route.Channels),
+    Shot("20-channels-light", dark = false, route = Route.Channels),
 )
 
 /** 截图里用的参数条目：直接按 ParamTable 的定义与当前 seed 数据构造（与界面同一条路径） */

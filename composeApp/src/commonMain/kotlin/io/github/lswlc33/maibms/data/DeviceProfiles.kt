@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms.data
 
+import io.github.lswlc33.maibms.transport.DeviceFamily
 import kotlin.concurrent.Volatile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -20,6 +21,8 @@ data class DeviceProfile(
     /** 最近一次连接（建链成功）时刻，epoch ms；列表按它倒序展示、超限淘汰 */
     val lastConnectedAt: Long = 0L,
     val passwords: Map<Int, String> = emptyMap(),
+    /** 设备家族（按广播名判定）；老档案没有此字段时为 Unknown（回退按保护板处理） */
+    val family: DeviceFamily = DeviceFamily.Unknown,
 ) {
     /** 展示名：备注优先，其次广播名，都没有给地址兜底 */
     val displayName: String
