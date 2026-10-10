@@ -211,14 +211,17 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: 提交版本号
+      - name: 提交版本号并同步官网兜底
         env:
           OLD_CODE: ${{ needs.version.outputs.old_code }}
           CODE: ${{ needs.version.outputs.code }}
           NAME: ${{ needs.version.outputs.name }}
+          TAG: ${{ needs.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           GRADLE_FILE=composeApp/build.gradle.kts
+          SITE=docs/index.html
 
           # 构建期间可能有人又推了版本号：此时直接停，别把基于旧版本构建出来的包
           # 当成最新版发布（tag 会指向一个和包内容对不上的提交）
@@ -231,16 +234,36 @@ jobs:
           sed -i "s/versionCode = [0-9]\+/versionCode = ${CODE}/" "$GRADLE_FILE"
           sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$GRADLE_FILE"
 
+          # 顺手同步官网的内联版本兜底：接口拉不到时官网显示的就是那几个常量，
+          # 不跟着发版走就会一直停在旧版本（国内访问 api.github.com 慢或被挡并不少见）
+          if [ -f "$SITE" ]; then
+            sed -i -E "s|^([[:space:]]*var FALLBACK_TAG_STABLE = ).*|\1\"${TAG}\";|" "$SITE"
+            sed -i -E "s|^([[:space:]]*var FALLBACK_VER_STABLE = ).*|\1\"${NAME}\";|" "$SITE"
+            # 测试版那两组取仓库里最新的预发布——正式版发布本身不产生新的 pre-release
+            BETA_TAG="$(gh release list --limit 30 --json tagName,isPrerelease \
+              --jq '[.[] | select(.isPrerelease)][0].tagName // empty' 2>/dev/null || true)"
+            if [ -n "$BETA_TAG" ]; then
+              sed -i -E "s|^([[:space:]]*var FALLBACK_TAG_BETA = ).*|\1\"${BETA_TAG}\";|" "$SITE"
+              sed -i -E "s|^([[:space:]]*var FALLBACK_VER_BETA = ).*|\1\"${BETA_TAG#v}\";|" "$SITE"
+            else
+              echo "::warning::仓库里没有预发布，官网的测试版兜底保持不变"
+            fi
+            echo "--- 官网版本兜底已同步 ---"
+            grep -E "var FALLBACK_(TAG|VER)_(STABLE|BETA)" "$SITE"
+          fi
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$GRADLE_FILE"
+          if [ -f "$SITE" ]; then git add "$SITE"; fi
           # 写成 if 而不是 `A && {...}`：本步骤开了 set -e，前者行为更明确
           if git diff --cached --quiet; then
             echo "版本号无变化，跳过提交"
             exit 0
           fi
           # [skip ci] 防止这次提交又触发一轮 Beta 构建
-          git commit -m "chore(release): v${NAME} [skip ci]"
+          git commit -m "chore(release): v${NAME} [skip ci]" \
+            -m "同一次提交里把官网 docs/index.html 的内联版本兜底同步到本次发布。"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Publish the GitHub release

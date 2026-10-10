@@ -542,12 +542,21 @@
   ];
 
   /* 内联兜底 = 最后一次已知可用的版本快照，只有「接口连不上」时才会被用户看到
-     （国内访问 api.github.com 慢或被挡并不少见）。联网后立刻被真实数据覆盖。 */
+     （国内访问 api.github.com 慢或被挡并不少见）。联网后立刻被真实数据覆盖。
+     下面四个常量由 release.yml 在发版时自动改写（见「提交版本号」步骤），别手改格式：
+     文件名统一按 maibms-<版本>.apk / maibms-<版本>-unsigned.ipa 拼，所以只需要版本号。 */
+  var FALLBACK_TAG_STABLE = "3-0.1.2";
+  var FALLBACK_VER_STABLE = "0.1.2";
+  var FALLBACK_TAG_BETA = "v0.1.2-beta.32";
+  var FALLBACK_VER_BETA = "0.1.2-beta.32";
+
   var FALLBACK = {
-    stable: { tag:"3-0.1.2",        ver:"0.1.2",         apk:"maibms-0.1.2.apk",         apkSize:0,
-              ipa:"maibms-0.1.2-unsigned.ipa", ipaSize:0 },
-    beta:   { tag:"v0.1.2-beta.32", ver:"0.1.2-beta.32", apk:"maibms-0.1.2-beta.32.apk", apkSize:0,
-              ipa:"maibms-0.1.2-beta.32-unsigned.ipa", ipaSize:0 }
+    stable: { tag:FALLBACK_TAG_STABLE, ver:FALLBACK_VER_STABLE,
+              apk:"maibms-" + FALLBACK_VER_STABLE + ".apk", apkSize:0,
+              ipa:"maibms-" + FALLBACK_VER_STABLE + "-unsigned.ipa", ipaSize:0 },
+    beta:   { tag:FALLBACK_TAG_BETA, ver:FALLBACK_VER_BETA,
+              apk:"maibms-" + FALLBACK_VER_BETA + ".apk", apkSize:0,
+              ipa:"maibms-" + FALLBACK_VER_BETA + "-unsigned.ipa", ipaSize:0 }
   };
 
   /* 正式版不单独发 ipa：先用内联兜底里的测试版 ipa 占位，联网后再被最新值覆盖 */
