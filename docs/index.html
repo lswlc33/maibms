@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>麻衣 BMS · MAI BMS — 最纯粹的保护板蓝牙查看器</title>
+<meta name="description" content="麻衣 BMS（MAI BMS）：蚂蚁 BMS 保护板的非官方蓝牙客户端。不联网、不加仪表、不要大炮充电器，一部手机直连保护板，极致的连接速度与信息展示率。支持 Android(APK) 与 iOS(IPA)。">
+<meta name="theme-color" content="#0a0c10">
+<meta property="og:title" content="麻衣 BMS · MAI BMS">
+<meta property="og:description" content="最纯粹的保护板蓝牙查看器。极致的连接速度，极致的信息展示率。">
+<meta property="og:type" content="website">
+<link rel="icon" href="images/app-icon-512.png">
+<style>
+  :root{
+    --bg:#0a0c10; --bg-soft:#0e1116;
+    --panel:#12151c; --panel-2:#171b24; --panel-3:#1d222d;
+    --line:rgba(255,255,255,.09); --line-strong:rgba(255,255,255,.16);
+    --text:#e8ebf1; --muted:#9aa4b4; --faint:#6b7484;
+    --accent:#3fe0a5; --accent-2:#4cc2ff;
+    --shadow:0 24px 60px -24px rgba(0,0,0,.85);
+    --radius:22px;
+  }
+  html[data-theme="light"]{
+    --bg:#f5f7fa; --bg-soft:#eef1f6;
+    --panel:#ffffff; --panel-2:#f7f9fc; --panel-3:#eef2f8;
+    --line:rgba(10,20,40,.10); --line-strong:rgba(10,20,40,.18);
+    --text:#111722; --muted:#5a6577; --faint:#8792a3;
+    --accent:#0aa476; --accent-2:#0b83d6;
+    --shadow:0 20px 46px -26px rgba(20,40,80,.45);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(1000px 520px at 82% -8%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%),
+                     radial-gradient(820px 460px at 6% 4%, color-mix(in srgb, var(--accent-2) 14%, transparent), transparent 62%);
+    background-attachment:fixed;
+  }
+  a{color:inherit}
+  img{max-width:100%; display:block}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .wrap{width:min(1160px,100%); margin:0 auto; padding:0 20px}
+
+  /* ---------- header ---------- */
+  header{
+    position:sticky; top:0; z-index:50;
+    backdrop-filter:blur(14px);
+    background:color-mix(in srgb, var(--bg) 78%, transparent);
+    border-bottom:1px solid var(--line);
+  }
+  .nav{display:flex; align-items:center; gap:14px; height:62px}
+  .brand{display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:.2px; text-decoration:none}
+  .brand img{width:30px; height:30px; border-radius:9px}
+  .brand b{font-size:16px}
+  .brand b{white-space:nowrap}
+  .brand span{color:var(--faint); font-weight:500; font-size:12px; letter-spacing:.14em}
+  .nav .links{display:flex; gap:22px; margin-left:auto}
+  .nav .links a{color:var(--muted); text-decoration:none; font-size:14px; transition:color .18s}
+  .nav .links a:hover{color:var(--text)}
+  .icon-btn{
+    width:38px; height:38px; display:grid; place-items:center; border-radius:11px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted);
+    cursor:pointer; font-size:16px; transition:.18s; flex:none;
+  }
+  .icon-btn:hover{color:var(--text); border-color:var(--line-strong)}
+  .gh-btn{
+    display:inline-flex; align-items:center; gap:8px; height:38px; padding:0 14px;
+    border-radius:11px; border:1px solid var(--line); background:var(--panel);
+    color:var(--text); text-decoration:none; font-size:14px; transition:.18s;
+  }
+  .gh-btn:hover{border-color:var(--line-strong); transform:translateY(-1px)}
+
+  /* ---------- hero ---------- */
+  .hero{padding:70px 0 48px}
+  .hero-grid{display:block}
+  .pill{
+    display:inline-flex; align-items:center; gap:8px; padding:6px 13px; border-radius:999px;
+    border:1px solid var(--line); background:var(--panel); color:var(--muted);
+    font-size:12.5px; letter-spacing:.02em;
+  }
+  .pill i{width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 12px var(--accent)}
+  h1{font-size:clamp(38px,6vw,60px); line-height:1.05; margin:20px 0 6px; letter-spacing:-.02em}
+  h1 .en{display:block; font-size:clamp(14px,2.2vw,18px); letter-spacing:.36em; color:var(--faint); font-weight:600; margin-top:12px}
+  .slogan{margin:22px 0 0; font-size:clamp(19px,2.7vw,26px); font-weight:700; line-height:1.5; letter-spacing:.01em}
+  .slogan .no{color:var(--accent-2); display:inline-block; white-space:nowrap; margin-right:16px}
+  .lead{color:var(--muted); font-size:16px; margin:18px 0 0; max-width:52ch}
+  .cta{display:flex; flex-wrap:wrap; gap:12px; margin-top:30px}
+  .btn{
+    display:inline-flex; align-items:center; gap:9px; height:50px; padding:0 24px;
+    border-radius:14px; text-decoration:none; font-weight:600; font-size:15.5px;
+    border:1px solid transparent; transition:.18s; cursor:pointer;
+  }
+  .btn-primary{
+    background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent-2) 70%,var(--accent)));
+    color:#04170f; box-shadow:0 14px 34px -14px color-mix(in srgb,var(--accent) 70%,transparent);
+  }
+  html[data-theme="light"] .btn-primary{color:#fff}
+  .btn-primary:hover{transform:translateY(-2px)}
+  .btn-ghost{background:var(--panel); border-color:var(--line); color:var(--text)}
+  .btn-ghost:hover{border-color:var(--line-strong); transform:translateY(-2px)}
+  .tri{display:flex; flex-wrap:wrap; gap:10px; margin-top:30px}
+  .tri span{
+    font-size:13px; color:var(--muted); padding:6px 12px; border-radius:9px;
+    border:1px dashed var(--line-strong); background:color-mix(in srgb,var(--panel) 60%,transparent);
+  }
+  .tri span b{color:var(--text)}
+
+  /* ---------- sections ---------- */
+  section{padding:64px 0; scroll-margin-top:70px}
+  .sec-head{margin-bottom:34px}
+  .sec-head .kicker{color:var(--accent); font-size:12.5px; letter-spacing:.22em; font-weight:700}
+  .sec-head h2{font-size:clamp(26px,3.6vw,36px); margin:10px 0 8px; letter-spacing:-.01em}
+  .sec-head p{color:var(--muted); margin:0; max-width:62ch}
+
+  .cards{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+  .card{
+    background:linear-gradient(180deg,var(--panel),var(--panel-2));
+    border:1px solid var(--line); border-radius:var(--radius); padding:24px;
+    transition:.2s;
+  }
+  .card:hover{border-color:var(--line-strong); transform:translateY(-3px)}
+  .card .ico{
+    width:44px; height:44px; border-radius:13px; display:grid; place-items:center;
+    font-size:20px; background:var(--panel-3); border:1px solid var(--line); margin-bottom:16px;
+  }
+  .card h3{margin:0 0 8px; font-size:17px; letter-spacing:.01em}
+  .card p{margin:0; color:var(--muted); font-size:14.5px}
+  .card p + p{margin-top:10px}
+  .card ul{margin:10px 0 0; padding-left:18px; color:var(--muted); font-size:14px}
+  .card li{margin:4px 0}
+  .badges{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px}
+  .badges b{
+    font-size:12px; font-weight:600; color:var(--muted); padding:4px 10px; border-radius:8px;
+    background:var(--panel-3); border:1px solid var(--line);
+  }
+
+  /* screenshots */
+  .shots{display:flex; gap:18px; overflow-x:auto; padding:6px 4px 22px; scroll-snap-type:x mandatory}
+  .shots::-webkit-scrollbar{height:8px}
+  .shots::-webkit-scrollbar-thumb{background:var(--line-strong); border-radius:99px}
+  .shot{scroll-snap-align:center; flex:none; width:214px}
+  .shot .frame{
+    width:100%; aspect-ratio:822/1828; border-radius:26px; overflow:hidden;
+    border:1px solid var(--line); background:var(--panel); box-shadow:var(--shadow);
+  }
+  .shot .frame img{width:100%; height:100%; object-fit:cover}
+  .shot figcaption{text-align:center; color:var(--muted); font-size:13px; margin-top:10px}
+
+  /* ---------- download ---------- */
+  .dl-shell{
+    border:1px solid var(--line); border-radius:calc(var(--radius) + 6px);
+    background:linear-gradient(180deg,var(--panel),var(--bg-soft));
+    padding:clamp(20px,3.4vw,36px); box-shadow:var(--shadow);
+  }
+  .dl-top{display:flex; flex-wrap:wrap; gap:16px; align-items:center; justify-content:space-between}
+  .seg{display:inline-flex; padding:5px; border-radius:14px; background:var(--panel-3); border:1px solid var(--line)}
+  .seg button{
+    border:0; background:transparent; color:var(--muted); cursor:pointer; font:inherit; font-size:14.5px;
+    padding:9px 20px; border-radius:10px; transition:.18s; white-space:nowrap;
+  }
+  .seg button.on{background:var(--panel); color:var(--text); box-shadow:var(--shadow); font-weight:600}
+  .seg button .dot{display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:8px; vertical-align:1px}
+  .seg button[data-ver="stable"] .dot{background:var(--accent)}
+  .seg button[data-ver="beta"] .dot{background:var(--accent-2)}
+  .dl-ver{color:var(--faint); font-size:13.5px}
+  .dl-ver b{color:var(--text)}
+
+  .dl-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:22px}
+  .dl-card{
+    display:flex; flex-direction:column; gap:14px; text-decoration:none; color:inherit;
+    border:1px solid var(--line); border-radius:var(--radius); padding:22px;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel)); transition:.2s; position:relative; overflow:hidden;
+  }
+  .dl-card:hover{border-color:color-mix(in srgb,var(--accent) 55%,var(--line)); transform:translateY(-3px)}
+  .dl-card .os{display:flex; align-items:center; gap:12px}
+  .dl-card .os .glyph{
+    width:46px; height:46px; flex:none; border-radius:13px; display:grid; place-items:center;
+    font-size:22px; background:var(--panel-3); border:1px solid var(--line);
+  }
+  .dl-card .os h3{margin:0; font-size:17px}
+  .dl-card .os small{display:block; color:var(--faint); font-size:12.5px; letter-spacing:.06em}
+  .dl-card .meta{color:var(--muted); font-size:13.5px; min-height:20px; line-height:1.55}
+  .dl-card .meta b{color:var(--text)}
+  .dl-card .meta code{color:var(--text); font-size:12.5px; word-break:break-all}
+  .dl-card .go{
+    margin-top:auto; display:inline-flex; align-items:center; gap:8px; font-weight:600; font-size:14.5px;
+    color:var(--accent);
+  }
+  .dl-card .go .arrow{transition:transform .2s}
+  .dl-card:hover .go .arrow{transform:translateX(4px)}
+  .dl-card[data-state="warn"] .go{color:var(--accent-2)}
+  /* 切换节点 / 版本后闪一下，提示内容已更新 */
+  .dl-card::after{
+    content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+    background:color-mix(in srgb,var(--accent) 20%,transparent); opacity:0;
+  }
+  .dl-card.flash{animation:dlRing .8s ease-out}
+  .dl-card.flash::after{animation:dlTint .8s ease-out}
+  @keyframes dlRing{
+    0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 55%,transparent)}
+    100%{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 0%,transparent)}
+  }
+  @keyframes dlTint{0%{opacity:0} 16%{opacity:1} 100%{opacity:0}}
+  #footHint.flash{color:var(--accent); animation:hintFlash .9s ease-out}
+  @keyframes hintFlash{0%{opacity:.3} 25%{opacity:1} 100%{opacity:1}}
+  .ribbon{
+    position:absolute; top:14px; right:14px; font-size:11px; letter-spacing:.04em; color:var(--faint);
+    border:1px solid var(--line); border-radius:999px; padding:3px 10px; background:color-mix(in srgb,var(--bg) 70%,transparent);
+  }
+
+  .nodes{margin-top:24px}
+  .nodes .label{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13.5px; margin-bottom:12px}
+  .nodes .label em{font-style:normal; color:var(--faint); font-size:12.5px}
+  .chips{display:flex; flex-wrap:wrap; gap:10px}
+  .chip{
+    border:1px solid var(--line); background:var(--panel-2); color:var(--muted); cursor:pointer;
+    font:inherit; font-size:13.5px; padding:9px 15px; border-radius:11px; transition:.18s;
+    display:inline-flex; align-items:center; gap:8px;
+  }
+  .chip:hover{border-color:var(--line-strong); color:var(--text)}
+  .chip.on{border-color:color-mix(in srgb,var(--accent) 60%,var(--line)); color:var(--text); background:var(--panel)}
+  .chip .flag{font-size:12px; opacity:.85}
+  .chip.on::after{content:""; width:7px; height:7px; border-radius:50%; background:var(--accent)}
+
+  .dl-foot{display:flex; flex-wrap:wrap; gap:12px 22px; align-items:center; margin-top:22px; color:var(--faint); font-size:13px}
+  .dl-foot a{color:var(--muted); text-decoration:none; border-bottom:1px solid var(--line-strong)}
+  .dl-foot a:hover{color:var(--text)}
+  .copy-btn{
+    border:1px solid var(--line); background:var(--panel-2); color:var(--muted); cursor:pointer;
+    font:inherit; font-size:13px; padding:8px 14px; border-radius:10px; transition:.18s;
+  }
+  .copy-btn:hover{color:var(--text); border-color:var(--line-strong)}
+
+  .notes{display:grid; grid-template-columns:repeat(2,1fr); gap:16px; margin-top:26px}
+  .note{
+    border:1px solid var(--line); border-left:3px solid var(--accent-2); border-radius:14px;
+    background:var(--panel-2); padding:18px 20px;
+  }
+  .note h4{margin:0 0 8px; font-size:15px}
+  .note p{margin:0; color:var(--muted); font-size:13.8px}
+  .note b{color:var(--text)}
+
+  /* ---------- footer ---------- */
+  footer{border-top:1px solid var(--line); padding:40px 0 54px; margin-top:26px; color:var(--faint); font-size:13.4px}
+  .foot-grid{display:flex; flex-wrap:wrap; gap:18px; justify-content:space-between; align-items:flex-start}
+  .foot-brand{display:flex; align-items:center; gap:10px; color:var(--muted)}
+  .foot-brand img{width:26px; height:26px; border-radius:8px}
+  footer a{color:var(--muted); text-decoration:none}
+  footer a:hover{color:var(--text)}
+  .disclaimer{margin-top:18px; max-width:78ch; line-height:1.7}
+
+  @media (max-width:900px){
+    .cards{grid-template-columns:1fr 1fr}
+    .nav .links{display:none}
+  }
+  @media (max-width:640px){
+    section{padding:46px 0}
+    .hero{padding:44px 0 24px}
+    .nav{gap:8px}
+    .brand span{display:none}
+    .brand b{font-size:15px}
+    .gh-btn{padding:0 11px; gap:6px}
+    .gh-btn .gh-text{display:none}
+    .cards{grid-template-columns:1fr}
+    .dl-grid{grid-template-columns:1fr}
+    .notes{grid-template-columns:1fr}
+    .btn{flex:1 1 100%; justify-content:center}
+    .shot{width:170px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important; scroll-behavior:auto}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top">
+      <img src="images/app-icon-512.png" alt="麻衣 BMS 图标">
+      <b>麻衣 BMS</b><span>MAI&nbsp;BMS</span>
+    </a>
+    <nav class="links">
+      <a href="#features">软件特色</a>
+      <a href="#shots">界面预览</a>
+      <a href="#download">下载</a>
+      <a href="#notes">安装说明</a>
+    </nav>
+    <button class="icon-btn" id="themeBtn" title="切换深色 / 浅色" aria-label="切换主题">◐</button>
+    <a class="gh-btn" href="https://github.com/lswlc33/maibms" target="_blank" rel="noopener"><span>★</span><span class="gh-text">开源仓库</span></a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ================= HERO ================= -->
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="pill"><i></i> 非官方 · 开源 · MIT · Kotlin Multiplatform</span>
+        <h1>麻衣 BMS<span class="en">M A I&nbsp;&nbsp;B M S</span></h1>
+        <p class="slogan">
+          <span class="no">NO 联网</span><span class="no">NO 仪表</span><span class="no">NO “大炮”充电器</span><br>
+          最纯粹的保护板蓝牙查看器
+        </p>
+        <p class="lead">
+          极致的连接速度，极致的信息展示率。一部手机直连保护板蓝牙，把仪表盘、实时数据与参数配置
+          全部装进你的口袋 —— 只为给骑友带来最好的 BMS 应用体验。
+        </p>
+        <div class="cta">
+          <a class="btn btn-primary" href="#download">⬇ 立即下载</a>
+          <a class="btn btn-ghost" href="https://github.com/lswlc33/maibms" target="_blank" rel="noopener">查看源码</a>
+        </div>
+        <div class="tri">
+          <span><b>直连 BLE</b>　不经过小程序容器</span>
+          <span><b>一屏尽览</b>　不用来回翻页</span>
+          <span><b>Android / iOS</b>　同一套代码</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FEATURES ================= -->
+  <section id="features">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">FEATURES</div>
+        <h2>软件特色</h2>
+        <p>把官方小程序里要一层层点进去的功能，重写成一套原生应用：直连、快、干净、一眼看得清。</p>
+      </div>
+      <div class="cards">
+
+        <div class="card">
+          <div class="ico">🌙</div>
+          <h3>深色模式，为 OLED 而生</h3>
+          <p>深色下底色恒为纯黑 <code>#000000</code>，卡片比背景亮一档分层，省电又干净；浅色为极浅灰底 + 纯白卡片。</p>
+          <div class="badges"><b>跟随系统</b><b>浅色</b><b>深色</b><b>记忆选择</b></div>
+        </div>
+
+        <div class="card">
+          <div class="ico">📊</div>
+          <h3>一屏尽览，信息不翻页</h3>
+          <p>设备信息、MOS/均衡状态、容量、总压电流功率、单体电压、温度、趋势曲线与控制开关，全部铺在首屏。</p>
+          <ul>
+            <li>单体电压网格：最高标黄、最低标蓝、均衡带绿点</li>
+            <li>保护与告警分开两栏，各带计数</li>
+            <li>未连接统一显示 <code>--</code>，不会把“没有数据”误读成 0</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="ico">✨</div>
+          <h3>界面更优雅</h3>
+          <p>无边框扁平卡片，只靠底色明度与 20dp 大圆角分块；悬浮式底栏，选中项用 M3 药丸指示器。</p>
+          <ul>
+            <li>进入二级页右滑入、返回原路退回</li>
+            <li>全局行高按字号等比收紧，同屏多看约三成</li>
+            <li>窄屏 360dp 单独复核过排版</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="ico">⚡</div>
+          <h3>更快、更稳</h3>
+          <p>直连 BLE，冷启动即自动重连上次的设备；掉线自愈（失败退避 + 周期性切换 <code>autoConnect</code>）。</p>
+          <ul>
+            <li>密码按设备保存，连上后自动升权，权限回落会静默重升</li>
+            <li>应答按「功能码 + 寄存器」双比对，避免把迟到应答当成结果</li>
+            <li>写参数后回读校验，不会“写完什么都不显示”</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="ico">🧾</div>
+          <h3>分级日志，排障不求人</h3>
+          <p>协议层关键信息都记在应用内（设置 → 开发者），不用每次都接 adb。</p>
+          <div class="badges"><b>D 帧级</b><b>I 操作级</b><b>W 可恢复</b><b>E 失败</b></div>
+          <p>环形缓冲 600 条，可过滤、按级别着色、一键导出为文件。</p>
+        </div>
+
+        <div class="card">
+          <div class="ico">🔐</div>
+          <h3>参数读写与权限</h3>
+          <p>参数分组浏览与逐项编辑，写入前校验范围与倍率；<b>1~2 级只读、3 级及以上可写</b>，顶栏有权限指示。</p>
+          <ul>
+            <li>控制命令含高危二次确认（需输入“确认”）</li>
+            <li>各等级密码按设备保存，保存时直接向设备校验</li>
+            <li>通信通道可手动切默认 / 备用 A / 备用 B，并按设备记住</li>
+          </ul>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SCREENSHOTS ================= -->
+  <section id="shots">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">SCREENSHOTS</div>
+        <h2>界面预览</h2>
+        <p>深色 / 浅色、仪表盘、控制、参数与权限 —— 左右滑动查看。</p>
+      </div>
+      <div class="shots">
+        <figure class="shot"><div class="frame"><img src="images/home-dark.png" alt="仪表盘 · 深色" loading="lazy"></div><figcaption>仪表盘 · 深色</figcaption></figure>
+        <figure class="shot"><div class="frame"><img src="images/home-light.png" alt="仪表盘 · 浅色" loading="lazy"></div><figcaption>仪表盘 · 浅色</figcaption></figure>
+        <figure class="shot"><div class="frame"><img src="images/control.png" alt="控制命令" loading="lazy"></div><figcaption>控制命令</figcaption></figure>
+        <figure class="shot"><div class="frame"><img src="images/config.png" alt="参数配置" loading="lazy"></div><figcaption>参数配置</figcaption></figure>
+        <figure class="shot"><div class="frame"><img src="images/password.png" alt="权限与密码" loading="lazy"></div><figcaption>权限与密码</figcaption></figure>
+        <figure class="shot"><div class="frame"><img src="images/settings.png" alt="设置" loading="lazy"></div><figcaption>设置</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= DOWNLOAD ================= -->
+  <section id="download">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">DOWNLOAD</div>
+        <h2>下载</h2>
+        <p>选版本、选平台，再挑一个下载节点。正式版稳定优先，测试版抢先体验；APK 已签名可直接安装，IPA 需自签。</p>
+      </div>
+
+      <div class="dl-shell">
+        <div class="dl-top">
+          <div class="seg" id="verSeg" role="tablist" aria-label="版本">
+            <button data-ver="stable" class="on" role="tab" type="button"><span class="dot"></span>正式版</button>
+            <button data-ver="beta" role="tab" type="button"><span class="dot"></span>测试版</button>
+          </div>
+          <div class="dl-ver" id="verInfo">正在读取最新版本…</div>
+        </div>
+
+        <div class="dl-grid">
+          <a class="dl-card" id="cardApk" href="#">
+            <span class="ribbon">Android</span>
+            <div class="os">
+              <div class="glyph">🤖</div>
+              <div><h3>APK 安装包</h3><small>ANDROID 8.0+</small></div>
+            </div>
+            <div class="meta" id="apkMeta">…</div>
+            <span class="go">下载 APK <span class="arrow">→</span></span>
+          </a>
+
+          <a class="dl-card" id="cardIpa" href="#">
+            <span class="ribbon">iOS</span>
+            <div class="os">
+              <div class="glyph"></div>
+              <div><h3>IPA 安装包</h3><small>未签名 · 需自签</small></div>
+            </div>
+            <div class="meta" id="ipaMeta">…</div>
+            <span class="go">下载 IPA <span class="arrow">→</span></span>
+          </a>
+        </div>
+
+        <div class="nodes">
+          <div class="label">下载节点 <em>· 国内加速镜像，某个节点不通就换一个</em></div>
+          <div class="chips" id="chips"></div>
+        </div>
+
+        <div class="dl-foot">
+          <button class="copy-btn" id="copyBtn" type="button">复制当前下载直链</button>
+          <a href="https://github.com/lswlc33/maibms/releases" target="_blank" rel="noopener">查看全部版本（GitHub Releases）</a>
+          <span id="footHint"></span>
+        </div>
+
+        <div class="notes">
+          <div class="note" id="noteAndroid">
+            <h4>Android：直接安装</h4>
+            <p>最低支持 <b>Android 8.0（API 26）</b>。已用发布密钥签名，正式版与测试版同一密钥、可互相覆盖升级；首次启动会申请「附近的设备」权限用于扫描保护板。</p>
+          </div>
+          <div class="note" id="noteIos">
+            <h4>iOS：未签名 ipa，需自签安装</h4>
+            <p>用 Sideloadly / 爱思助手 / AltStore 以你的 Apple ID 自签后安装。免费 Apple ID 签名 <b>7 天过期</b>，到期重签即可；首次启动需在「设置 → 通用 → VPN与设备管理」信任证书。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ABOUT ================= -->
+  <section id="notes">
+    <div class="wrap">
+      <div class="sec-head">
+        <div class="kicker">ABOUT</div>
+        <h2>关于这个软件</h2>
+      </div>
+      <div class="cards">
+        <div class="card">
+          <div class="ico">📴</div>
+          <h3>核心功能全程离线</h3>
+          <p>数据只在手机与保护板之间流转，不采集、不上传。唯一的联网行为是「检查更新」——只读 GitHub Releases 公开接口，连不上时自动走国内镜像回退。</p>
+        </div>
+        <div class="card">
+          <div class="ico">🧩</div>
+          <h3>多端复用</h3>
+          <p>协议解析、数据层与全部界面用 Kotlin Multiplatform + Compose 一次编写，Android / iOS / 桌面三端复用；蓝牙与 App 外壳按平台各实现一份。</p>
+        </div>
+        <div class="card">
+          <div class="ico">📜</div>
+          <h3>开源 · MIT</h3>
+          <p>源码在 GitHub 开放，采用 MIT 许可证。非官方项目，与保护板厂商无任何关联；协议实现来自对设备通信的观察与逆向分析。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <img src="images/app-icon-512.png" alt="麻衣 BMS">
+        <span>麻衣 BMS · MAI BMS —— 最纯粹的保护板蓝牙查看器</span>
+      </div>
+      <div>
+        <a href="https://github.com/lswlc33/maibms" target="_blank" rel="noopener">GitHub 仓库</a>
+        &nbsp;·&nbsp;
+        <a href="https://github.com/lswlc33/maibms/releases" target="_blank" rel="noopener">全部版本</a>
+      </div>
+    </div>
+    <p class="disclaimer">
+      免责声明：本项目是非官方开源客户端，与保护板厂商无任何关联。修改保护板参数可能影响电池安全，请自行确认参数含义后再写入，因使用本软件造成的任何后果由使用者承担。
+    </p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  var REPO = "lswlc33/maibms";
+  var RELEASE_BASE = "https://github.com/" + REPO + "/releases/download/";
+
+  /* 下载节点：前四个为国内加速镜像（实测可正常回源），最后一个是官方直连兜底 */
+  var NODES = [
+    { id:"ghfast",     name:"ghfast.top",         flag:"加速", prefix:"https://ghfast.top/" },
+    { id:"ghproxynet", name:"ghproxy.net",        flag:"加速", prefix:"https://ghproxy.net/" },
+    { id:"imciel",     name:"ghproxy.imciel.com", flag:"加速", prefix:"https://ghproxy.imciel.com/" },
+    { id:"ghm",        name:"ghm.078465.xyz",     flag:"加速", prefix:"https://ghm.078465.xyz/" },
+    { id:"official",   name:"GitHub 官方直连",     flag:"直连", prefix:"" }
+  ];
+
+  /* 网络不可用时的兜底版本（与仓库当前 Release 对应，联网后会自动刷新） */
+  var FALLBACK = {
+    stable: { tag:"2-0.1.1",        ver:"0.1.1",         apk:"maibms-0.1.1.apk",         apkSize:0, ipa:null, ipaSize:0 },
+    beta:   { tag:"v0.1.1-beta.28", ver:"0.1.1-beta.28", apk:"maibms-0.1.1-beta.28.apk", apkSize:0,
+              ipa:"maibms-0.1.1-beta.28-unsigned.ipa", ipaSize:0 }
+  };
+
+  /* 正式版不单独发 ipa：先用内联兜底里的测试版 ipa 占位，联网后再被最新值覆盖 */
+  var FALLBACK_IPA = FALLBACK.beta.ipa
+    ? { tag:FALLBACK.beta.tag, asset:FALLBACK.beta.ipa, size:FALLBACK.beta.ipaSize }
+    : null;
+
+  var state = { ver:"stable", node:0, releases:JSON.parse(JSON.stringify(FALLBACK)), live:false, ipaFallback:FALLBACK_IPA };
+
+  function $(s){ return document.querySelector(s); }
+  function all(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); }
+
+  function fmtSize(bytes){
+    if(!bytes) return "";
+    var mb = bytes / 1048576;
+    return (mb >= 1 ? mb.toFixed(1) + " MB" : Math.max(1, Math.round(bytes/1024)) + " KB");
+  }
+
+  function parseRelease(rel){
+    var apk = rel.assets.filter(function(a){ return /\.apk$/i.test(a.name); })[0];
+    var ipa = rel.assets.filter(function(a){ return /\.ipa$/i.test(a.name); })[0];
+    var ver = apk ? apk.name.replace(/^maibms-/i,"").replace(/\.apk$/i,"") : rel.tag_name.replace(/^v/,"");
+    return {
+      tag: rel.tag_name, ver: ver,
+      apk: apk ? apk.name : null, apkSize: apk ? apk.size : 0,
+      ipa: ipa ? ipa.name : null, ipaSize: ipa ? ipa.size : 0
+    };
+  }
+
+  function urlFor(tag, asset){
+    if(!tag || !asset) return null;
+    return NODES[state.node].prefix + RELEASE_BASE + encodeURIComponent(tag) + "/" + encodeURIComponent(asset);
+  }
+
+  /* 正式版目前不单独发 ipa：取仓库里最新的一个 iOS 包作为兜底 */
+  function newestIpa(list){
+    for(var i=0;i<list.length;i++){
+      var ipa = list[i].assets.filter(function(a){ return /\.ipa$/i.test(a.name); })[0];
+      if(ipa) return { tag:list[i].tag_name, asset:ipa.name, size:ipa.size };
+    }
+    return null;
+  }
+
+  function render(){
+    var rel = state.releases[state.ver];
+    var isBeta = state.ver === "beta";
+
+    $("#verInfo").innerHTML = (isBeta ? "测试版" : "正式版") + " · <b>v" + rel.ver + "</b>" +
+      (state.live ? "" : " <span style='color:var(--faint)'>（离线兜底）</span>");
+
+    /* APK */
+    var apkUrl = urlFor(rel.tag, rel.apk);
+    var apkCard = $("#cardApk");
+    if(apkUrl){
+      apkCard.href = apkUrl; apkCard.dataset.state = "ok";
+      $("#apkMeta").innerHTML = "版本 <b>v" + rel.ver + "</b>" + (rel.apkSize ? " · " + fmtSize(rel.apkSize) : "") +
+        "<br><code>" + rel.apk + "</code>";
+    }else{
+      apkCard.href = "https://github.com/" + REPO + "/releases"; apkCard.target = "_blank";
+      apkCard.dataset.state = "warn";
+      $("#apkMeta").textContent = "该版本暂无 APK 产物，去 Releases 看看";
+    }
+
+    /* IPA */
+    var ipaTag   = rel.ipa ? rel.tag : (state.ipaFallback ? state.ipaFallback.tag : null);
+    var ipaAsset = rel.ipa ? rel.ipa : (state.ipaFallback ? state.ipaFallback.asset : null);
+    var ipaSize  = rel.ipa ? rel.ipaSize : (state.ipaFallback ? state.ipaFallback.size : 0);
+    var ipaUrl = urlFor(ipaTag, ipaAsset);
+    var ipaCard = $("#cardIpa");
+    if(ipaUrl){
+      ipaCard.href = ipaUrl; ipaCard.dataset.state = rel.ipa ? "ok" : "warn";
+      $("#ipaMeta").innerHTML = (rel.ipa ? "版本 <b>v" + rel.ver + "</b>" : "<b>随测试版同步发布</b>") +
+        (ipaSize ? " · " + fmtSize(ipaSize) : "") + "<br><code>" + ipaAsset + "</code>";
+    }else{
+      ipaCard.href = "https://github.com/" + REPO + "/releases"; ipaCard.target = "_blank";
+      ipaCard.dataset.state = "warn";
+      $("#ipaMeta").textContent = "暂无 IPA 产物，去 Releases 看看";
+    }
+
+    /* 节点与提示 */
+    all(".chip").forEach(function(c, i){ c.classList.toggle("on", i === state.node); });
+    $("#footHint").textContent = "当前节点：" + NODES[state.node].name;
+
+    if(!state.releases.stable.ipa && (state.releases.beta.ipa || state.ipaFallback)){
+      $("#noteIos").querySelector("p").innerHTML =
+        "iOS 未签名包当前随<b>测试版</b>同步发布，在正式版下点这个按钮取到的就是最新 iOS 包。用 Sideloadly / 爱思助手 / AltStore 以你的 Apple ID 自签后安装，免费账号签名 <b>7 天过期</b>。";
+    }
+  }
+
+  function buildChips(){
+    var box = $("#chips"); box.innerHTML = "";
+    NODES.forEach(function(n, i){
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "chip" + (i === 0 ? " on" : "");
+      b.innerHTML = "<span class='flag'>" + n.flag + "</span>" + n.name;
+      b.addEventListener("click", function(){ state.node = i; render(); flashDownload(); });
+      box.appendChild(b);
+    });
+  }
+
+  function bindSeg(){
+    all("#verSeg button").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        state.ver = btn.dataset.ver;
+        all("#verSeg button").forEach(function(b){ b.classList.toggle("on", b === btn); });
+        render();
+        flashDownload();
+      });
+    });
+  }
+
+  /* 切换节点 / 版本后让下载卡片闪一次，否则用户看不出链接已经换了 */
+  function flashDownload(){
+    var targets = [$("#cardApk"), $("#cardIpa"), $("#footHint")];
+    targets.forEach(function(el){
+      el.classList.remove("flash");
+      void el.offsetWidth;      /* 强制重排，保证连点也能重放动画 */
+      el.classList.add("flash");
+    });
+    window.clearTimeout(flashDownload._t);
+    flashDownload._t = window.setTimeout(function(){
+      targets.forEach(function(el){ el.classList.remove("flash"); });
+    }, 900);
+  }
+
+  function bindCopy(){
+    $("#copyBtn").addEventListener("click", function(){
+      var rel = state.releases[state.ver];
+      var url = urlFor(rel.tag, rel.apk) || urlFor(state.releases.stable.tag, state.releases.stable.apk);
+      if(!url) return;
+      var btn = $("#copyBtn");
+      var done = function(){ var t = btn.textContent; btn.textContent = "已复制 ✓"; setTimeout(function(){ btn.textContent = t; }, 1600); };
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(url).then(done, function(){ window.prompt("复制下载直链：", url); });
+      }else{
+        window.prompt("复制下载直链：", url);
+      }
+    });
+  }
+
+  function bindTheme(){
+    var saved = null;
+    try{ saved = localStorage.getItem("mai-theme"); }catch(e){}
+    var initial = saved || ((window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark");
+    document.documentElement.setAttribute("data-theme", initial);
+    $("#themeBtn").addEventListener("click", function(){
+      var now = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+      document.documentElement.setAttribute("data-theme", now);
+      try{ localStorage.setItem("mai-theme", now); }catch(e){}
+    });
+  }
+
+  function loadReleases(){
+    if(!window.fetch) return;
+    fetch("https://api.github.com/repos/" + REPO + "/releases?per_page=30", { headers:{ "Accept":"application/vnd.github+json" } })
+      .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(function(list){
+        if(!Array.isArray(list) || !list.length) return;
+        var pub = list.filter(function(r){ return !r.draft; });
+        var stableRel = pub.filter(function(r){ return !r.prerelease; })[0];
+        var betaRel   = pub.filter(function(r){ return r.prerelease; })[0];
+        if(stableRel) state.releases.stable = parseRelease(stableRel);
+        if(betaRel)   state.releases.beta   = parseRelease(betaRel);
+        state.ipaFallback = newestIpa(pub);
+        state.live = true;
+        render();
+      })
+      .catch(function(){ /* 保持兜底数据 */ });
+  }
+
+  buildChips();
+  bindSeg();
+  bindCopy();
+  bindTheme();
+  render();
+  loadReleases();
+})();
+</script>
+</body>
+</html>
