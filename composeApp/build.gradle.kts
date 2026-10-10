@@ -98,8 +98,8 @@ android {
         targetSdk = 35
         // CI 的 Release 工作流按「文件里第一处 versionCode/versionName」grep 自增——
         // 保持数字字面量写法，别改成变量引用（会打断自动发版）
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
         // 供给应用内「关于/检查更新」读取（commonMain 无法直接读 android.defaultConfig）
         buildConfigField("String", "APP_VERSION_NAME", "\"$versionName\"")
         buildConfigField("int", "APP_VERSION_CODE", "$versionCode")
