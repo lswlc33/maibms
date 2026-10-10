@@ -1,6 +1,14 @@
-name: Beta
+name: Beta · 预发布
 
-# 每次推送到 main 自动出一个预发布包，版本名带 -beta.<序号>，方便随时装最新改动。
+# 推送到 main 自动出一个预发布：APK 与未签名 ipa 并行构建，一起挂到同一个 pre-release。
+#
+# 「最快的速度 + 最小的包」是怎么落地的：
+#   - APK（ubuntu）与 ipa（macOS）拆成两个并行 job，总时长取较长的那一个，不再串行等；
+#   - ipa 用 Release 配置构建（默认的 Debug 会带调试符号 + -Onone，包体明显更大）；
+#   - APK 侧 R8 混淆 + 资源收缩在 composeApp/build.gradle.kts 里已经打开，这里直接复用；
+#   - 模拟器启动冒烟、截图、日志这些重活全部搬到按需触发的「IPA 测试」工作流，
+#     日常 main 推送只做「能出包、包能用」这一件事。
+#
 # 版本号只在工作区里改，不提交（避免和 Release 工作流的版本提交打架）。
 on:
   push:
@@ -23,8 +31,29 @@ env:
   KEEP_BETAS: 10
 
 jobs:
-  beta:
-    name: Beta
+  version:
+    name: 计算版本号
+    runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.v.outputs.name }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          set -euo pipefail
+          GRADLE_FILE=composeApp/build.gradle.kts
+          BASE="$(grep -oE 'versionName = "[^"]*"' "$GRADLE_FILE" | head -1 | cut -d'"' -f2)"
+          NAME="${BASE}-beta.${{ github.run_number }}"
+          echo "beta version: ${NAME} (versionCode $(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | head -1 | grep -oE '[0-9]+'))"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          # tag 必须是合法 semver（v 前缀 + 版本名）：Releases 列表按语义化版本排序，
+          # 旧式的纯数字后缀 tag 只能按字典序排（"beta-9" > "beta-12"），新版会被排到旧版后面
+          echo "tag=v${NAME}" >> "$GITHUB_OUTPUT"
+
+  apk:
+    name: 构建 APK
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +62,16 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 写入 beta 版本名
+        env:
+          NAME: ${{ needs.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" composeApp/build.gradle.kts
+          grep -E 'versionCode|versionName' composeApp/build.gradle.kts
 
       - name: Ensure Android platform and build-tools
         run: |
@@ -49,21 +88,6 @@ jobs:
           yes | "$SDKM" --licenses > /dev/null 2>&1 || true
           # pipefail 必须显式开：Actions 默认 bash -e 不含管道，安装失败会被 tail 吞成绿
           "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" | tail -3
-
-      - name: Tag the build as beta
-        id: version
-        run: |
-          set -e
-          GRADLE_FILE=composeApp/build.gradle.kts
-          CODE="$(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | head -1 | grep -oE '[0-9]+')"
-          BASE="$(grep -oE 'versionName = "[^"]*"' "$GRADLE_FILE" | head -1 | cut -d'"' -f2)"
-          NAME="${BASE}-beta.${{ github.run_number }}"
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$GRADLE_FILE"
-          echo "beta version: ${NAME} (versionCode ${CODE})"
-          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
-          # tag 必须是合法 semver（v 前缀 + 版本名）：GitHub Releases 列表按 tag 的语义化版本排序，
-          # 此前的 beta-12 这种纯数字后缀 tag 只能按字典序排（"beta-9" > "beta-12"），新版会被排到旧版后面
-          echo "tag=v${NAME}" >> "$GITHUB_OUTPUT"
 
       - name: Run unit tests
         run: |
@@ -96,7 +120,7 @@ jobs:
 
           SRC=composeApp/build/outputs/apk/release/composeApp-release.apk
           test -f "$SRC" || { echo "::error::未找到构建产物 $SRC"; exit 1; }
-          OUT="maibms-${{ steps.version.outputs.name }}.apk"
+          OUT="maibms-${{ needs.version.outputs.name }}.apk"
           cp "$SRC" "$OUT"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
 
@@ -105,36 +129,88 @@ jobs:
           APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)"
           test -n "$APKSIGNER" || { echo "::error::未找到 apksigner"; exit 1; }
           "$APKSIGNER" verify --print-certs "$OUT"
+          ls -la "$OUT"
           echo "built: $OUT"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: beta-apk
           path: ${{ steps.build.outputs.apk }}
           if-no-files-found: error
+          retention-days: 7
+
+  ipa:
+    name: 构建 ipa
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Kotlin/Native 工具链（~/.konan，约 1GB）：只在首次下载，缓存住后续运行
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: 构建未签名 ipa（Release 配置，包体最小）
+        id: ipa
+        uses: ./.github/actions/build-unsigned-ipa
+        with:
+          asset_name: maibms-${{ needs.version.outputs.name }}-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: beta-ipa
+          path: ${{ steps.ipa.outputs.ipa }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: 发布 pre-release
+    needs: [version, apk, ipa]
+    runs-on: ubuntu-latest
+    steps:
+      # 两个构建 job 的产物合并到同一个目录，再一起挂上 Release
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -la dist
 
       - name: Publish the pre-release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VER: ${{ steps.version.outputs.name }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VER: ${{ needs.version.outputs.name }}
         run: |
           set -euo pipefail
-          NOTES="预发布版 **${VER}**，由 \`${GITHUB_SHA:0:7}\` 自动构建，已签名可直接覆盖安装。
+          NOTES="预发布版 **${VER}**，由 \`${GITHUB_SHA:0:7}\` 自动构建。
 
-          Automated beta build **${VER}** from \`${GITHUB_SHA:0:7}\`. Signed, installs over the previous build."
+          - \`maibms-${VER}.apk\` —— 已签名，可直接覆盖安装
+          - \`maibms-${VER}-unsigned.ipa\` —— 未签名，需自签安装
+
+          Automated beta build **${VER}** from \`${GITHUB_SHA:0:7}\`. Signed APK installs over the previous build; the IPA is unsigned and needs self-signing."
           # 重跑幂等：run_number 不变时 tag/release 可能已存在，此时复用而不是让本步骤失败
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "release $TAG 已存在（重跑），仅上传产物覆盖"
-            gh release upload "$TAG" "${{ steps.build.outputs.apk }}" --clobber
+            gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" \
               --title "${VER}" \
               --target "$GITHUB_SHA" \
               --prerelease \
               --notes "$NOTES"
-            gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+            gh release upload "$TAG" dist/*
           fi
           echo "published: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 

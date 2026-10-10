@@ -1,0 +1,222 @@
+name: IPA 测试
+
+# 只在需要完整验证 iOS 侧时手动跑（Actions -> IPA 测试 -> Run workflow）。
+#
+# 为什么单独一个工作流：日常 main 推送不该背这么重的流程。beta.yml / release.yml 只负责
+# 「出包」，这里负责「验证」——两者分开后，出包那两条能保持最快。
+#
+# 包含（按执行顺序）：
+#   1. 单元测试（协议解析 / 数据管线）
+#   2. commonMain 平台中立性门禁（混入 JVM 专属 API 会当场失败）
+#   3. 两档 framework 编译 + 链接（arm64 真机 / arm64 模拟器）
+#   4. 未签名 ipa 打包（与正式发布同一套动作，Release 配置）
+#   5. 模拟器安装 + 启动冒烟 + 截图
+#   6. 运行日志、崩溃报告收集
+# 产物：ios-test-ipa（ipa）、ios-test-artifacts（截图 + 日志，无论成败都会上传）
+on:
+  workflow_dispatch:
+    inputs:
+      simulator_smoke:
+        description: '跑模拟器安装 + 启动冒烟（含截图）'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: iOS 全流程测试
+    # macos-15：随附 Xcode 16。xcodegen 2.46 生成的工程是 Xcode 16 的格式（objectVersion 77），
+    # macos-14 的 Xcode 15.4 读不了——报「future Xcode project file format (77)」
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: Build tools info
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version 2>/dev/null || true
+
+      - name: 单元测试（协议解析 / 数据管线）
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :composeApp:desktopTest
+
+      # 先做公共代码的平台中立性检查：commonMain 若混入 JVM 专属 API（java.* / System.* /
+      # String.format 等），metadata 编译会直接失败——比等到 K/N 编译到一半才发现快得多
+      - name: Compile common metadata (platform-neutrality gate)
+        run: ./gradlew --no-daemon :composeApp:compileCommonMainKotlinMetadata
+
+      # 编译 + 链接两档 iOS framework：arm64 真机（iosArm64）与 arm64 模拟器（iosSimulatorArm64）。
+      # 静态 framework 不需要签名，无 Apple 账号也能完整走通链接
+      - name: Compile & link iOS frameworks
+        run: |
+          ./gradlew --no-daemon \
+            :composeApp:linkDebugFrameworkIosArm64 \
+            :composeApp:linkDebugFrameworkIosSimulatorArm64
+
+      - name: 校验 framework 产物
+        run: |
+          set -euo pipefail
+          BASE=composeApp/build/bin
+          for ARCH in iosArm64 iosSimulatorArm64; do
+            FW="$BASE/$ARCH/debugFramework/ComposeApp.framework"
+            test -d "$FW" || { echo "::error::未找到 $FW"; exit 1; }
+            BIN="$FW/ComposeApp"
+            test -f "$BIN" || { echo "::error::未找到二进制 $BIN"; exit 1; }
+            echo "--- $ARCH ---"
+            lipo -info "$BIN"
+            SIZE=$(stat -f%z "$BIN")
+            echo "$ARCH binary size: $SIZE bytes"
+            # 空产物 / 没链进 Compose 运行时的 framework，体积会小得离谱
+            if [ "$SIZE" -lt 1000000 ]; then
+              echo "::error::$ARCH framework 二进制只有 ${SIZE}B，疑似没有真正链进 Compose 运行时"
+              exit 1
+            fi
+          done
+
+      # 用与发布完全相同的那套动作打一个未签名 ipa，供自签安装验证
+      - name: 构建未签名 ipa（Release 配置）
+        id: ipa
+        uses: ./.github/actions/build-unsigned-ipa
+        with:
+          asset_name: maibms-unsigned.ipa
+
+      - name: Upload unsigned ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-ipa
+          path: ${{ steps.ipa.outputs.ipa }}
+          if-no-files-found: error
+          retention-days: 14
+
+      # 运行时冒烟：在模拟器里把 App 装起来、launch、确认进程能活过启动头几秒。
+      # 这能抓住「能编译能链接但一启动就崩」的坑——dyld 缺库、ObjC selector 找不到、
+      # Kotlin 运行时没初始化、Compose/Skia 资源加载失败、Info.plist 缺键等，都是上面
+      # 静态核检（体积/Mach-O 数/链接表）看不见的。真机上的签名问题这里测不到，但
+      # 「代码层面一启动就崩」这类问题，模拟器与真机基本同步。
+      - name: 模拟器安装 + 启动冒烟 + 截图
+        id: smoke
+        if: ${{ inputs.simulator_smoke }}
+        run: |
+          set -euo pipefail
+          mkdir -p build/test-artifacts/logs build/test-artifacts/shots
+
+          # 找一台可用的 iPhone 模拟器（GitHub macOS runner 自带 iOS 运行时）。
+          # 用文本解析而不是 -j：`simctl list` 的 JSON 旗标位置在不同 Xcode 版本间不一致，
+          # 文本形式 `iPhone 16 Pro (UDID) (Shutdown)` 用括号取 UDID 最稳
+          UDID=$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')
+          if [ -z "$UDID" ]; then
+            echo "::error::没有可用模拟器，simctl 输出如下："
+            xcrun simctl list devices available || true
+            xcrun simctl list runtimes || true
+            exit 1
+          fi
+          echo "模拟器 UDID: $UDID"
+          echo "$UDID" > build/test-artifacts/simulator-udid.txt
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+
+          # 模拟器构建：不关签名，让 Xcode 用默认 ad-hoc 签名（模拟器不校验团队身份）
+          xcodebuild \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$UDID" \
+            -derivedDataPath build/ios-sim-dd \
+            build | tail -40
+
+          APP="build/ios-sim-dd/Build/Products/Debug-iphonesimulator/iosApp.app"
+          test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
+
+          xcrun simctl install "$UDID" "$APP"
+          PID=$(xcrun simctl launch "$UDID" io.github.lswlc33.maibms | awk '{print $NF}')
+          echo "launch PID: $PID"
+          echo "$PID" > build/test-artifacts/launch-pid.txt
+
+          # 分几个时间点截图：启动瞬间、5 秒、15 秒
+          sleep 3
+          xcrun simctl io "$UDID" screenshot build/test-artifacts/shots/ios-03s.png 2>/dev/null || true
+          sleep 2
+          xcrun simctl io "$UDID" screenshot build/test-artifacts/shots/ios-05s.png 2>/dev/null || true
+          sleep 10
+          xcrun simctl io "$UDID" screenshot build/test-artifacts/shots/ios-15s.png 2>/dev/null || true
+
+          if ps -p "$PID" > /dev/null 2>&1; then
+            echo "OK: app still alive after launch (pid=$PID)"
+          else
+            xcrun simctl io "$UDID" screenshot build/test-artifacts/shots/ios-crash.png 2>/dev/null || true
+            echo "::error::App 启动后进程退出，疑似启动崩溃（日志见 ios-test-artifacts 产物）"
+            echo "crashed" > build/test-artifacts/result.txt
+            exit 1
+          fi
+          echo "alive" > build/test-artifacts/result.txt
+
+      # 无论冒烟成功还是失败都要把日志捞上来：这是排查启动崩溃的唯一线索
+      - name: 收集运行日志与崩溃报告
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p build/test-artifacts/logs
+          UDID="$(cat build/test-artifacts/simulator-udid.txt 2>/dev/null || true)"
+          echo "=== 模拟器的 app 进程日志 ==="
+          if [ -n "$UDID" ]; then
+            xcrun simctl spawn "$UDID" log show --last 10m --predicate 'process == "iosApp"' \
+              > build/test-artifacts/logs/iosApp.log 2>&1 || true
+            xcrun simctl spawn "$UDID" log show --last 10m \
+              --predicate 'senderImagePath CONTAINS "iosApp" OR eventMessage CONTAINS "iosApp"' \
+              > build/test-artifacts/logs/simulator.log 2>&1 || true
+          fi
+          # 宿主侧崩溃报告（.ips）
+          mkdir -p build/test-artifacts/logs/crash
+          cp ~/Library/Logs/DiagnosticReports/iosApp-*.ips build/test-artifacts/logs/crash/ 2>/dev/null || true
+          cp iosApp/iosApp/Info.plist build/test-artifacts/logs/ 2>/dev/null || true
+          echo "--- 产物清单 ---"
+          find build/test-artifacts -type f | sort || true
+          for f in build/test-artifacts/logs/iosApp.log build/test-artifacts/logs/simulator.log; do
+            echo "--- tail $f ---"
+            tail -30 "$f" 2>/dev/null || true
+          done
+
+      - name: Upload 测试产物（截图 + 日志）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-artifacts
+          path: build/test-artifacts
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### iOS 测试"
+            echo ""
+            echo "- 单元测试、平台中立性门禁、framework 编链与体积核检：见上方各步骤"
+            echo "- 未签名 ipa 打包：\`${{ steps.ipa.outputs.ipa }}\`"
+            echo "- 模拟器启动冒烟：\`${{ steps.smoke.outcome }}\`（skipped = 本次未勾选）"
+            echo ""
+            echo "产物：\`ios-test-ipa\`（未签名 ipa，需自签安装）、\`ios-test-artifacts\`（截图 + 运行日志 + 崩溃报告）。"
+            echo "某个步骤红灯时，先去 \`ios-test-artifacts\` 看 \`logs/iosApp.log\` 与 \`logs/crash/\`。"
+          } >> "$GITHUB_STEP_SUMMARY"

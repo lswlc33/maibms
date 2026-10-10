@@ -1,11 +1,14 @@
-name: Release
+name: Release · 正式版
 
 # 手动发布正式版：
-#   Actions -> Release -> Run workflow（version 留空则自动把版本号末位 +1）
+#   Actions -> Release · 正式版 -> Run workflow（version 留空则自动把版本号末位 +1）
 #
-# 流程：递增 versionCode/versionName（只改工作区）-> 测试 -> 用 secrets 里的密钥签名构建 ->
-#       上传构建产物 -> 提交版本号（测试构建全过才提交）-> 打 tag <versionCode>-<versionName> 发布
-#       （tag 指向版本号提交本身，保证 tag 里的源码与发布的包一致）
+# 流程：算版本号 -> APK 与 ipa 并行构建（都带上新版本号，但**先不提交**）->
+#       两个包都成功后才提交版本号、打 tag、发布正式 Release 并挂上两个产物。
+# 这样失败时不会往 main 留「已自增未发布」的提交。
+#
+# 「最快的速度 + 最小的包」与 beta 工作流同源：两个 job 并行、ipa 走 Release 配置、
+# APK 复用 Gradle 里已开的 R8 + 资源收缩。
 on:
   workflow_dispatch:
     inputs:
@@ -24,39 +27,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Release
+  version:
+    name: 计算版本号
     runs-on: ubuntu-latest
+    outputs:
+      old_code: ${{ steps.v.outputs.old_code }}
+      old_name: ${{ steps.v.outputs.old_name }}
+      code: ${{ steps.v.outputs.code }}
+      name: ${{ steps.v.outputs.name }}
+      tag: ${{ steps.v.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      # runner 自带 Android SDK（ANDROID_SDK_ROOT）；不用 android-actions/setup-android，
-      # 它的新版本会因为已移除的 legacy "tools" 包而失败
-      - name: Ensure Android platform and build-tools
-        run: |
-          set -euo pipefail
-          echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          # sdkmanager 不在 runner 的 PATH 里（此前一直如此，旧管道把 127 吞成了假绿灯）。
-          # 用全路径调用；镜像上没有时直接跳过——ubuntu-latest 预装了常用组件，
-          # 缺的部分 AGP 会按已接受的许可证自动补齐，这里只是提前装好的兜底
-          SDKM="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKM" ]; then
-            echo "::warning::cmdline-tools/sdkmanager 不可用，跳过显式安装（依赖镜像预装组件）"
-            exit 0
-          fi
-          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
-          # pipefail 必须显式开：Actions 默认 bash -e 不含管道，安装失败会被 tail 吞成绿
-          "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" | tail -3
-
-      - name: Bump the version
-        id: version
+      - id: v
         env:
           VERSION_INPUT: ${{ inputs.version }}
         run: |
@@ -88,13 +70,52 @@ jobs:
             echo "::error::'$NEW_NAME' 已是当前版本——请传入新的 versionName，或留空让它自增"
             exit 1
           fi
-          sed -i "s/versionCode = [0-9]\+/versionCode = ${NEW_CODE}/" "$GRADLE_FILE"
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NEW_NAME}\"/" "$GRADLE_FILE"
           echo "version: ${OLD_NAME} (${OLD_CODE}) -> ${NEW_NAME} (${NEW_CODE})"
-          grep -E 'versionCode|versionName' "$GRADLE_FILE"
-          echo "code=${NEW_CODE}" >> "$GITHUB_OUTPUT"
-          echo "name=${NEW_NAME}" >> "$GITHUB_OUTPUT"
-          echo "tag=${NEW_CODE}-${NEW_NAME}" >> "$GITHUB_OUTPUT"
+          {
+            echo "old_code=${OLD_CODE}"
+            echo "old_name=${OLD_NAME}"
+            echo "code=${NEW_CODE}"
+            echo "name=${NEW_NAME}"
+            echo "tag=${NEW_CODE}-${NEW_NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+  apk:
+    name: 构建 APK
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: 写入新版本号（只改工作区，不提交）
+        env:
+          CODE: ${{ needs.version.outputs.code }}
+          NAME: ${{ needs.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${CODE}/" composeApp/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" composeApp/build.gradle.kts
+          grep -E 'versionCode|versionName' composeApp/build.gradle.kts
+
+      # runner 自带 Android SDK（ANDROID_SDK_ROOT）；不用 android-actions/setup-android，
+      # 它的新版本会因为已移除的 legacy "tools" 包而失败
+      - name: Ensure Android platform and build-tools
+        run: |
+          set -euo pipefail
+          echo "sdk root: ${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          SDKM="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            echo "::warning::cmdline-tools/sdkmanager 不可用，跳过显式安装（依赖镜像预装组件）"
+            exit 0
+          fi
+          yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+          "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" | tail -3
 
       - name: Run unit tests
         run: |
@@ -119,7 +140,6 @@ jobs:
             fi
           done
           printf '%s' "$SIGNING_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/maibms-release.jks"
-          # 必须 export：$GITHUB_ENV 只对后续步骤生效，同一步里 gradle 读不到
           export SIGNING_KEYSTORE_FILE="$RUNNER_TEMP/maibms-release.jks"
 
           chmod +x ./gradlew
@@ -127,61 +147,131 @@ jobs:
 
           SRC=composeApp/build/outputs/apk/release/composeApp-release.apk
           test -f "$SRC" || { echo "::error::未找到构建产物 $SRC"; exit 1; }
-          OUT="maibms-${{ steps.version.outputs.name }}.apk"
+          OUT="maibms-${{ needs.version.outputs.name }}.apk"
           cp "$SRC" "$OUT"
           echo "apk=$OUT" >> "$GITHUB_OUTPUT"
 
-          # sort -V：build-tools 目录按版本号取最新（字典序会在 9.x/10.x 处选错）；
-          # 不接管道：find/verify 的失败必须让本步骤直接红，不能被 head 吞掉
           APKSIGNER="$(find "${ANDROID_SDK_ROOT:-$ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -1)"
           test -n "$APKSIGNER" || { echo "::error::未找到 apksigner"; exit 1; }
           "$APKSIGNER" verify --print-certs "$OUT"
+          ls -la "$OUT"
           echo "built: $OUT"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: release-apk
           path: ${{ steps.build.outputs.apk }}
           if-no-files-found: error
+          retention-days: 7
 
-      # 测试与构建都过了才提交版本号：失败时不往 main 留「已自增未发布」的提交
-      - name: Commit the version bump
+  ipa:
+    name: 构建 ipa
+    needs: version
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: 构建未签名 ipa（Release 配置，包体最小）
+        id: ipa
+        uses: ./.github/actions/build-unsigned-ipa
+        with:
+          asset_name: maibms-${{ needs.version.outputs.name }}-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-ipa
+          path: ${{ steps.ipa.outputs.ipa }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: 提交版本号并发布
+    needs: [version, apk, ipa]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 提交版本号
+        env:
+          OLD_CODE: ${{ needs.version.outputs.old_code }}
+          CODE: ${{ needs.version.outputs.code }}
+          NAME: ${{ needs.version.outputs.name }}
         run: |
+          set -euo pipefail
+          GRADLE_FILE=composeApp/build.gradle.kts
+
+          # 构建期间可能有人又推了版本号：此时直接停，别把基于旧版本构建出来的包
+          # 当成最新版发布（tag 会指向一个和包内容对不上的提交）
+          CUR_CODE="$(grep -oE 'versionCode = [0-9]+' "$GRADLE_FILE" | head -1 | grep -oE '[0-9]+')"
+          if [ "$CUR_CODE" != "${OLD_CODE}" ]; then
+            echo "::error::main 上的 versionCode 已从 ${OLD_CODE} 变成 ${CUR_CODE}（构建期间有人改过版本），本次发布中止，请重新触发"
+            exit 1
+          fi
+
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${CODE}/" "$GRADLE_FILE"
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$GRADLE_FILE"
+
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add composeApp/build.gradle.kts
-          git diff --cached --quiet && { echo "版本号无变化，跳过提交"; exit 0; }
+          git add "$GRADLE_FILE"
+          # 写成 if 而不是 `A && {...}`：本步骤开了 set -e，前者行为更明确
+          if git diff --cached --quiet; then
+            echo "版本号无变化，跳过提交"
+            exit 0
+          fi
           # [skip ci] 防止这次提交又触发一轮 Beta 构建
-          git commit -m "chore(release): v${{ steps.version.outputs.name }} [skip ci]"
+          git commit -m "chore(release): v${NAME} [skip ci]"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VER: ${{ steps.version.outputs.name }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VER: ${{ needs.version.outputs.name }}
           NOTES_INPUT: ${{ inputs.notes }}
         run: |
           set -euo pipefail
           NOTES="$NOTES_INPUT"
           if [ -z "$NOTES" ]; then
-            NOTES="正式版 **v${VER}**，已签名，可直接覆盖安装。
+            NOTES="正式版 **v${VER}**，构建自 \`${GITHUB_SHA:0:7}\`。
 
-          Signed stable build **v${VER}**, built from \`${GITHUB_SHA:0:7}\`. 安装与构建说明见 README.md。"
+          - \`maibms-${VER}.apk\` —— 已签名，可直接覆盖安装
+          - \`maibms-${VER}-unsigned.ipa\` —— 未签名，需用 Sideloadly / 爱思助手 自签安装
+
+          Signed stable build **v${VER}**. The IPA is unsigned and needs self-signing."
           fi
           # tag 必须指向刚 push 的版本号提交（HEAD），不能指向触发时的旧 SHA——
           # 否则 tag 里的源码 versionCode/versionName 还是上一版，与发布的包对不上
           TARGET="$(git rev-parse HEAD)"
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "release $TAG 已存在（重跑），仅上传产物覆盖"
-            gh release upload "$TAG" "${{ steps.build.outputs.apk }}" --clobber
+            gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" \
               --title "v${VER}" \
               --target "$TARGET" \
               --latest \
               --notes "$NOTES"
-            gh release upload "$TAG" "${{ steps.build.outputs.apk }}"
+            gh release upload "$TAG" dist/*
           fi
           echo "published: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"

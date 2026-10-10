@@ -1,0 +1,89 @@
+name: Build unsigned ipa
+description: >-
+  用指定 Xcode 配置（默认 Release，包体最小）编出未签名 ipa，供 Sideloadly/爱思 自签安装。
+  Release 走 Kotlin/Native 与 Swift 的优化 + 符号剥离，比默认的 Debug 明显小。
+
+inputs:
+  # 输入名不用连字符：GHA 表达式里 inputs.foo-bar 的点号取值容易被当成减法，统一用下划线
+  asset_name:
+    description: 产出的 ipa 文件名（例如 maibms-0.1.1-beta.29-unsigned.ipa）
+    required: true
+  configuration:
+    description: Xcode 构建配置
+    required: false
+    default: Release
+
+outputs:
+  ipa:
+    description: 产出的 ipa 路径
+    value: ${{ steps.pack.outputs.ipa }}
+  app:
+    description: 产出的 .app 路径
+    value: ${{ steps.pack.outputs.app }}
+
+runs:
+  using: composite
+  steps:
+    - name: 生成 Xcode 工程
+      shell: bash
+      run: |
+        set -euo pipefail
+        # 工程文件不入库，每次由 xcodegen 从 iosApp/project.yml 生成
+        if ! command -v xcodegen > /dev/null 2>&1; then
+          brew install xcodegen
+        fi
+        cd iosApp && xcodegen generate && cd ..
+
+    - name: 编译 iOS framework 并产出 .app
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Kotlin framework 由工程里的 preBuildScript「Compile Kotlin Framework」在构建期间
+        # 调 gradlew embedAndSignAppleFrameworkForXcode 产出，配置跟着 -configuration 走
+        xcodebuild \
+          -project iosApp/iosApp.xcodeproj \
+          -scheme iosApp \
+          -configuration "${{ inputs.configuration }}" \
+          -sdk iphoneos \
+          -destination 'generic/platform=iOS' \
+          -derivedDataPath build/ios-dd \
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+          build | tail -40
+
+    - name: 校验并打包成 ipa
+      id: pack
+      shell: bash
+      run: |
+        set -euo pipefail
+        APP="build/ios-dd/Build/Products/${{ inputs.configuration }}-iphoneos/iosApp.app"
+        test -d "$APP" || { echo "::error::未产出 $APP"; exit 1; }
+        test -f "$APP/iosApp" || { echo "::error::.app 里没有主执行文件 iosApp"; exit 1; }
+
+        EXEC_MB=$(( $(stat -f%z "$APP/iosApp") / 1048576 ))
+        echo "--- .app 体积构成 ---"
+        du -sh "$APP"/* 2>/dev/null | sort -rh | head -6 || true
+        echo "主执行文件: ${EXEC_MB}MB"
+
+        # 自签能装起来的前提：.app 里只能有主执行文件一个 Mach-O。多出来的 dylib（如 Xcode 16
+        # Debug 默认产出的 iosApp.debug.dylib）自签工具多半漏签，装到手机上启动时会被 dyld
+        # 以签名无效拒掉——这种包必须在 CI 就红掉，别让它流到用户手里
+        MACHO=$(find "$APP" -type f -exec file {} + | grep -c "Mach-O" || true)
+        echo "Mach-O 文件数: $MACHO"
+        if [ "$MACHO" -ne 1 ]; then
+          echo "::error::.app 里有 $MACHO 个 Mach-O（应只有 1 个）——检查 ENABLE_DEBUG_DYLIB 是否被改回默认"
+          exit 1
+        fi
+        # 静态 framework 是链进主执行文件的：只有几 MB 说明 Compose 运行时没真链进去
+        if [ "$EXEC_MB" -lt 5 ]; then
+          echo "::error::主执行文件只有 ${EXEC_MB}MB，疑似 Compose 运行时未链入"
+          exit 1
+        fi
+
+        # 手动打成 ipa（Payload/ 目录 + zip），不需要 Apple 账号
+        rm -rf build/ipa && mkdir -p build/ipa/Payload
+        cp -R "$APP" build/ipa/Payload/
+        (cd build/ipa && zip -qry "${{ inputs.asset_name }}" Payload)
+        ls -la "build/ipa/${{ inputs.asset_name }}"
+
+        echo "ipa=build/ipa/${{ inputs.asset_name }}" >> "$GITHUB_OUTPUT"
+        echo "app=$APP" >> "$GITHUB_OUTPUT"
