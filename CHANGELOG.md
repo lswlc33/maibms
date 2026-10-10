@@ -347,6 +347,10 @@
 - 配置主页第三张卡改为「清零 / 蓝牙 / 恢复出厂」，与二级页的实际内容一致。
 
 ### 修复
+- **Android 状态栏图标色也改跟应用主题**：`enableEdgeToEdge()` 默认按系统夜景配色，
+  应用外观设成跟系统错开时（深色系统 + 浅色应用）状态栏会给白字压浅色顶栏。现在
+  `systemBarsAppearance()` 在 Android 用 `isAppearanceLightStatusBars` 显式定色：
+  浅色应用 = 深色图标；「跟随系统」保持 `enableEdgeToEdge` 的默认行为（按系统夜间模式）。
 - **iOS 顶栏与横屏左右两侧「未沉浸」**：壳工程原先只让出了底部安全区
   （`.ignoresSafeArea(.container, edges: .bottom)`），Compose 表面被系统收在安全区内——
   竖屏顶部露出 62pt、横屏左右各 62pt 的窗口底色（深色系统下就是黑边），横屏表盘还在这之上

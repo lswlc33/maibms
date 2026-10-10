@@ -19,10 +19,21 @@ actual fun systemBarsImmersive(immersive: Boolean) {
 }
 
 /**
- * Android 的状态栏图标色由 `MainActivity.enableEdgeToEdge()` 的 SystemBarStyle 决定
- * （跟随系统夜景），应用内强制浅色/深色时不跟着变——真机验收过的表现不动，先只登记不改。
+ * 状态栏图标颜色跟**应用**主题（不是系统主题）：`enableEdgeToEdge()` 默认按系统夜景配色，
+ * 应用外观设成跟系统错开时（深色系统 + 浅色应用），状态栏会给白字压浅色顶栏。
+ * 这里用 isAppearanceLightStatusBars 显式定：浅色应用 = 深色图标。「跟随系统」交回
+ * enableEdgeToEdge 的默认行为（按系统夜间模式），与之前真机验收过的表现一致。
  */
-actual fun systemBarsAppearance(appearance: AppAppearance) = Unit
+actual fun systemBarsAppearance(appearance: AppAppearance) {
+    val activity = AndroidApp.activity ?: return
+    WindowCompat.getInsetsController(activity.window, activity.window.decorView)
+        .isAppearanceLightStatusBars = when (appearance) {
+        AppAppearance.Light -> true
+        AppAppearance.Dark -> false
+        AppAppearance.System -> activity.resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK != android.content.res.Configuration.UI_MODE_NIGHT_YES
+    }
+}
 
 actual fun screenCornerRadius(): Dp {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return 0.dp
