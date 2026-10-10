@@ -116,6 +116,21 @@ fun App(
         }
 
         val dark = forceDark ?: darkOverride ?: androidx.compose.foundation.isSystemInDarkTheme()
+        // 系统栏文字配色跟应用主题（不是系统主题）：外观设置里能强制浅色/深色，深色系统 +
+        // 浅色应用时状态栏会给出一排白字，压在浅色顶栏上读不出来。
+        // 只在明确选了浅/深色（或 deepLink 工具强制）时才报具体外观；「跟随系统」报 System，
+        // 平台就不覆盖颜色方案——覆盖会把 isSystemInDarkTheme() 钉住，之后切回跟随系统会失效。
+        LaunchedEffect(themeMode, forceDark) {
+            systemBarsAppearance(
+                when {
+                    forceDark == true -> AppAppearance.Dark
+                    forceDark == false -> AppAppearance.Light
+                    themeMode == "dark" -> AppAppearance.Dark
+                    themeMode == "light" -> AppAppearance.Light
+                    else -> AppAppearance.System
+                }
+            )
+        }
         BmsTheme(darkTheme = dark) {
             // 系统返回键：先关弹窗，再退栈，最后回仪表盘标签
             PlatformBackHandler(

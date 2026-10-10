@@ -119,12 +119,19 @@ fun ClusterDashboard(
             screenCornerRadius(),
             50.dp,
         )
+        // 顶/底条内容也要让开安全区（背景照旧铺满）：iOS 横屏底部是 Home 指示条（约 21pt），
+        // iPad 横屏顶部还有一条小状态栏。Android 全屏时这两个 inset 都是 0，行为不变。
+        val topSafe = insets.calculateTopPadding()
+        val bottomSafe = insets.calculateBottomPadding()
         Column(Modifier.fillMaxSize()) {
             // ---- 顶条：背景延伸出安全区铺满全宽，内容收在安全区内 ----
             Row(
                 Modifier.fillMaxWidth()
                     .background(ClusterLine.copy(alpha = 0.6f))
-                    .padding(horizontal = sideSafe + u * 1.9f, vertical = u * 0.9f),
+                    .padding(
+                        start = sideSafe + u * 1.9f, end = sideSafe + u * 1.9f,
+                        top = u * 0.9f + topSafe, bottom = u * 0.9f,
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(u * 2.2f),
             ) {
@@ -181,7 +188,7 @@ fun ClusterDashboard(
                 }
             }
             // ---- 底条：背景延伸出安全区铺满全宽，内容收在安全区内 ----
-            ClusterBottomBar(status, u, sideSafe)
+            ClusterBottomBar(status, u, sideSafe, bottomSafe)
         }
     }
 }
@@ -491,7 +498,7 @@ private fun fmt1(v: Double): String = "%.1f".fmt(v)
 /* ================= 底条 ================= */
 
 @Composable
-private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp) {
+private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp, bottomSafe: Dp) {
     val on = status.hasData
     val maxCell = status.cells.firstOrNull { it.isMax }
     val minCell = status.cells.firstOrNull { it.isMin }
@@ -499,7 +506,10 @@ private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp) {
     Row(
         Modifier.fillMaxWidth()
             .background(ClusterLine.copy(alpha = 0.6f))
-            .padding(horizontal = sideSafe + u * 0.5f, vertical = u * 0.9f),
+            .padding(
+                start = sideSafe + u * 0.5f, end = sideSafe + u * 0.5f,
+                top = u * 0.9f, bottom = u * 0.9f + bottomSafe,
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(u * 2.0f),
     ) {

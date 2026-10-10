@@ -180,6 +180,15 @@ Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后
 | 锁 | NSRecursiveLock | 替代 JVM 的 synchronized |
 | 设置存储 | NSUserDefaults（UserDefaultsStore） | 对应 Android 的 SharedPreferences；设备/密码/主题等偏好重启保留 |
 | BLE 传输 | **无**（NoopTransport） | 需要 CoreBluetooth 实现，属后续工作 |
+| **系统栏 / 沉浸** | SwiftUI 壳工程（`ContentView.swift`）+ `IosSystemChrome` 单例 | 窗口整屏铺满（`.ignoresSafeArea(.container)`），安全区避让全交给 Compose 的 `WindowInsets`；横屏表盘隐藏状态栏与 Home 指示条；状态栏文字配色跟随**应用**外观而不是系统 |
+
+> **沉浸是怎么落地的**：iOS 的状态栏「隐不隐、文字是黑是白」只有窗口根控制器
+> （SwiftUI 的 hosting controller）说了算，Kotlin 侧改不动它；而「是否沉浸 / 应用外观」
+> 又只有 Compose 知道（横屏表盘、外观设置）。所以 Compose 把这两项写进 `IosSystemChrome`
+> 单例（`iosMain/ui/SystemChrome.ios.kt`），壳工程注册回调后用 `.statusBarHidden` /
+> `.persistentSystemOverlays`（iOS 16+，隐藏 Home 指示条）/ `.preferredColorScheme` 落地。
+> 外观为**「跟随系统」时不能覆盖**颜色方案——覆盖会把 trait collection 钉死，
+> `isSystemInDarkTheme()` 读回来的就是被覆盖后的值，用户之后切回「跟随系统」会永远跟不上。
 
 ### 应用图标
 

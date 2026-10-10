@@ -346,6 +346,23 @@
 - 开发者页重做：帧级日志开关 + 显示级别过滤 + 操作行移到日志框上方（原先在 600 条日志之下够不着）。
 - 配置主页第三张卡改为「清零 / 蓝牙 / 恢复出厂」，与二级页的实际内容一致。
 
+### 修复
+- **iOS 顶栏与横屏左右两侧「未沉浸」**：壳工程原先只让出了底部安全区
+  （`.ignoresSafeArea(.container, edges: .bottom)`），Compose 表面被系统收在安全区内——
+  竖屏顶部露出 62pt、横屏左右各 62pt 的窗口底色（深色系统下就是黑边），横屏表盘还在这之上
+  又套了一层 50dp 的兜底避让，看上去像没铺满。现在窗口整屏铺满，安全区避让全交给 Compose 的
+  `WindowInsets`（`statusBars` / `navigationBars` / `safeDrawing` 在 iOS 上会拿到真实
+  safeAreaInsets，见 compose-multiplatform 的 `WindowInsets.uikit.kt`）：竖屏内容位置与原先一致，
+  横屏表盘改用真实的左右安全区，背景铺满整屏。
+- **iOS 状态栏文字配色跟错主题**：应用外观可以独立于系统设置，深色系统 + 浅色应用时状态栏
+  会给出一排白字压在浅色顶栏上。iOS 的状态栏只有窗口根控制器说了算、Kotlin 侧改不动，
+  因此新增跨平台 `systemBarsAppearance()`：Compose 把生效外观写进 `IosSystemChrome` 单例，
+  壳工程注册回调后用 `.preferredColorScheme` 落地；**「跟随系统」时不覆盖**——覆盖会把
+  trait collection 钉死，`isSystemInDarkTheme()` 读回来的变成被覆盖后的值，之后切回
+  「跟随系统」就永远跟不上系统切换了。同一条链路顺带把横屏表盘做成真沉浸：
+  `.statusBarHidden` + `.persistentSystemOverlays(.hidden)`（iOS 16+）隐藏状态栏与 Home 指示条，
+  表盘顶/底条的内容再让开安全区（Android 全屏时这两个 inset 为 0，表现不变）。
+
 ## [0.1.1] - 2026-09-30
 
 首个公开发布版本（`versionCode 2`）。

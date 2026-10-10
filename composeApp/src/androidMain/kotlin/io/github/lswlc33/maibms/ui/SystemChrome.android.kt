@@ -18,6 +18,12 @@ actual fun systemBarsImmersive(immersive: Boolean) {
     else controller.show(WindowInsetsCompat.Type.systemBars())
 }
 
+/**
+ * Android 的状态栏图标色由 `MainActivity.enableEdgeToEdge()` 的 SystemBarStyle 决定
+ * （跟随系统夜景），应用内强制浅色/深色时不跟着变——真机验收过的表现不动，先只登记不改。
+ */
+actual fun systemBarsAppearance(appearance: AppAppearance) = Unit
+
 actual fun screenCornerRadius(): Dp {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return 0.dp
     val insets = AndroidApp.activity?.window?.decorView?.rootWindowInsets ?: return 0.dp
