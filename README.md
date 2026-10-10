@@ -13,8 +13,11 @@
 | **正式版**（推荐） | 日常使用，稳定优先 | **[⬇ 最新正式版 Releases ›](../../releases/latest)** |
 | **测试版** | 抢先体验新功能，可能不稳定 | **[⬇ 最新测试版（Pre-release）›](../../releases)** |
 
-> 已签名 APK 直接安装，两个渠道同一密钥、可互相覆盖升级；应用内「设置 → 关于本软件」还能按渠道自动检查更新（默认稳定版）。
-> 注：测试版 tag 形如 `v0.1.1-beta.12`，Releases 列表按语义化版本排序（新版在前）；正式版与测试版混排时以 tag 里的 `-beta.` 区分。
+> 两个渠道每次发布都同时提供 **APK**（`maibms-<版本>.apk`，已签名）和 **未签名 ipa**
+> （`maibms-<版本>-unsigned.ipa`，需自签安装，见 [iOS 构建](#ios-构建)）。
+> 已签名 APK 两渠道同一密钥、可互相覆盖升级；应用内「设置 → 关于本软件」还能按渠道自动检查更新（默认稳定版）。
+> 注：测试版 tag 形如 `v0.1.2-beta.32`，Releases 列表按语义化版本排序（新版在前）；正式版与测试版混排时以 tag 里的 `-beta.` 区分。
+> 仓库里的 `docs/index.html` 是官网首页（GitHub Pages 入口），只展示软件特性与下载入口，不含协议文档内容。
 
 <p>
 <img src="docs/images/home-light.png" width="24%" alt="仪表盘 · 浅色">
@@ -125,23 +128,29 @@ export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
 
 KMP 让界面、协议解析、数据这些**共享代码**一次编写三端复用；但**蓝牙**与 **App 外壳**
 天生要按平台各写一份，iOS 侧这两块现在也补齐了（`iosMain/transport/IosBleTransport.kt`
-与 `iosApp/` 壳工程）。CI 的 **iOS 工作流**（`.github/workflows/ios.yml`）在 macOS runner
-上依次做四件事：
+与 `iosApp/` 壳工程）。iOS 侧在 CI 里分成两条线：**出包**（预发布与正式版两条流水线各自打一个
+未签名 ipa，见[发布流程](#发布流程)）和**验证**（按需触发的 `ios-test.yml`）。
+
+要完整验证一遍 iOS 侧，手动跑 `Actions → IPA 测试 → Run workflow`，它按顺序做：
 
 ```bash
-# 1) 公共代码的平台中立性：commonMain 若混入 JVM 专属 API（java.* / System.* / String.format）会立刻失败
+# 1) 单元测试（协议解析 / 数据管线）
+./gradlew :composeApp:desktopTest
+
+# 2) 公共代码的平台中立性：commonMain 若混入 JVM 专属 API（java.* / System.* / String.format）会立刻失败
 ./gradlew :composeApp:compileCommonMainKotlinMetadata
 
-# 2) 编译 + 链接两档 framework（arm64 真机 / arm64 模拟器；静态 framework 无需签名）
+# 3) 编译 + 链接两档 framework（arm64 真机 / arm64 模拟器；静态 framework 无需签名）
 ./gradlew :composeApp:linkDebugFrameworkIosArm64 :composeApp:linkDebugFrameworkIosSimulatorArm64
 
-# 3) 生成 Xcode 工程并打**未签名 ipa**（关掉签名的 xcodebuild + 手工 Payload 打包）
-brew install xcodegen && cd iosApp && xcodegen generate
-xcodebuild -project iosApp/iosApp.xcodeproj -scheme iosApp -sdk iphoneos \
-  -destination 'generic/platform=iOS' \
-  CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
-# 4) 上传制品：ios-frameworks（两档 framework）与 ios-unsigned-ipa（可自签安装）
+# 4) 用与发布**完全相同**的动作打一个未签名 ipa（Release 配置，包体最小）
+#    .github/actions/build-unsigned-ipa/ —— xcodegen → xcodebuild → Mach-O 数量与体积核检 → 封 ipa
+# 5) 模拟器安装 + 启动冒烟（3s / 5s / 15s 各截一张图），并收集运行日志与崩溃报告
 ```
+
+产物：`ios-test-ipa`（未签名 ipa，可自签安装）与 `ios-test-artifacts`（截图 + 运行日志 +
+`.ips` 崩溃报告，**无论测试成败都会上传**——启动崩溃的现场就靠它）。日常 `main` 推送不跑它，
+那会拖慢出包速度；「iOS 还能不能编过」由出包流水线兜着。
 
 **自己装到 iPhone 上？** 从 Actions 运行的制品区下载 `ios-unsigned-ipa`，用
 Sideloadly / 爱思助手 / AltStore 这类工具，以你的 Apple ID 自签后安装：
@@ -205,10 +214,26 @@ CI：仓库 Secrets 里配置 `SIGNING_KEYSTORE_BASE64`（keystore 文件的 bas
 
 ## 发布流程
 
-两个工作流（`.github/workflows/`）：
+三个工作流（`.github/workflows/`），外加一个被两条出包流水线共用的动作
+`.github/actions/build-unsigned-ipa/`（打未签名 ipa：xcodegen → Release 配置构建 →
+Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂移，所以抽成一个）：
 
-- **Release**（手动触发）：`Actions → Release → Run workflow`，可留空版本号自动递增末位。它会递增 `versionCode` / `versionName`、提交、构建签名 APK、打 tag 并发布正式 Release。
-- **Beta**（推送到 `main` 自动触发）：版本名自动加 `-beta.<序号>`，发布为预发布，并清理较旧的 beta。
+| 工作流 | 触发 | 做什么 |
+| :--- | :--- | :--- |
+| **Beta · 预发布**（`beta.yml`） | 推送到 `main` 自动 | 版本名加 `-beta.<序号>`，**APK 与 ipa 并行构建**，两个产物一起挂到同一个 pre-release，并清理较旧的 beta |
+| **Release · 正式版**（`release.yml`） | 手动 | 递增 `versionCode` / `versionName`，**两个包都成功后才提交版本号**、打 tag、发布正式 Release；APK 与 ipa 一起上传 |
+| **IPA 测试**（`ios-test.yml`） | 手动 | iOS 全流程验证：单元测试、平台中立性、framework 编链、ipa 打包、模拟器启动冒烟 + 截图 + 日志（见 [iOS 构建](#ios-构建)） |
+
+出包流水线的两条硬性目标：
+
+- **快**：APK（ubuntu）与 ipa（macOS）是两个并行 job，总时长取较长的那一个；模拟器冒烟这种重活
+  只在 IPA 测试里跑，不拖累每次出包。
+- **小**：ipa 用 Release 配置构建（默认的 Debug 带调试符号与 `-Onone`，实测 18.4MB → 14.3MB）；
+  APK 侧 R8 混淆 + 资源收缩在 `composeApp/build.gradle.kts` 里。
+
+正式版「先构建、都成功才提交」：失败时不会往 `main` 留一个「已自增未发布」的版本号提交；如果构建
+期间有人又推了版本号，发布步骤会直接中止，避免把基于旧版本构建出来的包当成最新版发出去。提交版本
+号时会顺手把 `docs/index.html` 里的内联版本兜底（接口拉不到时官网显示的就是它）同步到本次发布。
 
 ---
 
