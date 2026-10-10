@@ -541,11 +541,13 @@
     { id:"official",   name:"GitHub 官方直连",     flag:"直连", prefix:"" }
   ];
 
-  /* 网络不可用时的兜底版本（与仓库当前 Release 对应，联网后会自动刷新） */
+  /* 内联兜底 = 最后一次已知可用的版本快照，只有「接口连不上」时才会被用户看到
+     （国内访问 api.github.com 慢或被挡并不少见）。联网后立刻被真实数据覆盖。 */
   var FALLBACK = {
-    stable: { tag:"2-0.1.1",        ver:"0.1.1",         apk:"maibms-0.1.1.apk",         apkSize:0, ipa:null, ipaSize:0 },
-    beta:   { tag:"v0.1.1-beta.28", ver:"0.1.1-beta.28", apk:"maibms-0.1.1-beta.28.apk", apkSize:0,
-              ipa:"maibms-0.1.1-beta.28-unsigned.ipa", ipaSize:0 }
+    stable: { tag:"3-0.1.2",        ver:"0.1.2",         apk:"maibms-0.1.2.apk",         apkSize:0,
+              ipa:"maibms-0.1.2-unsigned.ipa", ipaSize:0 },
+    beta:   { tag:"v0.1.2-beta.32", ver:"0.1.2-beta.32", apk:"maibms-0.1.2-beta.32.apk", apkSize:0,
+              ipa:"maibms-0.1.2-beta.32-unsigned.ipa", ipaSize:0 }
   };
 
   /* 正式版不单独发 ipa：先用内联兜底里的测试版 ipa 占位，联网后再被最新值覆盖 */
@@ -553,7 +555,11 @@
     ? { tag:FALLBACK.beta.tag, asset:FALLBACK.beta.ipa, size:FALLBACK.beta.ipaSize }
     : null;
 
-  var state = { ver:"stable", node:0, releases:JSON.parse(JSON.stringify(FALLBACK)), live:false, ipaFallback:FALLBACK_IPA };
+  /* 上次成功拉到的数据缓存到本地：回访时先拿它渲染，不用干等接口（实测国内会到 10 秒级） */
+  var CACHE_KEY = "mai-releases";
+
+  /* src：loading = 正在拉接口 / live = 接口数据 / cache = 本地缓存 / fallback = 内置兜底 */
+  var state = { ver:"stable", node:0, releases:JSON.parse(JSON.stringify(FALLBACK)), src:"loading", ipaFallback:FALLBACK_IPA };
 
   function $(s){ return document.querySelector(s); }
   function all(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); }
@@ -593,8 +599,12 @@
     var rel = state.releases[state.ver];
     var isBeta = state.ver === "beta";
 
-    $("#verInfo").innerHTML = (isBeta ? "测试版" : "正式版") + " · <b>v" + rel.ver + "</b>" +
-      (state.live ? "" : " <span style='color:var(--faint)'>（离线兜底）</span>");
+    var srcNote = "";
+    if(state.src === "loading")      srcNote = " <span style='color:var(--faint)'>· 正在获取最新版本…</span>";
+    else if(state.src === "cache")   srcNote = " <span style='color:var(--faint)'>· 离线数据</span>";
+    else if(state.src === "fallback")srcNote = " <span style='color:var(--faint)'>· 离线数据，可能不是最新</span>";
+
+    $("#verInfo").innerHTML = (isBeta ? "测试版" : "正式版") + " · <b>v" + rel.ver + "</b>" + srcNote;
 
     /* APK */
     var apkUrl = urlFor(rel.tag, rel.apk);
@@ -629,9 +639,13 @@
     all(".chip").forEach(function(c, i){ c.classList.toggle("on", i === state.node); });
     $("#footHint").textContent = "当前节点：" + NODES[state.node].name;
 
-    if(!state.releases.stable.ipa && (state.releases.beta.ipa || state.ipaFallback)){
-      $("#noteIos").querySelector("p").innerHTML =
-        "iOS 未签名包当前随<b>测试版</b>同步发布，在正式版下点这个按钮取到的就是最新 iOS 包。用 Sideloadly / 爱思助手 / AltStore 以你的 Apple ID 自签后安装，免费账号签名 <b>7 天过期</b>。";
+    // 这段要按当前状态双向设置：正式版自带 ipa 时用常规说明，否则说明「随测试版发布」。
+    // 只在「没有 ipa 时替换」会出 bug——加载中先替换成测试版文案，接口回来后就换不回去了
+    var noteP = $("#noteIos").querySelector("p");
+    if(state.releases.stable.ipa){
+      noteP.innerHTML = "用 Sideloadly / 爱思助手 / AltStore 以你的 Apple ID 自签后安装。免费 Apple ID 签名 <b>7 天过期</b>，到期重签即可；首次启动需在「设置 → 通用 → VPN与设备管理」信任证书。";
+    }else{
+      noteP.innerHTML = "iOS 未签名包当前随<b>测试版</b>同步发布，在正式版下点这个按钮取到的就是最新 iOS 包。用 Sideloadly / 爱思助手 / AltStore 以你的 Apple ID 自签安装，免费账号签名 <b>7 天过期</b>。";
     }
   }
 
@@ -699,29 +713,63 @@
     });
   }
 
+  function applyData(data, src){
+    if(data.stable) state.releases.stable = data.stable;
+    if(data.beta)   state.releases.beta   = data.beta;
+    if(data.ipaFallback !== undefined) state.ipaFallback = data.ipaFallback;
+    state.src = src;
+    render();
+  }
+
+  function readCache(){
+    try{
+      var raw = window.localStorage.getItem(CACHE_KEY);
+      if(!raw) return null;
+      var d = JSON.parse(raw);
+      return (d && d.stable && d.beta) ? d : null;
+    }catch(e){ return null; }
+  }
+
+  function writeCache(d){
+    try{ window.localStorage.setItem(CACHE_KEY, JSON.stringify(d)); }catch(e){}
+  }
+
   function loadReleases(){
-    if(!window.fetch) return;
-    fetch("https://api.github.com/repos/" + REPO + "/releases?per_page=30", { headers:{ "Accept":"application/vnd.github+json" } })
+    if(!window.fetch){ state.src = "fallback"; render(); return; }
+    // 国内拉 api.github.com 可能很慢：15 秒还不回来就放弃，留现有数据在页面上，别把界面卡住
+    var ctrl = window.AbortController ? new AbortController() : null;
+    var timer = ctrl ? window.setTimeout(function(){ ctrl.abort(); }, 15000) : null;
+    fetch("https://api.github.com/repos/" + REPO + "/releases?per_page=30",
+          { headers:{ "Accept":"application/vnd.github+json" }, signal: ctrl ? ctrl.signal : undefined })
       .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
       .then(function(list){
-        if(!Array.isArray(list) || !list.length) return;
+        if(!Array.isArray(list) || !list.length) throw new Error("empty");
         var pub = list.filter(function(r){ return !r.draft; });
         var stableRel = pub.filter(function(r){ return !r.prerelease; })[0];
         var betaRel   = pub.filter(function(r){ return r.prerelease; })[0];
-        if(stableRel) state.releases.stable = parseRelease(stableRel);
-        if(betaRel)   state.releases.beta   = parseRelease(betaRel);
-        state.ipaFallback = newestIpa(pub);
-        state.live = true;
-        render();
+        var data = {
+          stable: stableRel ? parseRelease(stableRel) : state.releases.stable,
+          beta:   betaRel   ? parseRelease(betaRel)   : state.releases.beta,
+          ipaFallback: newestIpa(pub)
+        };
+        if(timer) window.clearTimeout(timer);
+        writeCache(data);
+        applyData(data, "live");
       })
-      .catch(function(){ /* 保持兜底数据 */ });
+      .catch(function(){
+        if(timer) window.clearTimeout(timer);
+        // 拉不到就保留现有数据（本地缓存或内置兜底），只把来源标出来
+        state.src = (state.src === "cache") ? "cache" : "fallback";
+        render();
+      });
   }
 
   buildChips();
   bindSeg();
   bindCopy();
   bindTheme();
-  render();
+  var cached = readCache();
+  if(cached) applyData(cached, "cache"); else render();
   loadReleases();
 })();
 </script>
