@@ -178,6 +178,10 @@ jobs:
     needs: [version, apk, ipa]
     runs-on: ubuntu-latest
     steps:
+      # gh release create --target <sha> 要在一个 git 仓库里执行（它得解析这个 SHA），
+      # 所以这个 job 虽然不构建，也必须先 checkout
+      - uses: actions/checkout@v4
+
       # 两个构建 job 的产物合并到同一个目录，再一起挂上 Release
       - uses: actions/download-artifact@v4
         with:
