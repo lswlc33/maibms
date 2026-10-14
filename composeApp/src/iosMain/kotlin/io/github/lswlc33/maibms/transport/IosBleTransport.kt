@@ -43,6 +43,7 @@ import platform.CoreBluetooth.CBManagerStateUnsupported
 import platform.CoreBluetooth.CBPeripheral
 import platform.CoreBluetooth.CBPeripheralDelegateProtocol
 import platform.CoreBluetooth.CBService
+import platform.Foundation.NSUUID
 import platform.Foundation.NSData
 import platform.Foundation.NSError
 import platform.Foundation.NSNumber
@@ -61,8 +62,9 @@ import platform.posix.memcpy
  * - **没有 MTU 协商 API**：iOS 自己协商，这里用 `maximumWriteValueLengthForType` 取单次写上限。
  * - **没有"等待式连接"**：Android 每第 4 次切 autoConnect 等广播；iOS 只能重试，
  *   靠指数退避达到同样效果（弱信号下多试几次总能连上）。
- * - **连接前必须先"见到"设备**：CoreBluetooth 要先扫描拿到 CBPeripheral 才能连接，
- *   所以 connect() 会先扫描（上限 15 秒）再建链——与 Android 直接按地址连不同。
+ * - **连接前必须持有 CBPeripheral**：回连记忆设备用 `retrievePeripheralsWithIdentifiers`
+ *   从系统缓存按标识直取（免扫描，对齐 Android 的按 MAC 直连）；只有首次连接才需要
+ *   先广播扫描拿到外设——所以 connect() 在「没有目标标识」时先扫描（上限 15 秒）再建链。
  */
 @OptIn(ExperimentalForeignApi::class)
 class IosBleTransport : BmsTransport {
@@ -144,10 +146,10 @@ class IosBleTransport : BmsTransport {
     /**
      * 本次连接的「代次」：每开始一次尝试、每次收尾（[closePeripheral]）都 +1。
      *
-     * iOS 没有 Android 那种「每次重连都是新的 BluetoothGatt 对象」——CoreBluetooth 对同一台设备
-     * 永远返回**同一个 CBPeripheral 实例**，所以 `p !== peripheral` 这种身份判断在重连之后必然为真。
-     * 一个被放弃的探测协程 8 秒后超时回来时，它手里的 p 就是当前活着的链路：退订通知（应用从此
-     * 收不到任何帧）、翻候选页、改写特征，全都打在活链路上。只有代次比较才认得出「这是上一轮的迟到者」。
+     * 为什么不用对象身份判断「这是不是上一轮的迟到者」：CoreBluetooth 在 ObjC 层对同一台设备
+     * 只有一个 CBPeripheral 实例，但每次回调跨进 Kotlin 都可能包一层新包装——`p !== peripheral`
+     * 这种判断在**同一次连接内都可能为真**，拿它放行/拦人曾把所有通往就绪的路径静默掐断
+     * （见 [afterSubscribed] 注释）。代次比较不依赖对象身份，是这里唯一可靠的「认人」方式。
      */
     @Volatile private var attemptGen = 0
 
@@ -374,7 +376,17 @@ class IosBleTransport : BmsTransport {
             val uuid = didUpdateNotificationStateForCharacteristic.UUID.UUIDString
             if (uuid.equals(notifyChar?.UUID?.UUIDString, ignoreCase = true)) {
                 logD("订阅已落地，开始发探测帧")
-                candidates.getOrNull(candidateIndex)?.let { afterSubscribed(peripheral, it) }
+                val c = candidates.getOrNull(candidateIndex)
+                if (c == null) {
+                    // 有订阅确认却没有当前候选：候选表已被收尾清空（本轮已放弃）。
+                    // 原先这里静默 return，看起来和「迟到者被正确丢弃」一模一样，
+                    // 真正的活链路被吞了就绪信号时也查不到任何痕迹
+                    logW("订阅确认到达时候选表为空（本轮已被收尾？），忽略")
+                    return
+                }
+                afterSubscribed(peripheral, c)
+            } else {
+                logD("订阅确认来自非当前候选（${shortUuid(uuid)} ≠ ${notifyChar?.let { shortUuid(it.UUID.UUIDString) }}），忽略")
             }
         }
 
@@ -429,10 +441,19 @@ class IosBleTransport : BmsTransport {
 
         /**
          * 订阅落地后的动作：保护板走 ANT 探测；电量计暂无探测帧，直接按“FFE0 + 写/通知就绪”判就绪。
+         *
+         * **不要在这里用 `p !== peripheral` 拦人**——CoreBluetooth 每次回调交给 Kotlin 的
+         * CBPeripheral 包装对象身份不稳定（与 `peripheral` 字段里持有的经常不是同一个实例），
+         * 这个判断恒为真，曾把所有通往就绪的路径全部静默掐断：订阅确认回调来了、
+         * afterSubscribed 进来就被 return，既不置就绪也不翻候选，26 秒探测预算耗尽后本端拆链，
+         * 日志只剩「订阅已落地」+「连接断开：正常断开」，再无下文。所有设备、每次连接都这样。
+         * 身份的甄别一律交给 [attemptGen] 代次（连接循环每轮、closePeripheral 都 +1，
+         * 上一轮的迟到者自然过期），与 [startProbe] 的探测协程同一套机制。
          */
         private fun afterSubscribed(p: CBPeripheral, c: Candidate) {
-            if (p !== peripheral) return
             if (targetFamily.isMeter) {
+                // 订阅确认回调与 800ms 兜底都会走到这里，已就绪就不重复置态/刷日志
+                if (_linkState.value == LinkState.Connected) return
                 _activeChannel.value = c.channel
                 logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
                 _linkState.value = LinkState.Connected
@@ -444,9 +465,15 @@ class IosBleTransport : BmsTransport {
 
         /** 发探测帧并等应答；通过就置「就绪」，否则换下一个候选 */
         private fun startProbe(p: CBPeripheral, c: Candidate) {
-            if (probeStarted) return
+            if (probeStarted) {
+                logD("探测已在进行，跳过重复触发（候选 ${c.channel.id}）")
+                return
+            }
             // 迟到的兜底（候选已经翻页）不能再探：否则会拿旧候选的写特征去发帧
-            if (candidates.getOrNull(candidateIndex) !== c) return
+            if (candidates.getOrNull(candidateIndex) !== c) {
+                logD("候选已翻页，跳过过期探测（${c.channel.id}）")
+                return
+            }
             probeStarted = true
             val gen = attemptGen
             val signal = CompletableDeferred<Boolean>()
@@ -682,7 +709,19 @@ class IosBleTransport : BmsTransport {
     private fun backoffMs(attempt: Int): Long = (1_000L shl minOf(attempt, 3)).coerceAtMost(8_000L)
 
     /**
-     * 扫描找目标设备：优先标识一致；超时后若只见过别的 ANT 设备就拿它兜底
+     * 找到要连的 CBPeripheral。
+     *
+     * **有目标标识（回连记忆设备）时优先直连**：`retrievePeripheralsWithIdentifiers` 从系统
+     * 缓存按标识取回外设——这是 CoreBluetooth 官方的重连方式，不需要扫描就能 connect
+     * （系统在后台自己找设备），对应 Android 的「按 MAC 直连」。广播扫描只留给
+     * 首次连接（没有标识）与直连取回失败（标识失效，比如用户「忽略此设备」）。
+     *
+     * 为什么不一直扫：连接循环每轮 stop→scan→stop→connect 的反复切换会撞上系统对
+     * 已知设备的广播上报抑制（同一设备短时间内的重复广播不再回调 didDiscover），
+     * 实测表现为「设备明明在旁边、弹窗也刚扫到过，回连却一轮都发现不了」，
+     * 15 秒超时无限退避。直连彻底绕开广播，也就绕开了抑制。
+     *
+     * 扫描路径：优先标识一致；超时后若只见过别的同族设备就拿它兜底
      * （对应 Android「没有指定地址就用已配对的 ANT 设备」）。找不到返回 null 由调用方退避重试。
      */
     private suspend fun findPeripheral(address: String?): CBPeripheral? {
@@ -692,6 +731,22 @@ class IosBleTransport : BmsTransport {
             _connectHint.value = stateHint(state)
             return null
         }
+        // 1) 回连：按标识从系统缓存直取（免扫描，不受广播抑制影响）
+        if (!address.isNullOrBlank()) {
+            val uuid = runCatching { NSUUID(UUIDString = address) }.getOrNull()
+            if (uuid != null) {
+                val cached = c.retrievePeripheralsWithIdentifiers(listOf(uuid)).firstOrNull()
+                    as? CBPeripheral
+                if (cached != null) {
+                    logD("按标识直连缓存外设 ${cached.name ?: address}（免扫描）")
+                    return cached
+                }
+                logW("系统缓存里没有标识 $address 的外设（可能被「忽略此设备」），退回广播扫描")
+            } else {
+                logW("目标标识 $address 不是合法 UUID，退回广播扫描")
+            }
+        }
+        // 2) 首次连接 / 缓存取回失败：广播扫描
         runCatching { c.stopScan() }
         pendingPeripheral = null
         fallbackPeripheral = null
