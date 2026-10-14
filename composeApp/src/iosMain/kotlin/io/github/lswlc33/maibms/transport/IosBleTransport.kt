@@ -733,7 +733,9 @@ class IosBleTransport : BmsTransport {
         }
         // 1) 回连：按标识从系统缓存直取（免扫描，不受广播抑制影响）
         if (!address.isNullOrBlank()) {
-            val uuid = runCatching { NSUUID(UUIDString = address) }.getOrNull()
+            // 构造失败会抛 NSException 而不是返回 null，Kotlin 侧用 runCatching 兜住。
+            // 参数名是 uUIDString（K/N 对 init(UUIDString:) 的压首字母映射），不是 UUIDString
+            val uuid: NSUUID? = runCatching { NSUUID(uUIDString = address) }.getOrNull()
             if (uuid != null) {
                 val cached = c.retrievePeripheralsWithIdentifiers(listOf(uuid)).firstOrNull()
                     as? CBPeripheral
