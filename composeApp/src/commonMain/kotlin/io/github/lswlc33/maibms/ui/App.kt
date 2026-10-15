@@ -148,10 +148,11 @@ fun App(
             // 页面内的异步动作（写参数/控制命令）与弹窗共用一个 scope
             val scope = rememberCoroutineScope()
             // 运行权限与链路：参数编辑的只读判定、控制命令拦截都用这两个（判据集中在 Perm）
-            val bmsStatus by MockBms.status.collectAsState()
+            // 根组合只关心权限这一个标量：收整份 status 会让整个界面每拍重组（见 MockBms.permissionLevel）
+            val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
             val bmsLink by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
             val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
-            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(bmsStatus.permissionLevel) && connected
+            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(permissionLevel) && connected
             // 电量计（中继器）模式：隐藏"配置"标签（参数/控制/升级对电量计无意义），深链也重定向到仪表盘
             val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
             val meterMode = family.isMeter
@@ -214,7 +215,7 @@ fun App(
                                     onOpenProtect = { dialog.value = DialogKind.ProtectDetail },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
                                     canWrite = canWrite,
-                                    permissionLevel = bmsStatus.permissionLevel,
+                                    permissionLevel = permissionLevel,
                                     onControlConfirm = { cmd -> dialog.value = DialogKind.ControlConfirm(cmd) },
                                     onForceCharge = { dialog.value = DialogKind.ControlConfirm(io.github.lswlc33.maibms.protocol.ControlCmd.FORCE_CHARGE) },
                                 )
@@ -244,7 +245,7 @@ fun App(
                                                 item, readOnly = true,
                                                 readOnlyNote = if (!connected)
                                                     "未连接保护板：连接后才能写入；运行权限需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上"
-                                                else "当前运行权限 ${bmsStatus.permissionLevel} 级只读：写入需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上，点「去校验」升权",
+                                                else "当前运行权限 $permissionLevel 级只读：写入需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上，点「去校验」升权",
                                             )
                                             def?.readOnly == true -> DialogKind.ParamEdit(
                                                 item, readOnly = true,

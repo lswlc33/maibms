@@ -85,10 +85,42 @@ object BmsLog {
     fun w(tag: String, msg: String) = add(Level.WARN, tag, msg)
     fun e(tag: String, msg: String) = add(Level.ERROR, tag, msg)
 
+    /**
+     * 帧级转储（收发报文）：**开关打开时才拼十六进制**，关着只输出「多少字节」。
+     *
+     * 为什么要有这个重载：帧十六进制是这条路径上最贵的一次拼串——一帧 245 字节 ≈ 245 次
+     * 字符串分配，而它发生在 **BLE 回调线程**上（Android 的通知回调），每拍都跑；
+     * 关着开关时这些字符串只进 logcat，用户根本不会看。留一行「← 245B」则 adb 仍能看出
+     * "有没有在收、收多长"，需要看报文时打开开关即可（开关会落盘记住）。
+     *
+     * @param label 前缀（方向箭头 / 功能码与长度等）
+     * @param size 字节数（开关关着时输出的就是它）
+     * @param hex 只在开关打开时调用——**别把 hex() 写在调用点外面**，那就白省了
+     */
+    fun frame(tag: String, label: String, size: Int, hex: () -> String) {
+        if (frameLogOn.value) add(Level.DEBUG, tag, "$label ${hex()}")
+        else add(Level.DEBUG, tag, "$label ${size}B")
+    }
+
     /** 兼容旧签名（原先的 add(tag, msg) 视作 INFO） */
     fun add(tag: String, msg: String) = add(Level.INFO, tag, msg)
 
-    fun hex(b: ByteArray): String = b.joinToString(" ") { "%02X".fmt(it) }
+    /**
+     * 字节数组 → 空格分隔的十六进制串。
+     *
+     * 用 256 项查表而不是逐字节 `"%02X".fmt(it)`：后者每个字节都要起一个 StringBuilder，
+     * 而这条路径上（每拍收发 + 开发者页导出）长度动辄两三百字节。
+     */
+    fun hex(b: ByteArray): String {
+        if (b.isEmpty()) return ""
+        val sb = StringBuilder(b.size * 3 - 1)
+        for (i in b.indices) {
+            if (i > 0) sb.append(' ')
+            val v = b[i].toInt() and 0xFF
+            sb.append(HEX_TABLE[v ushr 4]).append(HEX_TABLE[v and 0x0F])
+        }
+        return sb.toString()
+    }
 
     fun clear() = withLock(lock) {
         _entries.value = emptyList()
@@ -134,6 +166,9 @@ object BmsLog {
 
     /** 环形缓冲/文件追加的互斥（JVM=synchronized 语义，iOS=NSRecursiveLock） */
     private val lock = PlatformLock()
+
+    /** 十六进制半字节查表（见 [hex]：避免逐字节起 StringBuilder） */
+    private val HEX_TABLE = "0123456789ABCDEF".toCharArray()
 
     /** 上次写入日志所在的「天」（epoch day）；restore 后为 restore 当天，跨天时触发一次清理 */
     @Volatile private var lastAppendDay: Long = -1

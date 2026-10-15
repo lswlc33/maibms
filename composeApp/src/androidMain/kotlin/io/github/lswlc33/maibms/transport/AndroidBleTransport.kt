@@ -119,6 +119,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     private var dropSignal: CompletableDeferred<Unit>? = null
 
     private val LOG = io.github.lswlc33.maibms.data.BmsLog
+
+    /** 通知缓冲写满、帧被丢掉：记一笔给开发者页看（此前 tryEmit 的返回值被直接扔掉，丢了帧没人知道） */
+    private fun noteDropped() = io.github.lswlc33.maibms.data.LinkStats.noteDroppedFrame()
     private fun logI(msg: String) = LOG.i("BLE", msg)
     private fun logW(msg: String) = LOG.w("BLE", msg)
     private fun logE(msg: String) = LOG.e("BLE", msg)
@@ -578,17 +581,19 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
             @Suppress("DEPRECATION")
             val data = c.value ?: return
-            logD("← ${hex(data)}")
+            // 帧级转储：开关关着时只拼「← 245B」——这里在 BLE 回调线程上，
+            // 一帧 245 字节的十六进制是 245 次字符串分配，会推迟后面的 tryEmit
+            LOG.frame("BLE", "←", data.size) { hex(data) }
             noteProbeResponse(data)
-            _incoming.tryEmit(data.copyOf())
+            if (!_incoming.tryEmit(data.copyOf())) noteDropped()
         }
 
         override fun onCharacteristicChanged(
             g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray
         ) {
-            logD("← ${hex(value)}")
+            LOG.frame("BLE", "←", value.size) { hex(value) }
             noteProbeResponse(value)
-            _incoming.tryEmit(value.copyOf())
+            if (!_incoming.tryEmit(value.copyOf())) noteDropped()
         }
     }
 
@@ -605,8 +610,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         val g = gatt ?: run { logW("写入被丢弃：未连接"); return }
         val wc = writeChar ?: run { logW("写入被丢弃：无写通道"); return }
         if (_linkState.value != LinkState.Connected) { logW("写入被丢弃：链路未就绪"); return }
-        // 帧日志统一走协议层的遮蔽版：0x23 密码帧的数据区不能被原样写进日志
-        logD("→ ${io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame)}")
+        // 帧日志统一走协议层的遮蔽版：0x23 密码帧的数据区不能被原样写进日志。
+        // 同样只在开关打开时拼（仓库层也会记一条 TX，两边都是"要看细节"时才付出代价）
+        LOG.frame("BLE", "→", frame.size) { io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame) }
         writeChunks(g, wc, frame)
     }
 
@@ -629,7 +635,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 g.writeCharacteristic(wc)
             }
             offset += len
-            delay(WRITE_GAP_MS)
+            // 只在**还有下一片**时等：最后一片写完后没有后续写入，那 12ms 是白等的。
+            // 电量计每拍要连发 4 条短帧（每条正好 1 片），省下的就是每拍 4×12ms
+            if (offset < frame.size) delay(WRITE_GAP_MS)
         }
     }
 

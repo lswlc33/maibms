@@ -582,6 +582,39 @@ fun DeveloperScreen(onBack: () -> Unit) {
         if (actionNote != null) { kotlinx.coroutines.delay(2000); actionNote = null }
     }
     ScreenScaffold(title = "开发者", onBack = onBack) {
+        // 链路统计：轮询往返耗时/成功率/丢帧数。此前整个应用没有任何性能度量，
+        // 「换档位/换通道之后是好了还是坏了」只能靠感觉——这一块就是那把尺子
+        val pollStats by io.github.lswlc33.maibms.data.LinkStats.poll.collectAsState()
+        val dropped by io.github.lswlc33.maibms.data.LinkStats.droppedFrames.collectAsState()
+        SectionCard {
+            SectionHeader("链路统计", tail = "最近 60 拍")
+            val st = pollStats
+            if (st == null || st.samples == 0) {
+                Text("还没有轮询样本（连上设备后开始统计）",
+                    fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                SettingRow(
+                    title = "往返耗时",
+                    inlineValue = "平均 ${st.avgMs}ms · 最大 ${st.maxMs}ms",
+                )
+                SettingRow(
+                    title = "应答成功率",
+                    inlineValue = "${st.okPercent}%（${st.ok}/${st.samples} 拍）",
+                )
+                SettingRow(title = "累计轮询", inlineValue = "${st.totalPolls} 拍")
+            }
+            // 丢帧是"采集线程卡住"的唯一直接证据：非 0 就该查（此前这个返回值被直接扔掉）
+            SettingRow(
+                title = "丢弃的通知帧",
+                inlineValue = if (dropped == 0) "0" else "$dropped（缓冲写满）",
+            )
+            Text(
+                "往返耗时只统计收到应答的拍；每拍超时是常态（设备忙/信号抖动），持续低于一半才说明该降档或换通道。" +
+                    "丢弃的通知帧非 0 说明采集跟不上（开发者页日志本身也可能拖慢它）。",
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         // 轮询频率三档：900 更稳更省电 / 600 默认 / 300 数据最跟手（弱信号下可能丢帧）
         SectionCard {
             SectionHeader("轮询频率", tail = "默认 600ms")

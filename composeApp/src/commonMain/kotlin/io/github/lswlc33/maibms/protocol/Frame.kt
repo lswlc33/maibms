@@ -162,11 +162,22 @@ class ParsedFrame(
  * 流式解帧器（docs/03 §3.6、15 §15.6）。
  * 规则：数据不足 → break 保留缓冲；CRC 失败/结构非法 → 丢 1 字节滑动重找 7E；
  *       组合帧第二段无 7E 帧头（紧跟上一段之后），AA55 只在末尾出现一次。
+ *
+ * **实现是 ByteArray + 读写游标**，不是 `ArrayList<Byte>`：后者每字节要装箱成对象，
+ * 且 `removeAt(0)` 要搬动整个列表（一帧 245 字节 ≈ 3 万次元素搬移），而这条路径每拍都在跑、
+ * 还压在 sessionLock 里。CRC 也直接在缓冲上算（`Crc16.modbus(buf, from, to)`），
+ * 不再为「校验范围」单独复制一份数组。
  */
 class FrameParser {
-    private val buf = ArrayList<Byte>(512)
+    private var buf = ByteArray(INITIAL_CAPACITY)
 
-    val buffered: Int get() = buf.size
+    /** 读游标（下一个待解析字节） */
+    private var head = 0
+
+    /** 写游标（下一个空位） */
+    private var tail = 0
+
+    val buffered: Int get() = tail - head
 
     /**
      * 段尾状态：一段解析完（CRC 已过）后，后面要么是 AA55 收尾，要么紧跟无帧头的下一段。
@@ -176,33 +187,54 @@ class FrameParser {
 
     /** 喂入新字节，返回本次解析出的段 */
     fun feed(bytes: ByteArray, from: Int = 0, to: Int = bytes.size): List<ParsedFrame> {
-        for (i in from until to) buf.add(bytes[i])
+        val n = to - from
+        if (n > 0) {
+            ensureFree(n)
+            bytes.copyInto(buf, tail, from, to)
+            tail += n
+        }
         val out = ArrayList<ParsedFrame>(2)
-        while (buf.isNotEmpty()) {
+        while (buffered > 0) {
             if (u8(0) == 0x7E) {
                 when (val seg = tryParseAt0()) {
                     null -> break                                  // 数据不足，等待
-                    INVALID -> { drop1(); afterSeg = false }        // 校验失败，滑动重找
+                    INVALID -> { drop(1); afterSeg = false }        // 校验失败，滑动重找
                     else -> { out.add(seg); afterSeg = true }
                 }
                 continue
             }
-            if (!afterSeg) { drop1(); continue }                    // 帧外噪声
+            if (!afterSeg) { drop(1); continue }                    // 帧外噪声
             // 段后：先看收尾，再看是否还有下一段
-            if (buf.size < 2) break                                 // 不足以判断，等待
-            if (u8(0) == 0xAA && u8(1) == 0x55) { drop1(); drop1(); afterSeg = false; continue }
+            if (buffered < 2) break                                 // 不足以判断，等待
+            if (u8(0) == 0xAA && u8(1) == 0x55) { drop(2); afterSeg = false; continue }
             when (val seg = tryParseSeg2At0()) {
                 null -> break                                       // 可能是段2，数据不足
-                INVALID -> { drop1(); afterSeg = false }
+                INVALID -> { drop(1); afterSeg = false }
                 else -> out.add(seg)                                // 还有下一段（保持 afterSeg）
             }
         }
+        // 全部消费完就把游标归零：一次 MTU 512 的突发不该让缓冲长期停在高水位
+        if (buffered == 0) { head = 0; tail = 0 }
         return out
     }
 
-    private fun drop1() { if (buf.isNotEmpty()) buf.removeAt(0) }
+    /** 保证尾部还有 [extra] 字节空间：先就地前移压缩，再不够才扩容 */
+    private fun ensureFree(extra: Int) {
+        if (buf.size - tail >= extra) return
+        val live = tail - head
+        if (head > 0 && buf.size - live >= extra) {
+            buf.copyInto(buf, 0, head, tail)
+            head = 0; tail = live
+            return
+        }
+        val bigger = ByteArray(maxOf(buf.size * 2, live + extra))
+        buf.copyInto(bigger, 0, head, tail)
+        buf = bigger; head = 0; tail = live
+    }
 
-    private fun u8(i: Int) = buf[i].toInt() and 0xFF
+    private fun drop(n: Int) { head = minOf(head + n, tail) }
+
+    private fun u8(i: Int) = buf[head + i].toInt() and 0xFF
 
     /**
      * 位置 0 处的段1：7E 地址 功能码 寄存器(2B) 长度 数据 CRC(2B)。
@@ -210,18 +242,18 @@ class FrameParser {
      * null=数据不足；INVALID=校验失败
      */
     private fun tryParseAt0(): ParsedFrame? {
-        if (buf.size < 6) return null
+        if (buffered < 6) return null
         val fc = u8(2)
         val isShort = fc < 0x10
         val len = if (isShort) 0 else u8(5)
         val body = 8 + len                      // 6 头 + len 数据 + 2 CRC
-        if (buf.size < body) return null
-        val bytes = ByteArray(5 + len) { buf[it + 1] }   // 地址..最后数据字节（CRC 覆盖范围）
-        val expect = Crc16.modbus(bytes)
+        if (buffered < body) return null
+        // CRC 覆盖「地址..最后一个数据字节」：直接在缓冲上算，不复制校验范围
+        val expect = Crc16.modbus(buf, head + 1, head + 6 + len)
         if (expect and 0xFF != u8(body - 2) || expect shr 8 != u8(body - 1)) return INVALID
-        val data = if (isShort) ByteArray(0) else ByteArray(len) { buf[6 + it] }
+        val data = if (isShort) EMPTY else buf.copyOfRange(head + 6, head + 6 + len)
         val frame = ParsedFrame(u8(1), fc, u8(3) or (u8(4) shl 8), data, isSeg2 = false, lengthField = u8(5))
-        repeat(body) { drop1() }
+        drop(body)
         return frame
     }
 
@@ -230,20 +262,22 @@ class FrameParser {
      * 功能码不限定——文档里的 0xFE 机型段是其一，真机 0x23 应答后跟的是 0xFF 段。
      */
     private fun tryParseSeg2At0(): ParsedFrame? {
-        if (buf.size < 6) return null
+        if (buffered < 6) return null
         val len = u8(3)
         val total = 4 + len + 2
-        if (buf.size < total) return null
-        val bytes = ByteArray(4 + len) { buf[it] }   // 功能码 + reg(2) + len + data
-        val expect = Crc16.modbus(bytes)
+        if (buffered < total) return null
+        val expect = Crc16.modbus(buf, head, head + 4 + len)   // 功能码 + reg(2) + len + data
         if (expect and 0xFF != u8(4 + len) || expect shr 8 != u8(5 + len)) return INVALID
-        val data = ByteArray(len) { buf[4 + it] }
+        val data = buf.copyOfRange(head + 4, head + 4 + len)
         val frame = ParsedFrame(0, u8(0), u8(1) or (u8(2) shl 8), data, isSeg2 = true, lengthField = len)
-        repeat(total) { drop1() }
+        drop(total)
         return frame
     }
 
     companion object {
-        private val INVALID = ParsedFrame(-1, -1, -1, ByteArray(0), false)
+        /** 初始容量：一帧 245 字节 + 组合帧第二段，512 足够覆盖绝大多数情形 */
+        private const val INITIAL_CAPACITY = 512
+        private val EMPTY = ByteArray(0)
+        private val INVALID = ParsedFrame(-1, -1, -1, EMPTY, false)
     }
 }

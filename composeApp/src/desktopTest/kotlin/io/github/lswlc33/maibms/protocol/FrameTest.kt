@@ -211,6 +211,37 @@ class FrameTest {
         assertEquals(170, out[0].data.size)
     }
 
+    // ---- 环形缓冲的容量管理（解帧器从 ArrayList<Byte> 换成 ByteArray+游标后新增的路径）----
+    @Test fun noiseBeyondInitialCapacityStillParses() {
+        // 一次喂进来的噪声就超过初始容量（512）：必须扩容后照常解析
+        val p = FrameParser()
+        val noise = ByteArray(700) { 0x11 }
+        val out = p.feed(noise + seg1Frame())
+        assertEquals(1, out.size)
+        assertEquals(0x11, out.single().func)
+        assertEquals(0, p.buffered)
+    }
+
+    @Test fun bufferCompactsWhenTailSpaceRunsOut() {
+        val p = FrameParser()
+        val frame = seg1Frame()
+        // 先灌 300 字节噪声（逐字节丢弃 → 读游标前移到 300），再留半个帧在缓冲里
+        assertTrue(p.feed(ByteArray(300) { 0x11 } + frame.copyOfRange(0, 100)).isEmpty())
+        // 再喂「剩下的帧体 + 又一整帧」：尾部空间不够，要走「就地前移压缩」
+        val out = p.feed(frame.copyOfRange(100, frame.size) + frame)
+        assertEquals(2, out.size, "压缩后两帧都要解出来")
+        assertEquals(0, p.buffered)
+    }
+
+    @Test fun manyFramesInOneFeed() {
+        // 一次通知里带多帧（组合帧 + 后续帧）是常态，别只解第一帧
+        val p = FrameParser()
+        val out = p.feed(combinedFrame() + seg1Frame() + seg1Frame())
+        assertEquals(4, out.size, "段1 + 段2 + 两帧")
+        assertEquals(listOf(0x11, 0xFE, 0x11, 0x11), out.map { it.func })
+        assertEquals(0, p.buffered)
+    }
+
     // ---- 实时数据解码（docs/5 §5.8 + 15 §15.6 期望值）----
     @Test fun realtimeDecode() {
         val r = RealtimeDecoder.decode(vec186)

@@ -27,6 +27,21 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
     private var receivedTable1 = false
     private var receivedTable2 = false
 
+    /**
+     * 两条读帧**只与匹配码有关**，预先建好复用。
+     *
+     * 原先每拍现建：`ArrayList<Int>`（每字节装箱）+ 逐位算 CRC，而内容一个字都不变。
+     * 返回的是共享数组：调用方（传输层）只读它并自行分片复制，不修改。
+     * 字段必须声明在 `init` 之前——Kotlin 按声明顺序初始化，放后面会被初始值覆盖。
+     */
+    private var table1Frame: ByteArray = ByteArray(0)
+    private var table2Frame: ByteArray = ByteArray(0)
+
+    private fun rebuildFrames() {
+        table1Frame = readFrame(dataNumber = 1, start = 0, len = 111)
+        table2Frame = readFrame(dataNumber = 2, start = 0, len = 134)
+    }
+
     override val snapshotReady: Boolean
         get() = receivedTable1 && receivedTable2
 
@@ -60,15 +75,17 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
     }
 
     override fun setSecret(secret: String?) {
-        val s = secret?.trim()?.replace(" ", "") ?: return
+        val s = secret?.trim()?.replace(" ", "")
         when {
+            s == null -> Unit
             // 12 位十六进制 = 6 字节（官方"固定匹配码"就是这种形态，如 18 21 A3 3B 45 56）
-            s.length == 12 && s.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' } ->
+            s != null && s.length == 12 && s.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' } ->
                 match = ByteArray(6) { i -> s.substring(2 * i, 2 * i + 2).toInt(16).toByte() }
             // 6 位数字 = 逐位字节（官方默认 06 06 06 06 06 06）
-            s.length == 6 && s.all { it.isDigit() } ->
+            s != null && s.length == 6 && s.all { it.isDigit() } ->
                 match = ByteArray(6) { i -> s[i].digitToInt().toByte() }
         }
+        rebuildFrames()
     }
 
     override fun initialFrames(): List<ByteArray> = emptyList()
@@ -80,8 +97,7 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
      */
     override fun nextPollFrames(): List<ByteArray> {
         index++
-        return if (index % 5 == 0) listOf(readFrame(dataNumber = 2, start = 0, len = 134))
-        else listOf(readFrame(dataNumber = 1, start = 0, len = 111))
+        return if (index % 5 == 0) listOf(table2Frame) else listOf(table1Frame)
     }
 
     override fun onData(bytes: ByteArray): MeterReading? {

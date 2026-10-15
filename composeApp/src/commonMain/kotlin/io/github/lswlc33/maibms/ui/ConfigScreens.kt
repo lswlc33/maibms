@@ -32,7 +32,8 @@ fun ConfigHomeScreen(
     onOpenPerm: () -> Unit = {},
     bottomPadding: androidx.compose.ui.unit.Dp = 20.dp,
 ) {
-    val status by MockBms.status.collectAsState()
+    // 这三页只用到权限等级：收整份 status 会让上百行参数/控制项每拍重组一次（见 MockBms.permissionLevel）
+    val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
     val usingReal by MockBms.usingRealBle.collectAsState()
     val live by MockBms.liveParams.collectAsState()
     val reading by MockBms.paramsReading.collectAsState()
@@ -49,7 +50,7 @@ fun ConfigHomeScreen(
         },
         bottomPadding = bottomPadding,
         // 写权限状态 + 等级数字：等级不再单独挂横幅，点任一个都能换级
-        trailing = { WriteAccessTrailing(status.permissionLevel, WriteAccess.of(status.permissionLevel, connected), onOpenPerm) },
+        trailing = { WriteAccessTrailing(permissionLevel, WriteAccess.of(permissionLevel, connected), onOpenPerm) },
     ) {
         when {
             // 未连接但有缓存：配置项不是实时数据，显示上次成功连接的设置项（只读），横幅说清来源
@@ -63,9 +64,9 @@ fun ConfigHomeScreen(
             )
         }
         // 只读时把「为什么改不了」讲清楚，并给一条去校验的直达路
-        if (connected && !Perm.canWrite(status.permissionLevel)) {
+        if (connected && !Perm.canWrite(permissionLevel)) {
             InfoBanner(
-                "当前 ${status.permissionLevel} 级只读：参数只能查看，写入需 ${Perm.WRITE_MIN_LEVEL} 级及以上",
+                "当前 ${permissionLevel} 级只读：参数只能查看，写入需 ${Perm.WRITE_MIN_LEVEL} 级及以上",
                 kind = "warn", action = "去校验", onAction = onOpenPerm,
             )
         }
@@ -112,10 +113,11 @@ fun ParamGroupScreen(
     val live by MockBms.liveParams.collectAsState()
     val reading by MockBms.paramsReading.collectAsState()
     val usingReal by MockBms.usingRealBle.collectAsState()
-    val status by MockBms.status.collectAsState()
+    // 这三页只用到权限等级：收整份 status 会让上百行参数/控制项每拍重组一次（见 MockBms.permissionLevel）
+    val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
     val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
-    val access = WriteAccess.of(status.permissionLevel, connected)
+    val access = WriteAccess.of(permissionLevel, connected)
 
     /**
      * 一律以 ParamTable 的地址为准取值（真机=读回区，演示=虚拟引擎参数区）。
@@ -137,7 +139,7 @@ fun ParamGroupScreen(
         title = groupName,
         subtitle = "地址 ${range.first}~${range.last} · ${defs.size} 项 · 倍率见条目",
         onBack = onBack,
-        trailing = { WriteAccessTrailing(status.permissionLevel, access, onOpenPerm) },
+        trailing = { WriteAccessTrailing(permissionLevel, access, onOpenPerm) },
     ) {
         if (reading) InfoBanner("读取中…", kind = "info")
         else if (!connected) {
@@ -182,11 +184,11 @@ fun ParamGroupScreen(
             WriteAccess.EDIT ->
                 InfoBanner("点条目修改，写入成功后自动保存（51/07）", kind = "info", action = "立即保存", onAction = onSave)
             WriteAccess.READ_ONLY -> InfoBanner(
-                "当前 ${status.permissionLevel} 级只读 · 写入需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限",
+                "当前 ${permissionLevel} 级只读 · 写入需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限",
                 kind = "warn", action = "去校验", onAction = onOpenPerm,
             )
             WriteAccess.DENIED -> InfoBanner(
-                "权限不足（当前 ${status.permissionLevel} 级）· 读参数区需 ${Perm.READ_PARAM_MIN_LEVEL} 级、写入需 ${Perm.WRITE_MIN_LEVEL} 级",
+                "权限不足（当前 ${permissionLevel} 级）· 读参数区需 ${Perm.READ_PARAM_MIN_LEVEL} 级、写入需 ${Perm.WRITE_MIN_LEVEL} 级",
                 kind = "warn", action = "去校验", onAction = onOpenPerm,
             )
         }
@@ -204,10 +206,11 @@ fun ControlToolsScreen(
     val chargeOn by MockBms.chargeSwitch.collectAsState()
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
     val balanceOn by MockBms.balanceSwitch.collectAsState()
-    val status by MockBms.status.collectAsState()
+    // 这三页只用到权限等级：收整份 status 会让上百行参数/控制项每拍重组一次（见 MockBms.permissionLevel）
+    val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
     val link by remember { io.github.lswlc33.maibms.data.Bms.repository.linkState }.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
-    val access = WriteAccess.of(status.permissionLevel, connected)
+    val access = WriteAccess.of(permissionLevel, connected)
     val canWrite = access == WriteAccess.EDIT
     // 只读时点了开关/命令不是静默无反应，而是当场说明原因
     var deniedNote by remember { mutableStateOf<String?>(null) }
@@ -215,7 +218,7 @@ fun ControlToolsScreen(
     /** 统一入口：权限不够只提示、不发帧；确认弹窗关掉后由 0x61 结果与实时帧驱动开关状态 */
     val fire: (Int) -> Boolean = { cmd ->
         if (!canWrite) {
-            deniedNote = "${ControlCmd.name(cmd)} 需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 ${status.permissionLevel} 级）"
+            deniedNote = "${ControlCmd.name(cmd)} 需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 ${permissionLevel} 级）"
             false
         } else {
             deniedNote = null
@@ -228,14 +231,14 @@ fun ControlToolsScreen(
         title = "控制与工具",
         subtitle = "全部命令执行前需确认 · 高危项需输入确认",
         onBack = onBack,
-        trailing = { WriteAccessTrailing(status.permissionLevel, access, onOpenPerm) },
+        trailing = { WriteAccessTrailing(permissionLevel, access, onOpenPerm) },
     ) {
         // 只说「为什么现在点了会失败」的一次性原因；等级本身右上角数字标识里常显
         if (!connected) {
             InfoBanner("未连接保护板 · 控制命令需要先连上设备", kind = "warn")
         } else if (!canWrite) {
             InfoBanner(
-                "当前 ${status.permissionLevel} 级只读 · 控制命令需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限",
+                "当前 ${permissionLevel} 级只读 · 控制命令需 ${Perm.WRITE_MIN_LEVEL} 级及以上权限",
                 kind = "warn", action = "去校验", onAction = onOpenPerm,
             )
         }

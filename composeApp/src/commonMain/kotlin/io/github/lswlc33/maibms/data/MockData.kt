@@ -1,7 +1,10 @@
 package io.github.lswlc33.maibms.data
 
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 
 /** 单体电压格 */
@@ -90,6 +93,16 @@ data class DevicePassword(val level: Int, val masked: String?, val isCurrent: Bo
 object MockBms {
     private val _status = MutableStateFlow(BmsStatus())
     val status: StateFlow<BmsStatus> = _status
+
+    /**
+     * 运行权限等级（从 [status] 派生，只在真的变了才发射）。
+     *
+     * 存在的理由：应用根、配置页、控制页**只需要这一个标量**（判断可写/只读、显示徽章），
+     * 此前它们收的是整份 `status`——而 status 每拍都换新对象，于是每 600ms 就把
+     * 「根组合 + 当前屏 + 上百行参数」整片重组一次，哪怕权限一直是 3 级。
+     * 派生流让这些地方只在权限**真的变化**时重组（升权、权限回落、换设备）。
+     */
+    val permissionLevel: Flow<Int> = _status.map { it.permissionLevel }.distinctUntilChanged()
 
     // ---- 数据回填（BmsRepository 解码后写入；UI 只读这两个流） ----
     val connected = MutableStateFlow(false)
@@ -261,7 +274,16 @@ object MockBms {
 
     fun clearTrend() { histVolt.clear(); histCurr.clear() }
 
-    /** 0x11 解码结果 → UI 状态（每 900ms 轮询回填） */
+    /**
+     * 内容相同就复用旧实例。
+     *
+     * Compose 对 `List` 参数用的是**引用相等**（列表被视作不稳定类型），每拍新建一份等值列表
+     * 会让下游卡片全部重组——20~32 格的单体网格最明显。复用实例后，"这一拍值没变"的那些卡片
+     * 可以直接跳过重组（温度、保护/告警列表多数拍都不变）。
+     */
+    private fun <T> reuse(prev: List<T>, next: List<T>): List<T> = if (prev == next) prev else next
+
+    /** 0x11 解码结果 → UI 状态（每 600ms 轮询回填） */
     fun updateFromRealtime(r: io.github.lswlc33.maibms.protocol.RealtimeDecoder.Result) {
         val balBits = r.balanceBits.toLong()
         pushTrend(r.totalVoltage, r.current)
@@ -269,6 +291,7 @@ object MockBms {
         chargeSwitch.value = r.chMos == 1
         dischargeSwitch.value = r.disMos == 1
         balanceSwitch.value = r.balanceState != 0
+        val cur = _status.value
         val newCells = r.cells.mapIndexed { i, v ->
             CellV(
                 index = i + 1, volt = v,
@@ -276,7 +299,7 @@ object MockBms {
                 balancing = (balBits shr i) and 1L == 1L,
             )
         }
-        _status.value = _status.value.copy(
+        _status.value = cur.copy(
             hasData = true,
             runtime = fmtRuntime(r.runtimeSec),
             permissionLevel = r.permission,
@@ -304,23 +327,23 @@ object MockBms {
             chMosCode = r.chMos,
             disMosCode = r.disMos,
             balanceCode = r.balanceState,
-            protectList = io.github.lswlc33.maibms.protocol.BitDict.decode(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
-            alarmList = io.github.lswlc33.maibms.protocol.BitDict.displayAlarmList(r.warnBits, r.chMos == 1, r.disMos == 1),
-            protectPairs = io.github.lswlc33.maibms.protocol.BitDict.decodePairs(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
-            alarmPairs = io.github.lswlc33.maibms.protocol.BitDict.decodeForDisplayPairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
-            statePairs = io.github.lswlc33.maibms.protocol.BitDict.statePairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
-            temps = listOf("MOS" to r.mosTemp, "均衡" to r.balanceTemp) +
-                    r.temps.mapIndexed { i, t -> "T${i + 1}" to t },
-            cells = newCells,
+            protectList = reuse(cur.protectList, io.github.lswlc33.maibms.protocol.BitDict.decode(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames)),
+            alarmList = reuse(cur.alarmList, io.github.lswlc33.maibms.protocol.BitDict.displayAlarmList(r.warnBits, r.chMos == 1, r.disMos == 1)),
+            protectPairs = reuse(cur.protectPairs, io.github.lswlc33.maibms.protocol.BitDict.decodePairs(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames)),
+            alarmPairs = reuse(cur.alarmPairs, io.github.lswlc33.maibms.protocol.BitDict.decodeForDisplayPairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames)),
+            statePairs = reuse(cur.statePairs, io.github.lswlc33.maibms.protocol.BitDict.statePairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames)),
+            temps = reuse(cur.temps, listOf("MOS" to r.mosTemp, "均衡" to r.balanceTemp) +
+                    r.temps.mapIndexed { i, t -> "T${i + 1}" to t }),
+            cells = reuse(cur.cells, newCells),
             batteryType = io.github.lswlc33.maibms.protocol.RealtimeDecoder.batteryTypeText(r.batteryType),
             connected = true,
-            cycles = _status.value.cycles,
+            cycles = cur.cycles,
             trendCurrent = norm(histCurr.toList(), includeZero = true),
             trendVolt = norm(histVolt.toList(), includeZero = false),
             // 设备名/版本不在实时帧里：设备名用 BLE 名，版本来自身份区（0x02 读回）
-            deviceName = connectedDeviceName.value ?: _status.value.deviceName,
-            swVersion = identity.value["swVersion"]?.ifBlank { null } ?: _status.value.swVersion,
-            hwVersion = identity.value["hwVersion"]?.ifBlank { null } ?: _status.value.hwVersion,
+            deviceName = connectedDeviceName.value ?: cur.deviceName,
+            swVersion = identity.value["swVersion"]?.ifBlank { null } ?: cur.swVersion,
+            hwVersion = identity.value["hwVersion"]?.ifBlank { null } ?: cur.hwVersion,
         )
         connected.value = true
     }
@@ -383,7 +406,7 @@ object MockBms {
             disMosCode = r.disMos?.let { if (it) 1 else 0 } ?: cur.disMosCode,
             balanceCode = r.balancing?.let { if (it) 4 else 0 } ?: cur.balanceCode,
             temps = r.temps ?: cur.temps,
-            cells = newCells ?: cur.cells,
+            cells = newCells?.let { reuse(cur.cells, it) } ?: cur.cells,
             maxCell = maxV?.let { "%.3f".fmt(it) } ?: cur.maxCell,
             minCell = minV?.let { "%.3f".fmt(it) } ?: cur.minCell,
             avgCell = avgV?.let { "%.3f".fmt(it) } ?: cur.avgCell,

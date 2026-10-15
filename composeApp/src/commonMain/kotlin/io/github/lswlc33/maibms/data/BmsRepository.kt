@@ -168,6 +168,9 @@ class BmsRepository(
     val canScan: Boolean get() = realTransport?.supportsScan == true
 
     private var parser = FrameParser()
+
+    /** 实时轮询请求帧内容恒定，建一次复用（原先每拍现建：组帧 + 算一遍 CRC） */
+    private val realtimeRequest = Frame.readRealtime()
     private val cmdMutex = Mutex()
     private val writeMutex = Mutex()
     private var awaiting: CompletableDeferred<ParsedFrame>? = null
@@ -417,6 +420,8 @@ class BmsRepository(
         // 换设备/重连：上升沿基线清空——上一台的置位不能当成本台的"已有状态"（否则真正的新保护不报）
         alarmNotifier.reset()
         linkAlerted = false
+        // 轮询统计跨通道/跨设备没有可比性，一起归零
+        LinkStats.resetPoll()
         MockBms.applyPermission(0)
         MockBms.clearForRealDevice()
     }
@@ -683,9 +688,14 @@ class BmsRepository(
                     }
                 } else {
                     try {
-                        requestAndAwait(Frame.readRealtime(), Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
+                        // 往返耗时埋点：这条统计是"轮询档/通道/信号好坏"的唯一客观依据
+                        val t0 = epochMillisNow()
+                        val r = requestAndAwait(realtimeRequest, Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
+                        val t1 = epochMillisNow()
+                        LinkStats.notePoll((t1 - t0).toInt(), r != null, t1)
                     } catch (e: Exception) {
                         // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
+                        LinkStats.notePoll(0, ok = false, nowMs = epochMillisNow())
                         BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
                     }
                 }
@@ -891,7 +901,10 @@ class BmsRepository(
     }
 
     private fun handleFrame(f: ParsedFrame) {
-        BmsLog.d("RX", "func=%02X reg=%d len=%d %s".fmt(f.func, f.reg, f.data.size, BmsLog.hex(f.data.take(24).toByteArray())))
+        // 只拼前缀；十六进制由 BmsLog.frame 在开关打开时才构造（原先无条件拼，每帧白付一次）
+        BmsLog.frame("RX", "func=%02X reg=%d len=%d".fmt(f.func, f.reg, f.data.size), f.data.size) {
+            BmsLog.hex(f.data.copyOfRange(0, minOf(24, f.data.size)))
+        }
         when (f.func) {
             Proto.RSP_REALTIME -> {
                 runCatching { RealtimeDecoder.decode(f.data) }.onSuccess { r ->
@@ -1020,7 +1033,7 @@ class BmsRepository(
             expectReg = expectedReg
         }
         try {
-            BmsLog.d("TX", Frame.hexForLog(frame))
+            BmsLog.frame("TX", "→", frame.size) { Frame.hexForLog(frame) }
             checkSession(expectedSession)
             transport.write(frame)
             val r = withTimeoutOrNull(timeoutMs) { d.await() }

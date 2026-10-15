@@ -50,22 +50,28 @@ object DeviceProfiles {
 
     @Volatile private var migrated = false
 
+    /**
+     * 解码结果缓存。
+     *
+     * `all()` 的调用点很多：每次密码查找（连接时按等级逐个查 6 次）、每次取设备显示名、
+     * 打开扫描弹窗、判断自动重连目标……而它每次都把整表 JSON 重新解一遍。
+     * 所有写入都经过 [save]（锁内），在锁内失效即可；[resetForTest] 直接写原始 KV，
+     * 也必须一并失效。
+     */
+    private var cache: List<DeviceProfile>? = null
+
     /** 测试专用：复位迁移标志与整表（测试各用例间 KV 是共享的 MemoryStore） */
     internal fun resetForTest() {
         withLock(lock) {
             migrated = false
+            cache = null
             AppStore.put(AppStore.KEY_PROFILES_V1, null)
             AppStore.put(AppStore.KEY_PW, null)
             AppStore.autoConnectAddress = null
         }
     }
 
-    fun all(): List<DeviceProfile> = withLock(lock) {
-        migrateOnce()
-        AppStore.get(AppStore.KEY_PROFILES_V1)?.let { text ->
-            runCatching { json.decodeFromString(ListSerializer(DeviceProfile.serializer()), text) }.getOrNull()
-        } ?: emptyList()
-    }
+    fun all(): List<DeviceProfile> = withLock(lock) { allLocked() }
 
     fun find(address: String?): DeviceProfile? = address?.let { addr -> all().firstOrNull { it.address == addr } }
 
@@ -110,15 +116,19 @@ object DeviceProfiles {
         save(profiles.filterNot { it.address == address } + p.copy(passwords = p.passwords - level))
     }
 
-    /** 锁内读取当前表（调用方必须已持有 lock） */
+    /** 锁内读取当前表（调用方必须已持有 lock）；带解码缓存 */
     private fun allLocked(): List<DeviceProfile> {
-        migrateOnce()
-        return AppStore.get(AppStore.KEY_PROFILES_V1)?.let { text ->
+        migrateOnce()   // 迁移内部可能 save()，届时缓存已被清空，所以先做迁移再看缓存
+        cache?.let { return it }
+        val loaded = AppStore.get(AppStore.KEY_PROFILES_V1)?.let { text ->
             runCatching { json.decodeFromString(ListSerializer(DeviceProfile.serializer()), text) }.getOrNull()
         } ?: emptyList()
+        cache = loaded
+        return loaded
     }
 
     private fun save(profiles: List<DeviceProfile>) {
+        cache = null
         AppStore.put(AppStore.KEY_PROFILES_V1,
             if (profiles.isEmpty()) null
             else json.encodeToString(ListSerializer(DeviceProfile.serializer()), profiles))
