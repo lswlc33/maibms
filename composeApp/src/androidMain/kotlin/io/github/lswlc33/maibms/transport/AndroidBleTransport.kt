@@ -351,11 +351,18 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             _linkState.value = LinkState.Disconnected
             return
         }
-        val device = address?.let { runCatching { adapter.getRemoteDevice(it) }.getOrNull() }
-            // 没指定地址就退回已配对的**目标设备**（保护板或电量计）；读 bondedDevices 要权限，缺权限时不能把协程掀掉
-            ?: runCatching { adapter.bondedDevices?.firstOrNull { DeviceFamily.isTarget(it.name) } }.getOrNull()
+        // 指定了地址就只连它：解析失败（地址不是合法 MAC）宁可报错重试，也不能退回已配对的
+        // 另一台设备——那样会话会按**目标设备**的地址/密码/家族去管一台别的设备。
+        // 只有「没指定地址」才退回已配对的**目标设备**（保护板或电量计）；
+        // 读 bondedDevices 要权限，缺权限时不能把协程掀掉
+        val device = if (address.isNullOrBlank()) {
+            runCatching { adapter.bondedDevices?.firstOrNull { DeviceFamily.isTarget(it.name) } }.getOrNull()
+        } else {
+            runCatching { adapter.getRemoteDevice(address) }.getOrNull()
+        }
             ?: run {
-                _connectHint.value = "没有指定设备，也没有已配对的目标设备"
+                _connectHint.value = if (address.isNullOrBlank()) "没有指定设备，也没有已配对的目标设备"
+                                     else "设备地址无效：$address"
                 _linkState.value = LinkState.Disconnected
                 return
             }

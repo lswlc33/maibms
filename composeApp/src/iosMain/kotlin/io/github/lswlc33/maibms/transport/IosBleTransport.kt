@@ -179,9 +179,15 @@ class IosBleTransport : BmsTransport {
 
     // ---- 扫描（对外列设备 / 对内找目标）----
     @Volatile private var scanHandler: ((ScanDevice) -> Unit)? = null
-    /** 扫描命中的目标：精确匹配优先，兜底取第一个 ANT 设备 */
+    /**
+     * 扫描命中的目标。
+     *
+     * **只装"就是我们要连的那台"**：没有指定标识时取第一个目标设备（对齐 Android 的
+     * 「没有指定地址就用已配对的 ANT 设备」），指定了标识就必须标识一致——曾经这里还留了
+     * 一个"见过别的目标设备就拿它兜底"的候选，结果指定设备找不到时会连上另一台，
+     * 而会话仍按原设备的地址/密码/家族管理（见 [acceptsPeripheralId]）。
+     */
     @Volatile private var pendingPeripheral: CBPeripheral? = null
-    @Volatile private var fallbackPeripheral: CBPeripheral? = null
 
     private fun logI(msg: String) = BmsLog.i("BLE", msg)
     private fun logW(msg: String) = BmsLog.w("BLE", msg)
@@ -221,14 +227,13 @@ class IosBleTransport : BmsTransport {
 
             if (pendingPeripheral != null) return
             val want = desiredAddress
-            when {
-                want.isNullOrBlank() -> pendingPeripheral = didDiscoverPeripheral
-                id.equals(want, ignoreCase = true) -> {
-                    logD("扫描命中目标设备 $name")
-                    pendingPeripheral = didDiscoverPeripheral
-                }
-                // 有目标但这条不匹配：留作兜底，继续等精确匹配（标识变了的情况在超时后启用）
-                else -> if (fallbackPeripheral == null) fallbackPeripheral = didDiscoverPeripheral
+            if (acceptsPeripheralId(want, id)) {
+                logD("扫描命中目标设备 $name")
+                pendingPeripheral = didDiscoverPeripheral
+            } else {
+                // 指定了标识但这条不匹配：它只是**另一台**目标设备，本轮等不到就不连——
+                // 拿它顶替会让会话（地址/密码/家族/档案）全部错位到别的设备上
+                logD("扫描到其它目标设备 $name $id，不是指定标识 $want")
             }
         }
 
@@ -721,8 +726,10 @@ class IosBleTransport : BmsTransport {
      * 实测表现为「设备明明在旁边、弹窗也刚扫到过，回连却一轮都发现不了」，
      * 15 秒超时无限退避。直连彻底绕开广播，也就绕开了抑制。
      *
-     * 扫描路径：优先标识一致；超时后若只见过别的同族设备就拿它兜底
-     * （对应 Android「没有指定地址就用已配对的 ANT 设备」）。找不到返回 null 由调用方退避重试。
+     * 扫描路径：**只认目标标识**（没有标识时才接受任意目标设备）。
+     * 标识取回失败（被「忽略此设备」/标识失效）时扫描若也没命中，本轮返回 null 由调用方退避重试——
+     * 绝不能连到别的设备上：会话的地址、密码、家族、快照归属全部按目标设备建立，
+     * 连错了设备会把这些数据写到另一台设备的档案里（见 [acceptsPeripheralId]）。
      */
     private suspend fun findPeripheral(address: String?): CBPeripheral? {
         val c = central
@@ -751,7 +758,6 @@ class IosBleTransport : BmsTransport {
         // 2) 首次连接 / 缓存取回失败：广播扫描
         runCatching { c.stopScan() }
         pendingPeripheral = null
-        fallbackPeripheral = null
         logD("扫描设备中（上限 ${FIND_TIMEOUT_MS}ms）")
         c.scanForPeripheralsWithServices(null, null)
         // 等"找到目标"：didDiscoverPeripheral 置 pendingPeripheral，这里轮询感知
@@ -761,13 +767,9 @@ class IosBleTransport : BmsTransport {
             waited += 100
         }
         runCatching { c.stopScan() }
-        val exact = pendingPeripheral
-        if (exact != null) return exact
-        val fb = fallbackPeripheral
-        if (fb != null) {
-            logW("未发现标识为 ${address ?: "-"} 的设备，改用扫描到的 ${fb.name ?: ""}（${fb.identifier.UUIDString}）")
+        return pendingPeripheral.also {
+            if (it == null) logW("未发现标识为 ${address ?: "-"} 的目标设备（本轮放弃，稍后重试）")
         }
-        return fb
     }
 
     private fun closePeripheral() {

@@ -4,6 +4,7 @@ import io.github.lswlc33.maibms.data.DeviceCapabilities
 import io.github.lswlc33.maibms.transport.DeviceFamily
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -232,6 +233,322 @@ class MeterProtocolTest {
         assertEquals(93.79, remain, 1e-9, "剩余容量必须是 SOC×额定容量，不是帧里恒等于额定值的 actualCapacity")
         assertTrue(remain < total, "车辆静置、SOC 83% 时剩余容量不该等于总容量")
         assertEquals(79.67, r.totalVoltage!!, 1e-9)
+    }
+
+    // ---- 通知分片 / 有符号值 / 快照就绪 ----
+
+    @Test
+    fun default_notification_api_keeps_whole_frame_callers() {
+        val reading = MeterReading(totalVoltage = 48.0)
+        val protocol = object : MeterProtocol {
+            override val family = DeviceFamily.LuXing
+            override val caps = DeviceCapabilities.LuXing
+            override fun nextPollFrames(): List<ByteArray> = emptyList()
+            override fun onData(bytes: ByteArray): MeterReading? = if (bytes.isEmpty()) null else reading
+        }
+        assertEquals(listOf(reading), protocol.onNotification(byteArrayOf(1)))
+        assertTrue(protocol.onNotification(byteArrayOf()).isEmpty())
+        protocol.reset()
+        assertFalse(protocol.snapshotReady)
+    }
+
+    @Test
+    fun luxing_signed_current_and_power_keep_sentinels() {
+        for (rawCurrent in listOf(-12345, -100, -1, Int.MIN_VALUE, 0, Int.MAX_VALUE - 1)) {
+            val reading = LuXingProtocol().onData(luxingRealtime(rawCurrent = rawCurrent, rawPower = -240))!!
+            assertEquals(rawCurrent / 100.0, reading.current, "current raw=$rawCurrent")
+            assertEquals(-240, reading.power)
+        }
+        for (power in listOf(-1, Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt() - 1)) {
+            assertEquals(power, LuXingProtocol().onData(luxingRealtime(rawPower = power))!!.power)
+        }
+        val sentinel = LuXingProtocol().onData(luxingRealtime(rawCurrent = Int.MAX_VALUE, rawPower = 32767))!!
+        assertNull(sentinel.current)
+        assertNull(sentinel.power)
+        assertEquals("放电", LuXingProtocol().onData(luxingRealtime(rawCurrent = -100))!!.battState)
+    }
+
+    @Test
+    fun lanbao_signed_current_power_and_temperature_extrema() {
+        for (raw in listOf(-12345, -100, -1, Int.MIN_VALUE, 0, Int.MAX_VALUE)) {
+            val reading = LanBaoProtocol().onData(lanbaoTable1(rawCurrent = raw, rawPower = raw))!!
+            assertEquals(raw / 100.0, reading.current, "current raw=$raw")
+            assertEquals(raw, reading.power, "power raw=$raw")
+        }
+        for (temp in listOf(-1, -128, 127)) {
+            val reading = LanBaoProtocol().onData(lanbaoTable1(rawTemp = temp))!!
+            assertEquals(listOf("温度" to temp.toDouble()), reading.temps)
+        }
+        assertEquals("放电", LanBaoProtocol().onData(lanbaoTable1(rawCurrent = -100))!!.battState)
+    }
+
+    @Test
+    fun notifications_split_at_every_boundary() {
+        for (frames in listOf(luxingReadingFrames(), lanbaoReadingFrames())) {
+            val luxing = (frames.first()[0].toInt() and 0xFF) == 1
+            for (frame in frames) {
+                val expected = newProtocol(luxing).onData(frame)!!
+                for (split in 0..frame.size) {
+                    val protocol = newProtocol(luxing)
+                    val first = protocol.onNotification(frame.copyOfRange(0, split))
+                    if (split < frame.size) assertTrue(first.isEmpty(), "size=${frame.size}, split=$split")
+                    val second = protocol.onNotification(frame.copyOfRange(split, frame.size))
+                    assertEquals(listOf(expected), first + second, "size=${frame.size}, split=$split")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun notifications_in_twenty_byte_chunks_emit_all_tables() {
+        for (luxing in listOf(true, false)) {
+            val frames = if (luxing) luxingReadingFrames() else lanbaoReadingFrames()
+            val stream = joinFrames(frames)
+            val protocol = newProtocol(luxing)
+            val actual = ArrayList<MeterReading>()
+            for (offset in stream.indices step 20) {
+                actual.addAll(protocol.onNotification(stream.copyOfRange(offset, minOf(offset + 20, stream.size))))
+            }
+            val expected = frames.map { newProtocol(luxing).onData(it)!! }
+            assertEquals(expected, actual)
+            assertTrue(protocol.snapshotReady)
+        }
+    }
+
+    @Test
+    fun coalesced_notifications_emit_ordered_separate_patches_and_keep_suffix() {
+        for (luxing in listOf(true, false)) {
+            val frames = if (luxing) luxingReadingFrames() else lanbaoReadingFrames()
+            val expected = frames.map { newProtocol(luxing).onData(it)!! }
+            val protocol = newProtocol(luxing)
+            val stream = joinFrames(frames)
+            assertEquals(expected, protocol.onNotification(stream))
+            assertTrue(protocol.snapshotReady)
+            assertTrue(protocol.onNotification(byteArrayOf()).isEmpty())
+            protocol.reset()
+            assertFalse(protocol.snapshotReady)
+            assertEquals(expected, protocol.onNotification(stream + frames.first().copyOfRange(0, 2)))
+            assertEquals(listOf(expected.first()), protocol.onNotification(frames.first().copyOfRange(2, frames.first().size)))
+            // A single oversized notification must not discard later complete frames.
+            assertEquals(expected + expected, newProtocol(luxing).onNotification(stream + stream))
+        }
+    }
+
+    @Test
+    fun noise_is_dropped_and_reset_discards_partial_prefixes() {
+        for (luxing in listOf(true, false)) {
+            val frames = if (luxing) luxingReadingFrames() else lanbaoReadingFrames()
+            val expected = frames.map { newProtocol(luxing).onData(it)!! }
+            val noise = ByteArray(4096) { 0x55.toByte() }
+            val rejectedHeader = if (luxing) byteArrayOf(1, 3, 7)
+                else byteArrayOf(0xFA.toByte(), 0x50, 0, 0, 0x18)
+            val protocol = newProtocol(luxing)
+            assertTrue(protocol.onNotification(noise + rejectedHeader + frames.first().copyOfRange(0, 1)).isEmpty())
+            assertEquals(listOf(expected.first()), protocol.onNotification(frames.first().copyOfRange(1, frames.first().size)))
+            protocol.reset()
+            assertTrue(protocol.onNotification(frames.last().copyOfRange(0, 2)).isEmpty())
+            protocol.reset()
+            assertTrue(protocol.onNotification(frames.last().copyOfRange(2, frames.last().size)).isEmpty())
+            assertFalse(protocol.snapshotReady)
+            assertEquals(expected, protocol.onNotification(joinFrames(frames)))
+            assertTrue(protocol.snapshotReady)
+        }
+    }
+
+    @Test
+    fun luxing_consumes_ignored_information_and_exceptions_without_crc_rejection() {
+        val info = modbusResp(ByteArray(178))
+        val exception = byteArrayOf(1, 0x83.toByte(), 2, 0, 0)
+        assertEquals(183, info.size)
+        for (ignored in listOf(info, exception)) {
+            for (split in 0..ignored.size) {
+                val protocol = LuXingProtocol()
+                assertTrue(protocol.onNotification(ignored.copyOfRange(0, split)).isEmpty())
+                assertTrue(protocol.onNotification(ignored.copyOfRange(split, ignored.size)).isEmpty())
+                assertFalse(protocol.snapshotReady)
+                assertEquals(listOf(LuXingProtocol().onData(luxingRealtime())!!), protocol.onNotification(luxingRealtime()))
+            }
+        }
+        val frames = luxingReadingFrames()
+        val expected = frames.map { LuXingProtocol().onData(it)!! }
+        val badCrcRealtime = frames.first().copyOf().also {
+            it[it.size - 1] = (it.last().toInt() xor 1).toByte()
+        }
+        val protocol = LuXingProtocol()
+        assertEquals(expected, protocol.onNotification(info + exception + badCrcRealtime + info + exception + frames[1] + frames[2]))
+        assertTrue(protocol.snapshotReady)
+        assertEquals(expected.first(), LuXingProtocol().onData(badCrcRealtime))
+    }
+
+    @Test
+    fun luxing_readiness_requires_valid_voltage_bms_and_cycles_since_reset() {
+        val protocol = LuXingProtocol()
+        assertFalse(protocol.snapshotReady)
+        assertNull(protocol.onData(luxingRealtime().copyOfRange(0, 112)))
+        protocol.onData(luxingBms())
+        protocol.onData(luxingCycle())
+        protocol.onData(luxingRealtime(rawVoltage = 0xFFFFFFFFL))
+        assertFalse(protocol.snapshotReady)
+        protocol.onData(luxingRealtime(rawVoltage = 0))
+        assertTrue(protocol.snapshotReady, "零电压是有效读数，不增设官方没有的非零判据")
+        protocol.onData(luxingRealtime())
+        assertTrue(protocol.snapshotReady)
+        protocol.reset()
+        assertFalse(protocol.snapshotReady)
+        protocol.onData(luxingRealtime())
+        protocol.onData(luxingCycle())
+        assertFalse(protocol.snapshotReady)
+        protocol.onData(luxingBms())
+        assertTrue(protocol.snapshotReady)
+    }
+
+    @Test
+    fun lanbao_accepts_complete_lengths_despite_reflected_id_or_unvalidated_header_fields() {
+        for (frame in listOf(lanbaoTable1(), lanbaoTable2())) {
+            val expected = LanBaoProtocol().onData(frame)!!
+            for (reflected in listOf(0, 1, 2, 255)) {
+                val modified = withLanbaoCrc(frame.copyOf().also {
+                    it[2] = 0x7E; it[3] = 0x33
+                    it[5] = 0x12; it[6] = 0x34
+                    it[13] = reflected.toByte()
+                })
+                assertEquals(expected, LanBaoProtocol().onData(modified))
+                assertEquals(listOf(expected), LanBaoProtocol().onNotification(modified))
+                val split = minOf(130, modified.size - 1)
+                val protocol = LanBaoProtocol()
+                assertTrue(protocol.onNotification(modified.copyOfRange(0, split)).isEmpty())
+                assertEquals(listOf(expected), protocol.onNotification(modified.copyOfRange(split, modified.size)))
+            }
+        }
+    }
+
+    @Test
+    fun lanbao_rejects_crc_header_command_tail_and_unsupported_lengths() {
+        val frame = lanbaoTable1()
+        val invalid = listOf(
+            frame.copyOf().also { it[0] = 0 },
+            withLanbaoCrc(frame.copyOf().also { it[0] = 0 }),
+            withLanbaoCrc(frame.copyOf().also { it[1] = 0 }),
+            withLanbaoCrc(frame.copyOf().also { it[4] = 0x18 }),
+            frame.copyOf().also { it[it.size - 1] = 0 },
+            frame.copyOf().also { it[it.size - 3] = (it[it.size - 3].toInt() xor 1).toByte() },
+            frame.copyOfRange(0, frame.size - 1),
+            lanbaoFrame(1, ByteArray(110)),
+            lanbaoFrame(2, ByteArray(133)),
+            lanbaoFrame(1, ByteArray(135)),
+        )
+        for (bad in invalid) {
+            val protocol = LanBaoProtocol()
+            assertNull(protocol.onData(bad), "bad size=${bad.size}")
+            assertTrue(protocol.onNotification(bad).isEmpty())
+            assertFalse(protocol.snapshotReady)
+        }
+        val table2 = lanbaoTable2()
+        val protocol = LanBaoProtocol()
+        val badCrc = frame.copyOf().also { it[it.size - 2] = (it[it.size - 2].toInt() xor 1).toByte() }
+        assertEquals(listOf(LanBaoProtocol().onData(table2)!!), protocol.onNotification(badCrc + table2))
+        assertFalse(protocol.snapshotReady)
+        assertEquals(listOf(LanBaoProtocol().onData(frame)!!), protocol.onNotification(frame))
+        assertTrue(protocol.snapshotReady)
+    }
+
+    @Test
+    fun lanbao_crc_framing_does_not_split_at_payload_e5() {
+        val frame = withLanbaoCrc(lanbaoTable1().also { it[16 + 60] = 0xE5.toByte() })
+        val protocol = LanBaoProtocol()
+        assertTrue(protocol.onNotification(frame.copyOfRange(0, 77)).isEmpty())
+        assertEquals(listOf(LanBaoProtocol().onData(frame)!!), protocol.onNotification(frame.copyOfRange(77, frame.size)))
+    }
+
+    @Test
+    fun lanbao_reset_preserves_secret_poll_schedule_but_requires_both_tables_again() {
+        val protocol = LanBaoProtocol("123456")
+        val requests = List(4) { protocol.nextPollFrames().single() }
+        assertEquals(listOf(1, 1, 1, 1), requests.map { it[13].toInt() and 0xFF })
+        protocol.onData(lanbaoTable2())
+        assertFalse(protocol.snapshotReady)
+        protocol.onData(lanbaoTable1())
+        assertTrue(protocol.snapshotReady)
+        protocol.reset()
+        assertFalse(protocol.snapshotReady)
+        val fifth = protocol.nextPollFrames().single()
+        assertEquals(2, fifth[13].toInt() and 0xFF)
+        assertEquals(listOf(1, 2, 3, 4, 5, 6), (7..12).map { fifth[it].toInt() and 0xFF })
+        assertEquals(1, protocol.nextPollFrames().single()[13].toInt() and 0xFF)
+        protocol.onData(lanbaoTable1())
+        assertFalse(protocol.snapshotReady)
+        protocol.onData(lanbaoTable2())
+        assertTrue(protocol.snapshotReady)
+        protocol.setSecret("654321")
+        assertTrue(protocol.snapshotReady)
+    }
+
+    private fun newProtocol(luxing: Boolean): MeterProtocol = if (luxing) LuXingProtocol() else LanBaoProtocol()
+
+    private fun luxingReadingFrames() = listOf(luxingRealtime(), luxingBms(), luxingCycle())
+    private fun lanbaoReadingFrames() = listOf(lanbaoTable1(), lanbaoTable2())
+    private fun joinFrames(frames: List<ByteArray>): ByteArray = frames.fold(byteArrayOf()) { bytes, frame -> bytes + frame }
+
+    private fun luxingRealtime(
+        rawCurrent: Int = 500,
+        rawPower: Int = 240,
+        rawVoltage: Long = 48000L,
+    ): ByteArray {
+        val data = ByteArray(108)
+        data[0] = 1
+        putLE(data, 20, 2, rawPower.toLong())
+        putLE(data, 22, 4, rawVoltage)
+        putLE(data, 26, 4, rawCurrent.toLong())
+        putLE(data, 30, 2, 4200)
+        putLE(data, 92, 2, 4200)
+        putLE(data, 94, 2, 4180)
+        putLE(data, 102, 2, 1000)
+        data[106] = 80
+        return modbusResp(data)
+    }
+
+    private fun luxingBms(): ByteArray {
+        val data = ByteArray(90)
+        data[50] = 2
+        "ANT-BLE".forEachIndexed { i, c -> data[51 + i] = c.code.toByte() }
+        return modbusResp(data)
+    }
+
+    private fun luxingCycle(): ByteArray {
+        val data = ByteArray(96)
+        putLE(data, 0, 2, 123)
+        return modbusResp(data)
+    }
+
+    private fun lanbaoTable1(rawCurrent: Int = 500, rawPower: Int = 240, rawTemp: Int = 25): ByteArray {
+        val data = ByteArray(111)
+        putBE(data, 0, 2, 4800)
+        putBE(data, 2, 4, rawCurrent)
+        putBE(data, 6, 2, 800)
+        data[14] = rawTemp.toByte()
+        putBE(data, 19, 4, rawPower)
+        putBE(data, 82, 2, 4200)
+        putBE(data, 84, 2, 4180)
+        putBE(data, 86, 2, 20)
+        return lanbaoFrame(1, data)
+    }
+
+    private fun lanbaoTable2(): ByteArray {
+        val data = ByteArray(134)
+        putBE(data, 48, 4, 100000)
+        putBE(data, 57, 2, 123)
+        return lanbaoFrame(2, data)
+    }
+
+    private fun withLanbaoCrc(frame: ByteArray): ByteArray {
+        val crc = lanbaoCrc(frame.copyOfRange(0, frame.size - 3))
+        frame[frame.size - 3] = (crc ushr 8).toByte()
+        frame[frame.size - 2] = crc.toByte()
+        return frame
+    }
+
+    private fun putLE(data: ByteArray, offset: Int, length: Int, value: Long) {
+        for (i in 0 until length) data[offset + i] = (value ushr (8 * i)).toByte()
     }
 
     private fun hexStr(s: String) =

@@ -79,8 +79,17 @@ interface MeterProtocol {
     /** 每拍轮询要发送的帧（实现可内部轮换，一次给多条也行） */
     fun nextPollFrames(): List<ByteArray>
 
-    /** 处理一条通知字节流；返回读数（无法解析/非本协议返回 null） */
+    /** 处理一条完整应答；返回读数（无法解析/非本协议返回 null） */
     fun onData(bytes: ByteArray): MeterReading?
+
+    /** 处理通知字节流；可保留分片，并按接收顺序返回每个完整帧的增量读数。 */
+    fun onNotification(bytes: ByteArray): List<MeterReading> = listOfNotNull(onData(bytes))
+
+    /** 本次连接所需的各张表已收到；不等同于某个增量读数非空。 */
+    val snapshotReady: Boolean get() = false
+
+    /** 清空本次连接的接收分片与就绪状态；保留密码和轮询状态。 */
+    fun reset() {}
 
     /** 注入按设备记住的密码/匹配码（可空） */
     fun setSecret(secret: String?) {}

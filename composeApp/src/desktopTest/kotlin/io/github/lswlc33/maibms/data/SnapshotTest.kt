@@ -12,6 +12,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -114,6 +115,29 @@ class SnapshotTest {
         AppStore.deleteSnapshot(1_000_021L)
         assertEquals(19, AppStore.snapshotIds().size)
         assertNull(AppStore.loadSnapshotJson(1_000_021L))
+    }
+
+    @Test fun overwritingAtLimitKeepsEverySnapshotContent() {
+        resetStore()
+        val ids = (0 until 20).map { 2_000_000L + it }
+        ids.forEach { AppStore.saveSnapshotJson(it, """{"id":$it}""") }
+        assertEquals(20, AppStore.snapshotIds().size)
+
+        // 覆盖最旧的一张：**数量没变**，所以一张都不该被淘汰——曾用
+        // `snapshotIds().drop(SNAPSHOT_MAX - 1)` 判断超限，结果把索引末尾那条的 JSON 删了
+        // （索引里还留着 id），覆盖的恰好是最旧那张时，刚写进去的内容当场就没了
+        AppStore.saveSnapshotJson(ids.last(), """{"id":${ids.last()},"v":2}""")
+
+        assertEquals(20, AppStore.snapshotIds().size)
+        assertEquals(ids.last(), AppStore.snapshotIds().first(), "刚写的那张排到最前")
+        assertTrue(
+            AppStore.loadSnapshotJson(ids.last())!!.contains("\"v\":2"),
+            "覆盖后留下的必须是新内容",
+        )
+        ids.dropLast(1).forEach { i ->
+            assertNotNull(AppStore.loadSnapshotJson(i), "数量没变的覆盖不得淘汰任何一条 $i")
+        }
+        AppStore.clearSnapshots()
     }
 
     @Test fun disabledSwitchSkipsSave() {

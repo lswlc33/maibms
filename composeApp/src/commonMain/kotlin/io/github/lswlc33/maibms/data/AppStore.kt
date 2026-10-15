@@ -127,24 +127,25 @@ object AppStore {
     fun loadSnapshotJson(id: Long): String? = get(snapKey(id))
 
     /** 写入一张快照并维护索引；超过 [SNAPSHOT_MAX] 张时淘汰最旧的 */
-    fun saveSnapshotJson(id: Long, json: String) {
+    fun saveSnapshotJson(id: Long, json: String) = withLock(snapshotLock) {
+        val previous = snapshotIds()
+        val merged = (listOf(id) + previous.filterNot { it == id }).take(SNAPSHOT_MAX)
         put(snapKey(id), json)
-        val kept = snapshotIds().filterNot { it == id }
-        val merged = (listOf(id) + kept).take(SNAPSHOT_MAX)
-        // 被滚出上限的旧快照连同内容一起删掉，避免残留孤儿 JSON
-        snapshotIds().drop(SNAPSHOT_MAX - 1).forEach { put(snapKey(it), null) }
+        previous.filterNot { it in merged }.forEach { put(snapKey(it), null) }
         put(KEY_SNAP_INDEX, merged.joinToString(","))
     }
 
-    fun deleteSnapshot(id: Long) {
+    fun deleteSnapshot(id: Long) = withLock(snapshotLock) {
         put(snapKey(id), null)
         put(KEY_SNAP_INDEX, snapshotIds().filterNot { it == id }.joinToString(",").ifBlank { null })
     }
 
-    fun clearSnapshots() {
+    fun clearSnapshots() = withLock(snapshotLock) {
         snapshotIds().forEach { put(snapKey(it), null) }
         put(KEY_SNAP_INDEX, null)
     }
+
+    private val snapshotLock = PlatformLock()
 
     /** 全部已存快照（解码失败的残条跳过）；级联删除与快照列表页共用 */
     fun loadSnapshots(): List<BmsSnapshot> =

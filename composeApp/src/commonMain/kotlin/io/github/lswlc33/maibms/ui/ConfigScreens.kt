@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.lswlc33.maibms.data.BmsRepository
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.ControlCmd
@@ -164,6 +165,9 @@ fun ParamGroupScreen(
             val head = when (writeCode) {
                 -2 -> "写参数：未收到应答"
                 -3 -> "写参数：结果未确认"
+                // -4/-5 是仓库侧的新结论：写进临时区 ≠ 已保存；会话结束则是没写成
+                BmsRepository.WRITE_SAVE_FAILED -> "写参数：已写入但未保存"
+                BmsRepository.WRITE_SESSION_ENDED -> "写参数：连接已断开"
                 else -> "写参数结果：${ResultCodes.writeResult(writeCode)}"
             }
             InfoBanner(head + (writeDetail?.let { "（$it）" } ?: ""), kind = if (ok) "info" else "err")

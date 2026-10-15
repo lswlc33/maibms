@@ -23,6 +23,37 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
     /** 6 字节匹配码；默认全 6（官方 `globalData.matchCode`） */
     private var match = byteArrayOf(6, 6, 6, 6, 6, 6)
     private var index = 0
+    private val notificationBuffer = MeterNotificationBuffer(153, ::notificationFrameLength)
+    private var receivedTable1 = false
+    private var receivedTable2 = false
+
+    override val snapshotReady: Boolean
+        get() = receivedTable1 && receivedTable2
+
+    override fun reset() {
+        notificationBuffer.clear()
+        receivedTable1 = false
+        receivedTable2 = false
+    }
+
+    override fun onNotification(bytes: ByteArray): List<MeterReading> =
+        notificationBuffer.append(bytes).mapNotNull { onData(it) }
+
+    private fun notificationFrameLength(bytes: ByteArray, size: Int): Int {
+        if ((bytes[0].toInt() and 0xFF) != 0xFA) return -1
+        if (size < 2) return 0
+        if ((bytes[1].toInt() and 0xFF) != 0x50) return -1
+        if (size < 5) return 0
+        if ((bytes[4].toInt() and 0xFF) != 0x15) return -1
+        if (size < 130) return 0
+
+        // 回显数据号只决定尝试顺序；长度和 CRC 成立时允许另一张完整表。
+        val preferred = if ((bytes[13].toInt() and 0xFF) == 2) 153 else 130
+        val fallback = if (preferred == 130) 153 else 130
+        if (size >= preferred && isReadResponse(bytes, preferred)) return preferred
+        if (size >= fallback && isReadResponse(bytes, fallback)) return fallback
+        return if (size < 153) 0 else -1
+    }
 
     init {
         setSecret(secret)
@@ -54,24 +85,25 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
     }
 
     override fun onData(bytes: ByteArray): MeterReading? {
-        if (bytes.size < 19) return null
-        if ((bytes[bytes.size - 1].toInt() and 0xFF) != 0xE5) return null
-        if ((bytes[4].toInt() and 0xFF) != 0x15) return null
-        // CRC 校验：覆盖除「CRC 2 字节 + E5」外的全部字节（crc.js crcCheck，增强校验关闭时）
-        val calc = crcCheck(bytes, 0, bytes.size - 3)
-        val stored = ((bytes[bytes.size - 3].toInt() and 0xFF) shl 8) or (bytes[bytes.size - 2].toInt() and 0xFF)
-        if (calc != stored) return null
+        if (!isReadResponse(bytes, bytes.size)) return null
         val data = bytes.copyOfRange(16, bytes.size - 3)
-        // 优先按数据区长度分派（表1=111 / 表2=134），长度不符再回退到回显的数据号
+        // 完整支持长度决定表类型，不强制要求回显数据号一致。
         return when (data.size) {
-            111 -> decodeTable1(data)
-            134 -> decodeTable2(data)
-            else -> when (bytes[13].toInt() and 0xFF) {
-                1 -> decodeTable1(data)
-                2 -> decodeTable2(data)
-                else -> null
-            }
+            111 -> decodeTable1(data).also { receivedTable1 = true }
+            134 -> decodeTable2(data).also { receivedTable2 = true }
+            else -> null
         }
+    }
+
+    private fun isReadResponse(bytes: ByteArray, size: Int): Boolean {
+        if (size != 130 && size != 153) return false
+        if ((bytes[0].toInt() and 0xFF) != 0xFA || (bytes[1].toInt() and 0xFF) != 0x50) return false
+        if ((bytes[4].toInt() and 0xFF) != 0x15) return false
+        if ((bytes[size - 1].toInt() and 0xFF) != 0xE5) return false
+        // CRC 覆盖除「CRC 2 字节 + E5」外的全部字节；不推测 plen/地址或增强 CRC。
+        val calc = crcCheck(bytes, 0, size - 3)
+        val stored = ((bytes[size - 3].toInt() and 0xFF) shl 8) or (bytes[size - 2].toInt() and 0xFF)
+        return calc == stored
     }
 
     /** 表1：见 createParamNew.js createTableOne */
@@ -181,7 +213,8 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
         for (i in 0 until len) {
             v = (v shl 8) or (if (off + i < d.size) d[off + i].toInt() and 0xFF else 0)
         }
-        if (signed && len in 1..4) {
+        // 4 字节累积到 Int 时已经有符号；1 shl 32 会回绕成 1，不能再减。
+        if (signed && len in 1..3) {
             val bits = len * 8
             val signBit = 1 shl (bits - 1)
             if (v and signBit != 0) v -= (1 shl bits)

@@ -19,6 +19,16 @@ data class ScanDevice(
 enum class LinkState { Idle, Connecting, Connected, Disconnected }
 
 /**
+ * 扫描到的这条能否当作「要连的那台」（标识 = Android 的 MAC / iOS 的 CBPeripheral.identifier）。
+ *
+ * 规则只有一条，但它决定会话归属：**没有指定目标标识时任意目标设备都行**（用户就是"随便连一台"）；
+ * 指定了标识就必须一致，**不能"扫不到就换一台"**——仓库侧会把当前会话的地址、密码库、家族、
+ * 配置缓存与快照都算在目标设备头上，连错设备等于把这些数据写进那台设备的档案。
+ */
+internal fun acceptsPeripheralId(target: String?, candidateId: String): Boolean =
+    target.isNullOrBlank() || candidateId.equals(target, ignoreCase = true)
+
+/**
  * BLE 通道：一组「写特征 + 通知特征」的配对（docs/02-蓝牙链路.md §2.2）。
  *
  * 三组通道是同一颗 BLE 模组上的三组特征值，背后复用的是不同的物理接口：

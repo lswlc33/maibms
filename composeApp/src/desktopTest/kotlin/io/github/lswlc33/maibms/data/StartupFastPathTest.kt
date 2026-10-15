@@ -3,6 +3,7 @@ package io.github.lswlc33.maibms.data
 import io.github.lswlc33.maibms.protocol.FrameParser
 import io.github.lswlc33.maibms.protocol.Proto
 import io.github.lswlc33.maibms.transport.BmsTransport
+import io.github.lswlc33.maibms.transport.DeviceFamily
 import io.github.lswlc33.maibms.transport.LinkState
 import io.github.lswlc33.maibms.transport.MockBmsEngine
 import kotlinx.coroutines.CoroutineScope
@@ -96,11 +97,38 @@ class StartupFastPathTest {
         AppStore.autoReconnect = true
         AppStore.snapshotEnabled = false
         MockBms.clearForRealDevice()
+        MockBms.savedAddress = null
         MockBms.plainPasswords.value = emptyMap()
         MockBms.autoUpgradeLevel.value = 0
         MockBms.liveParams.value = emptyMap()
         MockBms.identity.value = emptyMap()
         StartupTrace.resetForTest()
+    }
+
+    /** 用例专用设备地址：档案/密码库是共享的 MemoryStore，别撞上真实或他例的地址 */
+    private val testAddress = "F1:00:00:00:00:01"
+
+    /**
+     * 按生产路径准备「该设备已记住某级密码」：密码库按设备地址分槽，连接时由 restorePasswords
+     * 载入会话。**不能直接写 MockBms.plainPasswords**——那正是"上一台设备的密码留在会话里"
+     * 那条路（见 BmsRepository.restorePasswords）。
+     */
+    private fun rememberPasswordForTest(level: Int, password: String) {
+        DeviceProfiles.upsert(DeviceProfile(
+            address = testAddress, name = "测试保护板",
+            lastConnectedAt = epochMillisNow(), family = DeviceFamily.Ant,
+        ))
+        AppStore.savePassword(testAddress, level, password)
+        AppStore.savedAddress = testAddress
+        MockBms.savedAddress = testAddress
+    }
+
+    /** 收尾：拆掉用例专用的档案与记忆设备，别留给别的用例 */
+    private fun forgetTestDevice() {
+        DeviceProfiles.remove(testAddress)
+        AppStore.savedAddress = null
+        MockBms.savedAddress = null
+        MockBms.plainPasswords.value = emptyMap()
     }
 
     /**
@@ -138,14 +166,14 @@ class StartupFastPathTest {
         try {
             runBlocking {
                 prepare()
-                MockBms.plainPasswords.value = mapOf(5 to "12345678")
+                rememberPasswordForTest(5, "12345678")
                 val engine = MockBmsEngine(scope)
                 engine.currentPermission = 5
                 val transport = RecordingTransport(engine)
                 val repo = BmsRepository(scope, engine)
                 repo.setRealTransport(transport)
                 repo.start()
-                repo.connect(null)
+                repo.connect(testAddress)
 
                 val read = awaitWrite(transport, Proto.FC_REALTIME)
                 val auth = awaitWrite(transport, Proto.FC_AUTH, timeoutMs = 4_000)
@@ -162,6 +190,7 @@ class StartupFastPathTest {
             }
         } finally {
             scope.cancel()
+            forgetTestDevice()
         }
     }
 
@@ -197,14 +226,14 @@ class StartupFastPathTest {
         try {
             runBlocking {
                 prepare()
-                MockBms.plainPasswords.value = mapOf(5 to "12345678")
+                rememberPasswordForTest(5, "12345678")
                 val engine = MockBmsEngine(scope)
                 engine.currentPermission = 5
                 val transport = RecordingTransport(engine)
                 val repo = BmsRepository(scope, engine)
                 repo.setRealTransport(transport)
                 repo.start()
-                repo.connect(null)
+                repo.connect(testAddress)
 
                 assertTrue(awaitWrite(transport, Proto.FC_AUTH, timeoutMs = 4_000) != null, "有密码应升权")
                 val count = awaitParamRound(transport)
@@ -215,6 +244,7 @@ class StartupFastPathTest {
             }
         } finally {
             scope.cancel()
+            forgetTestDevice()
         }
     }
 

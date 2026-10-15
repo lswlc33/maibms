@@ -29,6 +29,38 @@ class LuXingProtocol : MeterProtocol {
     override val family = DeviceFamily.LuXing
     override val caps = DeviceCapabilities.LuXing
 
+    private val notificationBuffer = MeterNotificationBuffer(183, ::notificationFrameLength)
+    private var receivedVoltage = false
+    private var receivedBmsData = false
+    private var receivedCycle = false
+
+    override val snapshotReady: Boolean
+        get() = receivedVoltage && receivedBmsData && receivedCycle
+
+    override fun reset() {
+        notificationBuffer.clear()
+        receivedVoltage = false
+        receivedBmsData = false
+        receivedCycle = false
+    }
+
+    override fun onNotification(bytes: ByteArray): List<MeterReading> =
+        notificationBuffer.append(bytes).mapNotNull { onData(it) }
+
+    private fun notificationFrameLength(bytes: ByteArray, size: Int): Int {
+        if ((bytes[0].toInt() and 0xFF) != 0x01) return -1
+        if (size < 2) return 0
+        // FC03 异常应答固定 5 字节；消费但不产出读数，也不做接收 CRC 校验。
+        if ((bytes[1].toInt() and 0xFF) == 0x83) return 5
+        if ((bytes[1].toInt() and 0xFF) != 0x03) return -1
+        if (size < 3) return 0
+        val len = bytes[2].toInt() and 0xFF
+        return when (len) {
+            178, 108, 90, 96 -> len + 5
+            else -> -1
+        }
+    }
+
     /** EM2APP 每拍发送的 4 条命令（与官方 `sendCommand/sendCommand1/2/3` 逐字节一致） */
     private val frames: List<ByteArray> = listOf(
         modbusReadFrame(1, 4000, 89),
@@ -48,9 +80,9 @@ class LuXingProtocol : MeterProtocol {
         val len = bytes[2].toInt() and 0xFF
         if (bytes.size < 3 + len + 2) return null
         return when (len) {
-            108 -> decodeRealtime(bytes)   // 0x6C
-            90 -> decodeBmsData(bytes)     // 0x5A
-            96 -> decodeCycle(bytes)       // 0x60
+            108 -> decodeRealtime(bytes).also { if (it.totalVoltage != null) receivedVoltage = true } // 0x6C
+            90 -> decodeBmsData(bytes).also { receivedBmsData = true } // 0x5A
+            96 -> decodeCycle(bytes).also { receivedCycle = true }    // 0x60
             else -> null                   // 178 = 设备信息，暂不解析
         }
     }
@@ -87,7 +119,7 @@ class LuXingProtocol : MeterProtocol {
         r.u8()                                   // soh
 
         val voltage = if (sysVolRaw == 0xFFFFFFFFL) null else sysVolRaw / 1000.0
-        val current = if (sysCurrRaw == 0x7FFFFFFFL) null else sysCurrRaw / 100.0
+        val current = if (sysCurrRaw == 0x7FFFFFFFL) null else sysCurrRaw.toInt() / 100.0
         val temps = buildList {
             if (mosTempNum > 0) add("MOS" to mosTemp.toDouble())
             if (balaTempNum > 0) add("均衡" to balaTemp.toDouble())

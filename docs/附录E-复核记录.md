@@ -706,6 +706,24 @@ cd unpack
 `luxing_real_frame_remaining_capacity_is_soc_times_rated` 用上面这帧真机数据钉住 93.79 Ah。
 蓝宝不在此列——它的「剩余容量」是表1 里设备自报的字段，照原样采用。
 
+
+## E.12 电量计有符号数与"完整同步"节拍复核（2026-10-15，对照解包源码）
+
+一次代码复核发现两家电量计的解码各有一处符号错误、以及快照判据与实际读表节拍不符。
+三处都回解包源码逐条对照后修正（解包路径见 [unpack/解包结果](../unpack/解包结果)）：
+
+| 位置 | 官方实现（解包源码） | 本项目此前 | 结论 |
+|---|---|---|---|
+| 陆行 `systemCurrent`（108 帧，`EM02.js`） | `var u = C << 16 \| c;`（JS 位运算天然是**32 位有符号**）→ 哨兵 `2147483647 === u` 判"未上报"，否则 `(u/100).toFixed(1)` | `u32()` 读成 `Long` 后直接 `/100` | ✗ 负电流被当成无符号数：`-12.60 A`（补码）会算成约 4.29×10⁷ A，`cur < -0.3` 的"放电"分支永远不可达 |
+| 蓝宝多字节字段（`comm.js` `hexToDecimalism(t, isSigned)`） | `BigInt` 解析后 `n = 1n << BigInt(4*len-1); if (e & n) e -= n << 1n`——**任意位宽**（含 4 字节）都是标准补码符号扩展，不做额外偏移 | 4 字节也执行 `v -= (1 shl 32)`，而 `1 shl 32` 在 JVM/ART 上等于 `1` | ✗ 所有负值再减 1（电流 -5.00 A 显示 -5.01 A、功率 -240 W 显示 -241 W）；现改为 1~3 字节按位宽符号扩展、4 字节依赖 `Int` 自身的符号 |
+| 蓝宝读表节拍（`pages/index/createParamNew.js`） | 官方每轮 `getInfo()` 依次读表 1 + 表 2（逐条等应答） | 为省带宽把表 2 分频到**每 5 拍**读一次（`index % 5 == 0`，见 `LanBaoProtocol.nextPollFrames`） | 快照的"一次完整同步"必须跨到第 5 拍才能拿到容量/循环——按固定延迟冻结必然存成默认 0（快照兜底窗口因此按轮询档位算满一整轮，见 `BmsRepository.meterSnapshotFallbackMs`） |
+
+**本项目据此的改动**：`LuXingProtocol.decodeRealtime` 保留 `0x7FFFFFFF` 哨兵判断后取有符号 32 位
+（`sysCurrRaw.toInt() / 100.0`）；`LanBaoProtocol.raw` 的符号扩展改为只覆盖 1~3 字节；两个协议的
+`snapshotReady` 按"各表是否到齐"判定并配一个兜底窗口。单测：`luxing_signed_current_and_power_keep_sentinels`、
+`lanbao_signed_current_power_and_temperature_extrema`、`notifications_split_at_every_boundary`、
+`coalesced_notifications_emit_ordered_separate_patches_and_keep_suffix`、`meterSessionRecordsOneSnapshotNamedAfterTheMeter`。
+
 ---
 
 **上一章** ← [附录 D 样例报文](附录D-样例报文.md)　|　**返回目录** → [README](README.md)
