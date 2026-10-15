@@ -264,6 +264,15 @@ class BmsRepository(
                         if (!previewActive.value) MockBms.markDisconnected()
                     }
                 }
+                // 链路态一变就立刻反映到常驻监控通知（连上才显示，断开要马上撤掉）
+                refreshMonitorNotification(force = true)
+            }
+        }
+        // 回到前台立刻恢复轮询（否则要等当前这一拍的超时/间隔走完），并刷新监控通知
+        scope.launch {
+            AppForeground.active.collect { fg ->
+                if (fg) pollWake.trySend(Unit)
+                refreshMonitorNotification(force = true)
             }
         }
         collectorJob = scope.launch {
@@ -278,6 +287,8 @@ class BmsRepository(
                             lastFrameAt = epochMillisNow()
                             if (meterFirstReadingAt == 0L) meterFirstReadingAt = lastFrameAt
                             MockBms.applyMeterReading(rd)
+                            // 设备信息（蓝宝表2 的序列号/版本/电池类型/串数）走身份区，与读数分开合并
+                            MockBms.applyMeterDeviceInfo(rd)
                             maybeRecordMeterSnapshot(m)
                         }
                         if (readings.isEmpty()) {
@@ -403,6 +414,9 @@ class BmsRepository(
         meterSnapshotComplete = false
         meterSnapshotFallbackDone = false
         meterFirstReadingAt = 0L
+        // 换设备/重连：上升沿基线清空——上一台的置位不能当成本台的"已有状态"（否则真正的新保护不报）
+        alarmNotifier.reset()
+        linkAlerted = false
         MockBms.applyPermission(0)
         MockBms.clearForRealDevice()
     }
@@ -648,6 +662,11 @@ class BmsRepository(
         // 立刻唤醒一次——首帧不用白等这个相位
         while (currentCoroutineContext().isActive) {
             if (_linkState.value == LinkState.Connected) {
+                // 后台策略：没开「后台监控」时，退到后台**整段跳过**（请求不发、失联检测也不做）。
+                // 只停请求不停链路：回前台立刻继续，不必重连；失联判定跟着停是因为
+                // "没发请求所以没数据"不是失联，继续判会误报并触发无谓的通道轮切
+                val paused = !AppForeground.active.value && !AppStore.backgroundMonitor
+                if (!paused) {
                 val m = meter
                 if (m != null) {
                     // 电量计：写轮询帧（不等待应答，靠通知回调解码）；寄存器探测期间暂停
@@ -677,12 +696,18 @@ class BmsRepository(
                         _stalled.value = true
                         BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（尝试轮切其它通道）")
                         rotateChannelOnStall()
+                        notifyLinkLost(since)
                     }
                 } else if (_stalled.value) {
                     _stalled.value = false
                     stallRotations = 0
+                    linkAlerted = false
                     BmsLog.i("LINK", "实时帧恢复")
                 }
+                }
+                // 常驻监控通知的摘要（节流在函数内）：暂停态也要走一遍，
+                // 否则从后台恢复监控状态时会晚一拍才反映到通知栏
+                refreshMonitorNotification()
             }
             // 正常按当前档位走（默认 600ms）；链路刚就绪会提前唤醒（见 pollWake）
             withTimeoutOrNull(pollIntervalMs) { pollWake.receive() }
@@ -857,6 +882,12 @@ class BmsRepository(
         const val WRITE_SAVE_FAILED = -4
         /** 操作期间设备会话结束，后续帧不得发送到新设备。 */
         const val WRITE_SESSION_ENDED = -5
+        /** 日志翻页大小：官方也是每批 10 条（`bmsLog.js` 的 `10 * logIndex`） */
+        const val EVENT_LOG_PAGE = 10
+        /** 读一条日志的等待上限：比轮询宽松（要读设备存储），但别让界面干等 */
+        const val EVENT_LOG_TIMEOUT_MS = 1_500L
+        /** 常驻监控通知的内容刷新间隔：实时数据 600ms 一拍，逐拍推给系统会把通知栏刷爆 */
+        const val MONITOR_REFRESH_MS = 5_000L
     }
 
     private fun handleFrame(f: ParsedFrame) {
@@ -867,6 +898,8 @@ class BmsRepository(
                     lastFrameAt = epochMillisNow()
                     MockBms.updateFromRealtime(r)
                     MockBms.connected.value = true
+                    // 保护/告警的上升沿 → 后台时发通知（前台不发，界面本身有横幅）
+                    onAlerts(r.protectBits, r.warnBits)
                     // 首帧到达：唤醒连后序列（升权 → 参数区读回排在它后面）。
                     // 这里以前直接 refreshParams()，导致"等级 0 先读一遍、升权后再读一遍"，
                     // 而且 14 条参数命令会跟升权抢应答槽，把首帧之后的刷新拖成一顿一顿
@@ -1191,6 +1224,224 @@ class BmsRepository(
                 val c = b.toInt() and 0xFF
                 if (c in 0x20..0x7E) append(c.toChar())
             }
+        }
+    }
+
+    /* ---------------- 后台策略：暂停轮询 / 常驻监控 / 告警通知 ---------------- */
+
+    private val alarmNotifier = AlarmNotifier()
+
+    /**
+     * 监控通知的三个变量由三条协程共写（轮询循环、链路态收集、前后台收集），
+     * 用同一把锁串行化——不然"检查要不要更新 + 更新"之间会被插进来，可能重复推同一条通知
+     */
+    private val monitorLock = PlatformLock()
+
+    /** 常驻监控通知当前文案（null = 未在监控）；用于去重，避免每拍都推给系统 */
+    private var monitorText: String? = null
+    private var monitorUpdatedAt = 0L
+
+    /** 本次会话是否已就失联发过通知（恢复后重置，避免反复提醒） */
+    private var linkAlerted = false
+
+    /**
+     * 设置页拨「后台监控」开关：写偏好 + 立刻反映（开的时候顺手要一次通知权限）。
+     *
+     * 关掉时若之前正在监控，这里会立刻撤掉常驻通知——不能让用户以为还在看着。
+     */
+    fun setBackgroundMonitor(on: Boolean) {
+        AppStore.backgroundMonitor = on
+        if (on) Notifications.ensurePermission()
+        refreshMonitorNotification(force = true)
+        BmsLog.i("APP", if (on) "后台监控已开启（退到后台继续轮询，保护触发会通知）" else "后台监控已关闭（退到后台暂停轮询）")
+    }
+
+    /**
+     * 常驻监控通知：**开关 + 平台支持 + 链路就绪**三者都满足才显示。
+     *
+     * 内容每 [MONITOR_REFRESH_MS] 最多刷一次：实时数据 600ms 一拍，逐拍推给系统会把通知栏刷爆。
+     */
+    private fun refreshMonitorNotification(force: Boolean = false) {
+        withLock(monitorLock) {
+            val on = AppStore.backgroundMonitor && Notifications.supported &&
+                    _linkState.value == LinkState.Connected
+            if (!on) {
+                if (monitorText != null) {
+                    monitorText = null
+                    Notifications.updateMonitoring(null)
+                }
+                return
+            }
+            val now = epochMillisNow()
+            if (!force && now - monitorUpdatedAt < MONITOR_REFRESH_MS) return
+            monitorUpdatedAt = now
+            val st = MockBms.status.value
+            val text = buildString {
+                append(MockBms.deviceLabel)
+                if (st.hasData) {
+                    append(" · ")
+                    append(st.soc)
+                    append("% · %.1fV".fmt(st.totalVoltage))
+                } else {
+                    append(" · 等待数据")
+                }
+            }
+            if (text != monitorText) {
+                monitorText = text
+                Notifications.updateMonitoring(text)
+            }
+        }
+    }
+
+    /**
+     * 保护/告警上升沿 → 通知。
+     *
+     * **只在人看不到界面时发**：前台时仪表盘本身就有告警卡与横幅，再推一条系统通知
+     * 只会让"哪边才是最新的"变成新问题。
+     */
+    private fun onAlerts(protect: ULong, warn: ULong) {
+        val fired = alarmNotifier.onFrame(protect, warn, epochMillisNow())
+        if (fired.isEmpty()) return
+        if (AppForeground.active.value) return
+        if (!AppStore.backgroundMonitor || !AppStore.alarmNotify || !Notifications.supported) return
+        val title = if (fired.any { it.isProtect }) "电池保护触发" else "电池告警"
+        val names = fired.joinToString(" / ") { it.name }
+        val shown = if (fired.size > 3) fired.take(3).joinToString(" / ") { it.name } + " 等 ${fired.size} 项" else names
+        BmsLog.w("ALERT", "$title：$shown")
+        Notifications.alert(Notifications.ID_ALERT, title, "${MockBms.deviceLabel} · $shown")
+    }
+
+    /** 失联通知（同样只在前台不可见时发）；到底是不是"人在看"由调用方判定 */
+    private fun notifyLinkLost(sinceMs: Long) {
+        if (linkAlerted) return
+        if (AppForeground.active.value) return
+        if (!AppStore.backgroundMonitor || !AppStore.alarmNotify || !Notifications.supported) return
+        linkAlerted = true
+        Notifications.alert(
+            Notifications.ID_ALERT_LINK, "设备失联",
+            "${MockBms.deviceLabel} · 实时数据已中断 ${sinceMs / 1000}s（信号问题或设备休眠）",
+        )
+    }
+
+    /* ---------------- 设备历史事件日志（0x03→0x13）与保护计数（0x05→0x15） ---------------- */
+
+    /**
+     * 一次翻页读取的结果。
+     *
+     * @param records 本次拿到的记录（按序号升序）
+     * @param nextIndex 下一页应从哪个序号开始（失败时**不推进**，重试不会跳记录）
+     * @param atEnd 设备已无更早的记录（读到空记录）
+     * @param failed 中途超时/会话结束：records 是已拿到的部分
+     */
+    data class EventLogPage(
+        val records: List<io.github.lswlc33.maibms.protocol.EventLogRecord>,
+        val nextIndex: Int,
+        val atEnd: Boolean,
+        val failed: Boolean,
+    )
+
+    /**
+     * 读一批历史日志。
+     *
+     * 请求序号 = 已取到的条数（官方做法：`logList.length`），一条一条回；空记录即到底。
+     * 走 [requestInSession]，与实时轮询共用 `cmdMutex` 天然互斥——**不暂停轮询**（官方文档
+     * §8.7 也确认了 `0x13` 与轮询可共存），所以不会影响失联判定。
+     *
+     * `expectedReg = null`：序号取帧头回显，但「设备是否回显」文档与源码两说，
+     * 只按功能码匹配更稳（同序号迟到的应答也不会被误杀）。
+     */
+    suspend fun readEventLog(fromIndex: Int, batch: Int = EVENT_LOG_PAGE): EventLogPage {
+        val expected = session
+        val out = ArrayList<io.github.lswlc33.maibms.protocol.EventLogRecord>(batch)
+        var idx = fromIndex
+        var atEnd = false
+        var failed = false
+        try {
+            while (out.size < batch) {
+                val r = requestInSession(
+                    io.github.lswlc33.maibms.protocol.EventLogCodec.request(idx), Proto.RSP_LOG,
+                    expectedReg = null, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = expected,
+                )
+                if (r == null) {
+                    // 无应答：可能是设备不支持/到边界后不回空记录。不推进序号，下次可原样重试
+                    BmsLog.w("LOG", "日志第 $idx 条无应答（${EVENT_LOG_TIMEOUT_MS}ms 超时）")
+                    failed = true
+                    break
+                }
+                val rec = io.github.lswlc33.maibms.protocol.EventLogCodec.parse(r)
+                if (rec == null) {
+                    BmsLog.i("LOG", "日志读取到底：已取 ${fromIndex + out.size} 条（第 $idx 条为空记录）")
+                    atEnd = true
+                    break
+                }
+                out += rec
+                idx++
+            }
+        } catch (e: CancellationException) {
+            // 会话结束（换设备/断开/进入预览）走这里：把已拿到的吐出去，界面不至于一片空白
+            currentCoroutineContext().ensureActive()
+            failed = true
+        }
+        return EventLogPage(out, idx, atEnd, failed)
+    }
+
+    /** 读 20 个保护动作计数；设备无应答返回 null */
+    suspend fun readProtectCounters(): List<Int>? = try {
+        val r = requestInSession(
+            io.github.lswlc33.maibms.protocol.EventLogCodec.countersRequest(), Proto.RSP_PROTECT_NUM,
+            expectedReg = null, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = session,
+        )
+        r?.let { io.github.lswlc33.maibms.protocol.EventLogCodec.parseCounters(it.data) }?.takeIf { it.isNotEmpty() }
+    } catch (e: CancellationException) {
+        currentCoroutineContext().ensureActive()
+        null
+    }
+
+    /**
+     * 重读日志：清空后从头取第一批（外加计数器）。界面每次进页/点刷新走它。
+     *
+     * @return 成功条数；-1 = 失败（原因写在 [MockBms.eventLogError]）
+     */
+    suspend fun refreshEventLog(): Int {
+        if (MockBms.eventLogLoading.value) return -1
+        MockBms.eventLogLoading.value = true
+        MockBms.eventLogError.value = null
+        return try {
+            val page = readEventLog(0)
+            // 读取失败时**保留已显示的那一份**（只挂横幅说明），不要把用户正在看的历史清空——
+            // 已读到的记录仍然有效，清空只会让人觉得"设备日志没了"
+            if (page.records.isNotEmpty() || !page.failed) {
+                MockBms.eventLog.value = page.records
+                MockBms.eventLogAtEnd.value = page.atEnd
+            }
+            if (page.failed) MockBms.eventLogError.value = "读取中断：设备未应答（已取到 ${page.records.size} 条）"
+            readProtectCounters()?.let { MockBms.protectCounters.value = it }
+            page.records.size
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            -1
+        } finally {
+            MockBms.eventLogLoading.value = false
+        }
+    }
+
+    /** 继续往后取一批（按序号追加，不去重——序号本身唯一） */
+    suspend fun loadMoreEventLog(): Int {
+        if (MockBms.eventLogLoading.value || MockBms.eventLogAtEnd.value) return -1
+        MockBms.eventLogLoading.value = true
+        MockBms.eventLogError.value = null
+        return try {
+            val have = MockBms.eventLog.value
+            val page = readEventLog(have.size)
+            MockBms.eventLog.value = have + page.records
+            MockBms.eventLogAtEnd.value = page.atEnd
+            if (page.failed) MockBms.eventLogError.value = "读取中断：设备未应答"
+            page.records.size
+        } catch (e: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            -1
+        } finally {
+            MockBms.eventLogLoading.value = false
         }
     }
 

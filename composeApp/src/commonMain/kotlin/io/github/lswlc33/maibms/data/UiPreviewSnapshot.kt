@@ -46,11 +46,16 @@ object UiPreview {
             maxCell = "4.212", minCell = "4.153", avgCell = "4.184", deltaCell = "0.059",
             totalCycleAh = 68,
             battState = "放电",
+            // 充电 MOS 给一个「已断开且有原因」的状态码（2=单体过压），预置里就能看到
+            // 卡2 的「关闭·单体过压」与详情弹窗的运行状态段；放电 MOS 正常开启、均衡走自动均衡
             chMos = "关闭", disMos = "开启", balance = "均衡中",
+            chMosCode = 2, disMosCode = 1, balanceCode = 4,
             protectList = emptyList(),
             alarmList = listOf("放电过流告警"),
             protectPairs = emptyList(),
             alarmPairs = listOf(11 to "放电过流告警"),
+            // 运行状态位：与上面的「放电中 + 放电 MOS 开」自洽
+            statePairs = listOf(19 to "电池放电中", 24 to "放电MOS开"),
             temps = listOf("MOS" to 41.0, "均衡" to 33.0, "T1" to 28.5, "T2" to 31.2, "T3" to 29.8, "T4" to 27.6),
             cells = cells.mapIndexed { i, v ->
                 CellV(

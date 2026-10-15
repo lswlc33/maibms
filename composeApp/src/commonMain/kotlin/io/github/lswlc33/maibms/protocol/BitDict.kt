@@ -73,6 +73,14 @@ object BitDict {
         decodePairs(bits, dict).filter { it.first !in stateBits }
 
     /**
+     * 告警域里**状态类位**的置位视图（与 [decodeForDisplayPairs] 互补，两者合起来才是这 64 位的全貌）。
+     * 详情弹窗的「运行状态」段用它：充电器接入（20/21/22）、加热（36）、防打火（48）、
+     * 调试模式（45）这些既不进告警列表、以前也没有任何入口，等于看不到。
+     */
+    fun statePairs(bits: ULong, dict: Map<Int, String>): List<Pair<Int, String>> =
+        decodePairs(bits, dict).filter { it.first in stateBits }
+
+    /**
      * MOS 关提示：告警位 23/24 只有「开」的表达，关时位为 0，位域里无信息——
      * 由实时帧尾部状态字节（偏移 12 放电 / 13 充电，1=开）取反合成。MOS 开时返回不含对应项。
      */

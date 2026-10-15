@@ -159,14 +159,39 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
         return if (parts.all { it == "00" }) null else parts.joinToString(":")
     }
 
-    /** 表2：设备序列号(0,16 ascii) 硬件版本(16,8) 软件版本(24,8) 电池类型(46,1) 串数(47,1) 容量(48,4 dec3) 循环(57,2) */
+    /**
+     * 表2（`createParamNew.js createTableTwo`，startAddress/readLength 照抄）：
+     * 设备序列号(0,16 ascii)｜硬件版本(16,8 ascii)｜软件版本(24,8 ascii)｜设备编码(32,8)｜
+     * 电池类型(46,1)｜电池串数(47,1)｜电池容量(48,4 dec3)｜循环次数(57,2)。
+     *
+     * 此前只取容量与循环，序列号/版本/电池类型/串数虽在同一帧里却没解析——现在一并取出，
+     * 写进身份区（见 [MeterReading] 的设备信息字段）。
+     */
     private fun decodeTable2(d: ByteArray): MeterReading {
         val cap = raw(d, 48, 4) / 1000.0
         val cycles = raw(d, 57, 2)
+        val cells = raw(d, 47, 1)
         return MeterReading(
             totalCapAh = cap.takeIf { cap > 0 },
             cycles = cycles,
+            serialNo = ascii(d, 0, 16).takeIf { it.isNotBlank() },
+            hwVersion = ascii(d, 16, 8).takeIf { it.isNotBlank() },
+            swVersion = ascii(d, 24, 8).takeIf { it.isNotBlank() },
+            batteryType = batteryTypeName(raw(d, 46, 1)),
+            cellCount = cells.takeIf { it in 1..64 },
         )
+    }
+
+    /**
+     * 表2 `Battery_Type`（偏移 46，1 字节）：官方 `SelectParam.options` 只定义了三项。
+     * 未定义码返回 null（显示 "--"），不猜——它与保护板实时帧的 `0xFAFx` 编码是两套码表，
+     * 不能互相套用（docs/13 §13.5 的 64241 系是保护板的口径）。
+     */
+    private fun batteryTypeName(code: Int): String? = when (code) {
+        1 -> "三元锂"
+        2 -> "磷酸铁锂"
+        3 -> "铅酸电池"
+        else -> null
     }
 
     // ---- 组帧 ----

@@ -13,7 +13,12 @@ object Perm {
     /** 读参数区所需的最低运行权限（真机实测：一级读回整块 0xFFFF） */
     const val READ_PARAM_MIN_LEVEL = 2
 
+    /** 读历史事件日志 / 保护动作计数所需的最低运行权限（docs/13 §13.8：≥1 可读参数、日志、身份） */
+    const val READ_LOG_MIN_LEVEL = 1
+
     fun canWrite(level: Int): Boolean = level >= WRITE_MIN_LEVEL
+
+    fun canReadLogs(level: Int): Boolean = level >= READ_LOG_MIN_LEVEL
 }
 
 /** 配置页写权限状态（顶栏指示与页面拦截共用） */

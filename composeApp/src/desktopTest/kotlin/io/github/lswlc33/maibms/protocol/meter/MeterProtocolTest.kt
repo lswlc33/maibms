@@ -483,6 +483,47 @@ class MeterProtocolTest {
         assertTrue(protocol.snapshotReady)
     }
 
+    // ---- ⑤ 补全：蓝宝表2 的设备信息（此前只取了容量与循环） ----
+
+    @Test
+    fun lanbao_table2_device_info_is_decoded() {
+        val r = LanBaoProtocol().onData(lanbaoTable2())!!
+        assertEquals("SN-2026-0001", r.serialNo)
+        assertEquals("HW1.2", r.hwVersion)
+        assertEquals("SW3.4", r.swVersion)
+        assertEquals("磷酸铁锂", r.batteryType)
+        assertEquals(20, r.cellCount)
+        // 原有字段不受影响
+        assertEquals(100.0, r.totalCapAh)
+        assertEquals(123, r.cycles)
+    }
+
+    @Test
+    fun lanbao_battery_type_uses_its_own_code_table() {
+        // 官方 Battery_Type.options：1=三元锂 / 2=磷酸铁锂 / 3=铅酸电池（小整数），
+        // **与保护板实时帧的 0xFAFx 编码是两套码表**（docs/13 §13.5），不能互相套用
+        fun type(code: Int) = LanBaoProtocol().onData(lanbaoTable2(batteryTypeCode = code))!!.batteryType
+        assertEquals("三元锂", type(1))
+        assertEquals("磷酸铁锂", type(2))
+        assertEquals("铅酸电池", type(3))
+        // 未定义码不猜，显示 "--"（尤其不能用保护板那套 0xFAF1/0xFAF2 去套）
+        assertNull(type(0))
+        assertNull(type(10))
+    }
+
+    @Test
+    fun lanbao_table2_cell_count_out_of_range_is_dropped() {
+        // 串数 0 或超范围（脏数据/未接电池）时不给值，避免身份区显示「0 串」
+        fun cells(code: Int): Int? {
+            val data = ByteArray(134)
+            data[47] = code.toByte()
+            return LanBaoProtocol().onData(lanbaoFrame(2, data))!!.cellCount
+        }
+        assertEquals(20, cells(20))
+        assertNull(cells(0))
+        assertNull(cells(200))
+    }
+
     private fun newProtocol(luxing: Boolean): MeterProtocol = if (luxing) LuXingProtocol() else LanBaoProtocol()
 
     private fun luxingReadingFrames() = listOf(luxingRealtime(), luxingBms(), luxingCycle())
@@ -533,11 +574,22 @@ class MeterProtocolTest {
         return lanbaoFrame(1, data)
     }
 
-    private fun lanbaoTable2(): ByteArray {
+    private fun lanbaoTable2(batteryTypeCode: Int = 2): ByteArray {
         val data = ByteArray(134)
+        // 设备信息区（createParamNew.js createTableTwo 的 startAddress/readLength）：
+        // 序列号(0,16 ascii) 硬件版本(16,8) 软件版本(24,8) 电池类型(46,1) 串数(47,1) 容量(48,4) 循环(57,2)
+        putAscii(data, 0, "SN-2026-0001")
+        putAscii(data, 16, "HW1.2")
+        putAscii(data, 24, "SW3.4")
+        data[46] = batteryTypeCode.toByte()
+        data[47] = 20
         putBE(data, 48, 4, 100000)
         putBE(data, 57, 2, 123)
         return lanbaoFrame(2, data)
+    }
+
+    private fun putAscii(d: ByteArray, off: Int, s: String) {
+        s.encodeToByteArray().copyInto(d, off)
     }
 
     private fun withLanbaoCrc(frame: ByteArray): ByteArray {

@@ -53,13 +53,32 @@ data class MeterReading(
     val relayBoardName: String? = null,
     /** 被中继的保护板的 MAC（蓝宝可报；陆行可能无） */
     val relayBoardMac: String? = null,
+
+    // ---- 电量计**自身**的设备信息（蓝宝表2 的设备序列号/版本/电池类型/串数）----
+    // 只进「设置 → 关于（身份区）」，不进主读数：这些是设备档案，不是实时量。
+    // 键名与保护板身份区保持一致（serialNo/hwVersion/swVersion/batteryType），
+    // 界面复用同一批行，不需要为电量计再写一套展示。
+    /** 设备序列号（蓝宝表2 偏移 0，16 字节 ASCII） */
+    val serialNo: String? = null,
+    val hwVersion: String? = null,
+    val swVersion: String? = null,
+    /**
+     * 电池类型**文案**。
+     *
+     * ⚠️ 保护板与电量计的码表不同：保护板实时帧是 `0xFAFx` 编码（docs/13 §13.5），
+     * 蓝宝表2 是 1=三元锂 / 2=磷酸铁锂 / 3=铅酸电池 的小整数（`createParamNew.js`
+     * `Battery_Type.options`）。换算在各协议实现里做，这里只传最终中文。
+     */
+    val batteryType: String? = null,
+    /** 电池串数（蓝宝表2 偏移 47） */
+    val cellCount: Int? = null,
 ) {
     val isEmpty: Boolean
         get() = listOfNotNull(
             totalVoltage, current, power, soc, totalCapAh, remainCapAh, cycles,
             battState, chMos, disMos, balancing, temps, cells, maxCell, minCell, avgCell,
             deltaCell, remainChargeMin, remainDischargeMin, relayBoardBrand, relayBoardName,
-            relayBoardMac,
+            relayBoardMac, serialNo, hwVersion, swVersion, batteryType, cellCount,
         ).isEmpty()
 }
 

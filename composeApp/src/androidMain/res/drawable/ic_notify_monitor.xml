@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：状态栏图标只取 alpha 通道，必须是单色剪影（用启动器图标会渲染成一个白方块）。
+     24dp 网格里画一个电池 + 闪电，与 BMS 监控的语义一致。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 电池外壳 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M4,7h11a2,2 0 0 1 2,2v6a2,2 0 0 1 -2,2h-11a2,2 0 0 1 -2,-2v-6a2,2 0 0 1 2,-2zM4,9v6h11v-6z" />
+    <!-- 电池正极头 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M18.5,10h1.5v4h-1.5z" />
+    <!-- 闪电 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M10.6,8.4l-2.4,4.2h2l-0.8,2.9l3.2,-4.6h-2z" />
+</vector>

@@ -382,7 +382,7 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
 /* ---------- S03 保护/告警详情弹窗 ---------- */
 
 @Composable
-fun ProtectDetailDialog(onDismiss: () -> Unit) {
+fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) {
     val status by MockBms.status.collectAsState()
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -395,18 +395,25 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
                 Text("实时帧偏移 4~11 保护 / 12~19 告警", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Spacer(Modifier.height(8.dp))
+            // 加了「运行状态」段后内容会明显变长（状态位常有 3~6 条），这里限高并内部滚动，
+            // 否则在小屏 / 大字体档下弹窗底部（含"知道了"按钮）会被推出屏幕
+            Column(
+                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+            ) {
             if (!status.hasData) {
                 Text("未连接 · 无数据（连接保护板后此处显示位置位详情）",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 10.dp))
             }
-            if (status.alarmPairs.isNotEmpty() || status.alarmList.isNotEmpty()) {
+            if (status.alarmPairs.isNotEmpty() || (status.hasData && status.alarmList.isNotEmpty())) {
                 Text("告警", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // 与告警卡同源展示：卡片用 displayAlarmList（含合成的「MOS关」提示），
-            // 详情只列真实位（带 bit 号），MOS 关提示按同一条规则补在末尾，两边条数才对得上
-            val mosHints = io.github.lswlc33.maibms.protocol.BitDict.mosClosedHints(
-                status.chMos == "开启", status.disMos == "开启")
+            // 详情只列真实位（带 bit 号），MOS 关提示按同一条规则补在末尾，两边条数才对得上。
+            // 没收到过数据时不给「MOS 关」提示：位域全是 0 不等于"MOS 确实是关的"，
+            // 合成提示会说出一件没有依据的事（与"缺数据显示 --"同一条原则）
+            val mosHints = if (status.hasData) io.github.lswlc33.maibms.protocol.BitDict.mosClosedHints(
+                status.chMos == "开启", status.disMos == "开启") else emptyList()
             status.alarmPairs.forEach { (bit, a) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     StatusDot(BmsColors.WarnAmber)
@@ -440,7 +447,53 @@ fun ProtectDetailDialog(onDismiss: () -> Unit) {
                 Text("其余位正常", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
                 Text("u64", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            // ---- 运行状态：以前整段看不到的部分 ----
+            // 1) MOS/均衡的状态码：开关读数只说明"开没开"，码值才说明"为什么没开"（MosStateDict）；
+            // 2) 告警位域里的状态位（充电器接入 20/21/22、加热 36、防打火 48、调试模式 45…）——
+            //    它们既不算告警、又被 stateBits 从告警列表里滤掉，此前界面上没有任何入口。
+            if (status.hasData) {
+                Text("运行状态", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 6.dp))
+                // 只列「有话说」的那几项：码值 ≥2 才是断开原因；均衡只在遇到码表外的值时列出
+                // （已知模式卡2 已经在显示，这里重复没意义）
+                val mosRows = buildList {
+                    val mos = io.github.lswlc33.maibms.protocol.MosStateDict
+                    if (status.chMosCode >= 2) add("充电MOS状态" to mos.chargeText(status.chMosCode))
+                    if (status.disMosCode >= 2) add("放电MOS状态" to mos.dischargeText(status.disMosCode))
+                    if (status.balanceCode >= 1 && mos.balanceMode(status.balanceCode) == null)
+                        add("均衡状态" to mos.balanceText(status.balanceCode))
+                }
+                mosRows.forEach { (label, value) ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        StatusDot(BmsColors.IcBlue)
+                        Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f).padding(start = 9.dp))
+                        Text(value, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                if (status.statePairs.isEmpty() && mosRows.isEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        StatusDot(BmsColors.OffGray)
+                        Text("无置位的运行状态位", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
+                        Text("bit 17~52", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                status.statePairs.forEach { (bit, s) ->
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+                        StatusDot(BmsColors.OkGreen)
+                        Text(s, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f).padding(start = 9.dp))
+                        Text("bit $bit", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+            }
+            }
             Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
+                // 从「这里为什么亮」直接跳到设备里存的历史记录（0x13），不用自己找入口
+                if (onOpenLog != null) {
+                    TextButton(onClick = onOpenLog) { Text("查看历史事件", color = MaterialTheme.colorScheme.primary) }
+                    Spacer(Modifier.width(4.dp))
+                }
                 Button(onClick = onDismiss) { Text("知道了") }
             }
         }

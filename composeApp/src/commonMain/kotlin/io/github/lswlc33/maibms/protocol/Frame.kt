@@ -11,6 +11,8 @@ object Proto {
 
     const val FC_REALTIME: Int = 0x01       // 读实时（短帧）
     const val FC_PARAM: Int = 0x02           // 读参数（短帧）
+    const val FC_LOG: Int = 0x03             // 读历史事件日志（短帧，寄存器=日志序号，长度 0）
+    const val FC_PROTECT_NUM: Int = 0x05     // 读保护动作计数（短帧，长度 40 = 20×u16）
     const val FC_WRITE_PARAM: Int = 0x22     // 写参数（长帧）
     const val FC_AUTH: Int = 0x23            // 密码校验（长帧）
     const val FC_CONTROL: Int = 0x51         // 控制命令（长帧，长度 0）
@@ -18,6 +20,8 @@ object Proto {
 
     const val RSP_REALTIME: Int = 0x11
     const val RSP_PARAM: Int = 0x12
+    const val RSP_LOG: Int = 0x13            // 历史事件日志应答（长帧，一条一条回）
+    const val RSP_PROTECT_NUM: Int = 0x15    // 保护动作计数应答（长帧，20×u16 小端）
     const val RSP_WRITE: Int = 0x42
     const val RSP_AUTH: Int = 0x43
     const val RSP_CONTROL: Int = 0x61

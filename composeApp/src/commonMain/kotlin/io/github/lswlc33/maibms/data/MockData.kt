@@ -46,11 +46,21 @@ data class BmsStatus(
     val chMos: String = "--",
     val disMos: String = "--",
     val balance: String = "--",
+    /**
+     * MOS/均衡的**原始状态码**（实时帧尾部偏移 12/13/14）。开关读数只看 `== 1`，
+     * 但码值本身带原因（`MosStateDict`：2=单体过压、12=开启失败…）——只存“开/关”会把
+     * 断开原因整块丢掉。这里存原始码，界面按需查表。
+     */
+    val chMosCode: Int = 0,
+    val disMosCode: Int = 0,
+    val balanceCode: Int = 0,
     val protectList: List<String> = emptyList(),
     val alarmList: List<String> = emptyList(),
     /** 带真实位号的版本（详情弹窗显示 bit N 用） */
     val protectPairs: List<Pair<Int, String>> = emptyList(),
     val alarmPairs: List<Pair<Int, String>> = emptyList(),
+    /** 告警位域里的**状态类**位（充电器接入/MOS 开/待机/加热…）：不进告警列表，详情弹窗单列一段 */
+    val statePairs: List<Pair<Int, String>> = emptyList(),
     val temps: List<Pair<String, Double>> = emptyList(),
     val cells: List<CellV> = emptyList(),
     val trendCurrent: List<Float> = emptyList(),
@@ -160,6 +170,9 @@ object MockBms {
         identity.value = s.identity
         connectedDeviceName.value = s.deviceName.ifBlank { null }
         paramsFromCache.value = false   // 快照是快照：横幅走预览文案，不标「缓存」
+        // 历史日志是「设备此刻读出来的」，不属于快照内容：预览时清掉，
+        // 免得在预览态下把真机会话读到的记录当成这张快照的历史（退出预览再清一次是同一口径）
+        clearEventLog()
         _status.value = s.status
     }
 
@@ -168,6 +181,25 @@ object MockBms {
      * （未连接时的离线展示），配置页据此显示缓存文案；实时读回/快照载入都会清掉它。
      */
     val paramsFromCache = MutableStateFlow(false)
+
+    // ---- 设备历史事件日志（0x03→0x13）与保护动作计数（0x05→0x15） ----
+    // 换设备/退出预览都会清空（见 clearForRealDevice / restoreSnapshot）：日志是**设备的**，
+    // 留着上一台的记录会被当成当前这台的历史——与快照、参数区同一条隔离原则。
+    val eventLog = MutableStateFlow<List<io.github.lswlc33.maibms.protocol.EventLogRecord>>(emptyList())
+    val eventLogLoading = MutableStateFlow(false)
+    /** 设备侧已无更早的记录（读到底） */
+    val eventLogAtEnd = MutableStateFlow(false)
+    val protectCounters = MutableStateFlow<List<Int>>(emptyList())
+    /** 上一次读取失败的原因（界面提示用）；null = 没问题 */
+    val eventLogError = MutableStateFlow<String?>(null)
+
+    private fun clearEventLog() {
+        eventLog.value = emptyList()
+        eventLogAtEnd.value = false
+        eventLogLoading.value = false
+        protectCounters.value = emptyList()
+        eventLogError.value = null
+    }
 
     /** 载入某设备的配置缓存到会话（未连接时的离线展示）；无缓存返回 false */
     fun loadParamsCache(cache: AppStore.ParamsCache) {
@@ -187,6 +219,7 @@ object MockBms {
         paramsFromCache.value = false   // 会话数据已清空，「缓存」标记自然也不成立
         connectedDeviceName.value = null
         clearTrend()
+        clearEventLog()
         _status.value = BmsStatus(
             deviceName = "--", runtime = "--", swVersion = "--", hwVersion = "--",
             batteryType = "--", connected = false, permissionLevel = 0, soc = 0,
@@ -267,10 +300,15 @@ object MockBms {
             chMos = if (r.chMos == 1) "开启" else "关闭",
             disMos = if (r.disMos == 1) "开启" else "关闭",
             balance = if (r.balanceState != 0) "均衡中" else "关闭",
+            // 原始状态码一并存下：开关读数只说明“开没开”，码值才说明“为什么没开”（见 MosStateDict）
+            chMosCode = r.chMos,
+            disMosCode = r.disMos,
+            balanceCode = r.balanceState,
             protectList = io.github.lswlc33.maibms.protocol.BitDict.decode(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
             alarmList = io.github.lswlc33.maibms.protocol.BitDict.displayAlarmList(r.warnBits, r.chMos == 1, r.disMos == 1),
             protectPairs = io.github.lswlc33.maibms.protocol.BitDict.decodePairs(r.protectBits, io.github.lswlc33.maibms.protocol.BitDict.protectNames),
             alarmPairs = io.github.lswlc33.maibms.protocol.BitDict.decodeForDisplayPairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
+            statePairs = io.github.lswlc33.maibms.protocol.BitDict.statePairs(r.warnBits, io.github.lswlc33.maibms.protocol.BitDict.warnNames),
             temps = listOf("MOS" to r.mosTemp, "均衡" to r.balanceTemp) +
                     r.temps.mapIndexed { i, t -> "T${i + 1}" to t },
             cells = newCells,
@@ -287,8 +325,7 @@ object MockBms {
         connected.value = true
     }
 
-    /** 当前设备密码库（按设备存储，连接后由 restorePasswords 填充） */
-    val passwords = MutableStateFlow(
+    /** 当前设备密码库（按设备存储，连接后由 restorePasswords 填充） */    val passwords = MutableStateFlow(
         listOf(
             DevicePassword(1, null),
             DevicePassword(2, null),
@@ -341,6 +378,10 @@ object MockBms {
             chMos = r.chMos?.let { if (it) "开启" else "关闭" } ?: cur.chMos,
             disMos = r.disMos?.let { if (it) "开启" else "关闭" } ?: cur.disMos,
             balance = r.balancing?.let { if (it) "均衡中" else "关闭" } ?: cur.balance,
+            // 电量计只有开/关两态，没有原因码（码表是保护板的状态字节）
+            chMosCode = r.chMos?.let { if (it) 1 else 0 } ?: cur.chMosCode,
+            disMosCode = r.disMos?.let { if (it) 1 else 0 } ?: cur.disMosCode,
+            balanceCode = r.balancing?.let { if (it) 4 else 0 } ?: cur.balanceCode,
             temps = r.temps ?: cur.temps,
             cells = newCells ?: cur.cells,
             maxCell = maxV?.let { "%.3f".fmt(it) } ?: cur.maxCell,
@@ -356,5 +397,26 @@ object MockBms {
             trendVolt = norm(histVolt.toList(), includeZero = false),
         )
         connected.value = true
+    }
+
+    /**
+     * 电量计**自身**的设备信息 → 身份区（设置 → 关于）。
+     *
+     * 键名与保护板身份区一致（`serialNo`/`hwVersion`/`swVersion`/`batteryType`/`cellCount`），
+     * 设置页复用同一批行即可，不必为电量计再写一套展示。只做增量合并：
+     * 协议里报什么写什么，没报的键不动（陆行目前只报读数，不报这些，身份区就保持空）。
+     */
+    fun applyMeterDeviceInfo(r: io.github.lswlc33.maibms.protocol.meter.MeterReading) {
+        val patch = buildMap {
+            r.serialNo?.let { put("serialNo", it) }
+            r.hwVersion?.let { put("hwVersion", it) }
+            r.swVersion?.let { put("swVersion", it) }
+            r.batteryType?.let { put("batteryType", it) }
+            r.cellCount?.let { put("cellCount", it.toString()) }
+        }
+        if (patch.isEmpty()) return
+        val merged = identity.value + patch
+        // 表2 每 5 拍读一次，内容不变时别触发身份区重组（Map 结构相等即视为没变）
+        if (merged != identity.value) identity.value = merged
     }
 }

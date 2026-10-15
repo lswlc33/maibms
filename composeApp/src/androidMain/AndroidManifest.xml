@@ -13,6 +13,11 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 后台监控（可选功能，默认关闭）：退到后台保持连接与轮询，保护/告警新触发或失联时发通知。
+         POST_NOTIFICATIONS 在用户打开开关那一刻才申请（Android 13+） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <application
         android:name=".MaibmsApp"
         android:label="麻衣 BMS"
@@ -29,5 +34,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- 后台监控的保活服务：只为「进程别被回收 + 通知栏看得见」而存在，
+             BLE 连接与轮询仍在 Application 作用域的仓库里跑。
+             connectedDevice 是 Android 14+ 对前台服务类型的硬要求（缺失会抛 MissingForegroundServiceTypeException） -->
+        <service
+            android:name=".monitor.BmsMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>

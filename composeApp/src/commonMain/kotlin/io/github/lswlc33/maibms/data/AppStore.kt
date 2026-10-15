@@ -181,6 +181,29 @@ object AppStore {
     private const val KEY_LOG_FRAME = "log.frameOn"
     private const val KEY_LOG_LEVEL = "log.minLevel"
 
+    // ---- 后台策略（退到后台之后干什么） ----
+
+    /**
+     * 后台监控开关（默认**关**）。
+     *
+     * - 关：退到后台暂停轮询（省电，回前台立即恢复）——这是默认档，也是"什么都不做"的反面：
+     *   此前退到后台仍按 600ms 轮询、占着 BLE 连接，却没有任何展示或通知，电耗换不回东西；
+     * - 开：Android 起前台服务保活 + 持续轮询，保护/告警触发与失联会发系统通知。
+     *
+     * 需要平台支持（见 [io.github.lswlc33.maibms.ui.Notifications] 是否被注入实现）。
+     */
+    var backgroundMonitor: Boolean
+        get() = get(KEY_BG_MONITOR) == "1"
+        set(v) = put(KEY_BG_MONITOR, if (v) "1" else "0")
+
+    /** 告警通知开关（默认开，但受 [backgroundMonitor] 约束：不保活就收不到） */
+    var alarmNotify: Boolean
+        get() = get(KEY_ALARM_NOTIFY) != "0"
+        set(v) = put(KEY_ALARM_NOTIFY, if (v) "1" else "0")
+
+    private const val KEY_BG_MONITOR = "notify.backgroundMonitor"
+    private const val KEY_ALARM_NOTIFY = "notify.alarm"
+
     // ---- 功率换挡进度条（仪表盘卡3，纯展示的情绪价值） ----
 
     /** 换挡进度条开关（点击卡3切换，默认开） */

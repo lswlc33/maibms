@@ -173,6 +173,50 @@ fun SettingsHomeScreen(
             }
             hint?.let { InfoBanner(it, kind = "warn") }
         }
+        // ---- 后台与通知 ----
+        // 退到后台之后干什么，此前没有任何策略：仍按 600ms 轮询、占着 BLE 连接，
+        // 却没有展示也没有通知（电耗换不回东西）。现在由这一个开关决定两种行为。
+        val bgMonitor = AppStore.backgroundMonitor
+        val notifySupported = io.github.lswlc33.maibms.data.Notifications.supported
+        SectionCard {
+            SectionHeader("后台与通知", tail = if (notifySupported) "Android" else "本平台不支持")
+            SettingRow(
+                title = "后台监控",
+                inlineValue = when {
+                    !notifySupported -> "本平台不支持"
+                    bgMonitor -> "开 · 保持连接并通知"
+                    else -> "关 · 退后台暂停轮询"
+                },
+                trailing = { if (notifySupported) AppSwitch(bgMonitor) { io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(it) } },
+                onClick = {
+                    if (notifySupported) {
+                        io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(!bgMonitor)
+                    }
+                },
+            )
+            if (notifySupported && bgMonitor) {
+                SettingRow(
+                    title = "告警通知",
+                    inlineValue = if (AppStore.alarmNotify) "开" else "关",
+                    trailing = { AppSwitch(AppStore.alarmNotify) { AppStore.alarmNotify = it } },
+                    onClick = { AppStore.alarmNotify = !AppStore.alarmNotify },
+                )
+            }
+            Text(
+                when {
+                    // 这两个平台没有注入通知实现，也拿不到可靠的前后台信号（AppForeground 默认恒为 true），
+                    // 所以这里不能承诺"退到后台会暂停"——按实际行为写
+                    !notifySupported ->
+                        "本平台不做后台保活与系统通知（iOS 与桌面端）：没有「正在监控」的常驻提示，也不发告警通知，轮询节奏不受前后台影响。"
+                    bgMonitor ->
+                        "保持连接与轮询（常驻通知栏，可随时关掉）。保护/告警**新触发**、以及设备失联时发一条通知；前台不重复提醒，界面本身就有告警卡。"
+                    else ->
+                        "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。"
+                },
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
         SectionCard {
             SettingRow(
                 title = "快照",
@@ -192,6 +236,16 @@ fun SettingsHomeScreen(
             SettingRow(title = "开发者", trailing = { Chevron() }, onClick = { onOpen(Route.Developer) })
         }
         SectionCard {
+            // 设备日志：读设备里存的历史事件与保护动作次数（0x13 / 0x15）。
+            // 放设置页而不是仪表盘：它是"翻旧账"的地方，不是每拍要盯的读数
+            SettingRow(
+                title = "设备日志",
+                inlineValue = "历史事件 / 保护次数",
+                trailing = { Chevron() },
+                onClick = { onOpen(Route.EventLogs) },
+            )
+        }
+        SectionCard {
             SectionHeader("关于", tail = "身份区")
             if (reading) InfoBanner("身份区读取中…", kind = "info")
             else if (!connected && id.isEmpty()) InfoBanner("未连接设备 · 连接后自动读取身份区", kind = "warn")
@@ -199,10 +253,17 @@ fun SettingsHomeScreen(
             else if (id.isEmpty()) InfoBanner("身份区暂时读不到（权限不足或设备未就绪）", kind = "warn")
             SettingRow(title = "软件版本", inlineValue = v(id["swVersion"], status.swVersion))
             SettingRow(title = "硬件版本", inlineValue = v(id["hwVersion"], status.hwVersion))
+            // 电池类型：保护板取自实时帧（0xFAFx → 中文，docs/13 §13.5），电量计取自设备信息表；
+            // 官方主页的设备信息头就有这一项，此前我们解码了却没地方看
+            SettingRow(title = "电池类型", inlineValue = v(id["batteryType"], status.batteryType))
             SettingRow(title = "Boot 版本", inlineValue = v(id["boot"], "--"))
             SettingRow(title = "设备地址", inlineValue = "A1")
             SettingRow(title = "电池组 ID", inlineValue = v(id["packId"], "--"))
             SettingRow(title = "Code Key", inlineValue = v(id["codeKey"], "--"))
+            // 序列号与电芯串数只有电量计会报（蓝宝表2），保护板身份区没有这两项——
+            // 按需显示，免得保护板用户看到两行恒为 "--" 的噪声
+            id["serialNo"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "序列号", inlineValue = it) }
+            id["cellCount"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "电芯串数", inlineValue = it) }
             SettingRow(title = "蓝牙名称", inlineValue = (bleName ?: status.deviceName).trim())
             SettingRow(title = "蓝牙地址", inlineValue = MockBms.savedAddress ?: "--")
         }

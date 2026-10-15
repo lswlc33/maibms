@@ -77,6 +77,26 @@ class BitDictTest {
         assertEquals(listOf("单体欠压告警", "即将低压关机"), pairs.map { it.second })
     }
 
+    @Test fun stagePairsAreTheComplementOfDisplayPairs() {
+        // 告警域 64 位被切成互补两半：上屏的告警 = decodeForDisplayPairs，运行状态 = statePairs。
+        // 合起来必须逐位等于不过滤的 decodePairs —— 将来往 stateBits 里加位时，
+        // 「两处都不显示」这种静默丢失会被这条断言当场拦住
+        val bits = (1UL shl 0) or (1UL shl 11) or (1UL shl 18) or (1UL shl 19) or
+                (1UL shl 20) or (1UL shl 23) or (1UL shl 24) or (1UL shl 26) or
+                (1UL shl 36) or (1UL shl 45) or (1UL shl 48) or (1UL shl 53)
+        val shown = BitDict.decodeForDisplayPairs(bits, BitDict.warnNames)
+        val states = BitDict.statePairs(bits, BitDict.warnNames)
+        val all = BitDict.decodePairs(bits, BitDict.warnNames)
+        assertEquals(all.map { it.first }, (shown + states).map { it.first }.sorted())
+        // 此前两处都看不到的位（充电器接入 20 / 加热 36 / 调试模式 45 / 防打火 48）现在有出口
+        assertEquals(
+            listOf(20 to "CAN充电连接", 36 to "电加热开启", 45 to "调试模式", 48 to "防打火中"),
+            states.filter { it.first in setOf(20, 36, 45, 48) },
+        )
+        // 真告警（bit0/11）与「内部通信不稳定」（bit53，不在状态位集合里）仍走告警列表
+        assertEquals(listOf(0, 11, 53), shown.map { it.first })
+    }
+
     @Test fun protectBits64bitSafe() {
         // bit49 是保留位（无条目）；bit50 超出 Int/Long 常见位宽，验证 ULong 解码不截断
         assertTrue(BitDict.decodePairs(1UL shl 49, BitDict.protectNames).isEmpty())

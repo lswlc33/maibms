@@ -38,6 +38,12 @@ private const val DENSITY = 2f
 private fun seedFrame(
     voltOffsetMilli: Int, currentTenth: Int, powerW: Int = 8,
     remainDisMin: Int = 0, lastGapSec: Long = 0,
+    /** 充电 MOS 状态码（MosStateDict：1=开启、2=单体过压、12=开启失败…）——截图要看「关闭·原因」 */
+    chMosCode: Int = 1,
+    /** 均衡状态码（0=关闭、4=自动均衡…） */
+    balState: Int = 0,
+    /** 告警位域（u64 低 32 位）：用来在截图里带上运行状态位（bit19 放电中 / bit24 放电MOS开） */
+    warnBits: Int = 0x0001,
 ): ByteArray {
     val n = 20; val m = 4
     val t0 = 28 + 2 * n + 2 * m
@@ -51,7 +57,8 @@ private fun seedFrame(
     u8(0, 2)                     // 当前权限 2 级
     u8(1, 3)                     // 待机
     u8(2, m); u8(3, n)
-    u16(12, 0x0001)              // warn bit0 = 单体过压告警（真机实测值）
+    u16(12, warnBits and 0xFFFF)
+    u16(14, (warnBits ushr 16) and 0xFFFF)
     val cellMv = (0 until n).map { 4262 + (it % 5) + voltOffsetMilli }
     for (i in 0 until n) u16(28 + 2 * i, cellMv[i] and 0x1FFF)
     for (i in 0 until m) s16(28 + 2 * n + 2 * i, 22)
@@ -60,7 +67,7 @@ private fun seedFrame(
     u16(t0 + 4, totalV)
     s16(t0 + 6, 1 + currentTenth)                   // 电流 0.1A
     u16(t0 + 8, 100); u16(t0 + 10, 100)             // SOC / SOH
-    u8(t0 + 12, 1); u8(t0 + 13, 1); u8(t0 + 14, 0)  // 放电MOS开 / 充电MOS开 / 均衡关
+    u8(t0 + 12, 1); u8(t0 + 13, chMosCode); u8(t0 + 14, balState)  // 放电MOS开 / 充电MOS / 均衡
     u8(t0 + 15, 0)
     u32(t0 + 16, 113_000_000L)                      // 物理容量 113.0Ah
     u32(t0 + 20, 112_999_861L)                      // 剩余容量
@@ -147,16 +154,57 @@ private fun seedUi() {
     kotlinx.coroutines.runBlocking { io.github.lswlc33.maibms.data.Bms.repository.connect("F9:99:1B:2B:1B:70") }
     seedParamsAndIdentity()
     // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子。
-    // 剩余时间同样按当拍电流换算：待机拍放真机实测值（10584min），放电拍 113Ah÷17.6A≈384min
+    // 剩余时间同样按当拍电流换算：待机拍放真机实测值（10584min），放电拍 113Ah÷17.6A≈384min。
+    // 这一拍同时带上⑤的样例：充电 MOS 状态码 2（单体过压 → 卡2 显示「关闭·单体过压」）、
+    // 均衡 4（自动均衡）、告警位域加 bit19/24（运行状态位的样例，详情弹窗要看得到）
     listOf(
         seedFrame(0, 0, lastGapSec = 5037, remainDisMin = 10584) to 0,
-        seedFrame(1, 175, powerW = 1500, lastGapSec = 5037, remainDisMin = 384) to 1,
+        seedFrame(
+            1, 175, powerW = 1500, lastGapSec = 5037, remainDisMin = 384,
+            chMosCode = 2, balState = 4, warnBits = 0x0001 or 0x00080000 or 0x01000000,
+        ) to 1,
     ).forEach { (bytes, _) ->
         FrameParser().feed(bytes).filter { it.func == Proto.RSP_REALTIME }
             .forEach { MockBms.updateFromRealtime(RealtimeDecoder.decode(it.data)) }
     }
     MockBms.connected.value = true
     seedLogs()
+    seedEventLog()
+}
+
+/**
+ * 设备日志页截图用：灌几条历史事件与一套保护计数。
+ *
+ * 直接走协议层（`EventLogCodec.parse`）而不是手工拼 UI 数据——这样截图顺带验证的是
+ * 「真实字节 → 解析 → 界面」整条链路，格式错了截图里就能看出来。
+ */
+private fun seedEventLog() {
+    fun record(index: Int, eventCode: Int, timeRaw: Long, items: List<Pair<Int, Int>>): io.github.lswlc33.maibms.protocol.EventLogRecord {
+        val d = ByteArray(8 + items.size * 4)
+        d[2] = items.size.toByte()
+        d[3] = eventCode.toByte()
+        for (k in 0 until 4) d[4 + k] = ((timeRaw shr (8 * k)) and 0xFF).toByte()
+        items.forEachIndexed { i, (id, raw) ->
+            d[8 + 4 * i] = id.toByte()
+            d[9 + 4 * i] = 0
+            d[10 + 4 * i] = (raw and 0xFF).toByte()
+            d[11 + 4 * i] = ((raw shr 8) and 0xFF).toByte()
+        }
+        val segs = FrameParser().feed(Frame.build(Proto.ADDR_MAIN, Proto.RSP_LOG, index, d, 0))
+        return io.github.lswlc33.maibms.protocol.EventLogCodec.parse(segs.single())!!
+    }
+    // 时间戳按「运行时长」给（与官方三个实现的显示口径一致），另给一条 Unix 秒的看日期形态
+    MockBms.eventLog.value = listOf(
+        record(0, 2, 184_323, listOf(10 to 3704, 1 to 900, 3 to 74)),
+        record(1, 3, 184_410, listOf(10 to 3402, 1 to 872)),
+        record(2, 47, 190_205, listOf(3 to 18, 6 to 58)),
+        record(3, 16, 402_118, listOf(4 to 41, 13 to 15)),
+        record(4, 65, 1_748_982_894L, listOf(2 to 253, 3 to 87, 1 to 852)),
+    )
+    // 计数：给几个非零值 + 循环次数（循环下标见 EventLogCodec.CYCLE_COUNTER_INDEX）
+    MockBms.protectCounters.value = List(20) { 0 }.toMutableList().also {
+        it[0] = 3; it[2] = 1; it[6] = 2; it[12] = 1; it[13] = 128; it[14] = 187; it[16] = 2
+    }
 }
 
 /** 开发者页截图用：注入各级别示例日志（走真实 BmsLog 管线） */
@@ -222,6 +270,9 @@ private val shots = listOf(
     Shot("18-settings-light", dark = false, route = Route.Settings),
     Shot("19-channels", dark = true, route = Route.Channels),
     Shot("20-channels-light", dark = false, route = Route.Channels),
+    // 设备日志页（0x13 / 0x15）：事件列表 + 保护动作计数
+    Shot("21-eventlog", dark = true, route = Route.EventLogs, prelude = { MockBms.applyPermission(3) }),
+    Shot("22-eventlog-light", dark = false, route = Route.EventLogs, prelude = { MockBms.applyPermission(3) }),
 )
 
 /** 截图里用的参数条目：直接按 ParamTable 的定义与当前 seed 数据构造（与界面同一条路径） */

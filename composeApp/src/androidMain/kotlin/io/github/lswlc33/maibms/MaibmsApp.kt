@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms
 
+import android.app.Activity
 import android.app.Application
 import android.content.Context
 import io.github.lswlc33.maibms.data.AppStore
@@ -52,6 +53,32 @@ class MaibmsApp : Application() {
         runCatching {
             Bms.repository.setRealTransport(AndroidBleTransport(applicationContext))
         }.onFailure { BmsLog.e("APP", "BLE 传输初始化失败：$it") }
+        // 通知出口：Android 侧注入实现（桌面/iOS 不注入 = 空实现，所以那两端不写一行平台代码）。
+        // 后台监控与告警通知都在数据层触发，界面只负责开关
+        runCatching {
+            io.github.lswlc33.maibms.data.Notifications.impl =
+                io.github.lswlc33.maibms.monitor.AndroidNotifier(applicationContext)
+        }.onFailure { BmsLog.e("APP", "通知初始化失败：$it") }
+        // 前后台信号：轮询循环据此决定退到后台是否停发请求（没开「后台监控」时停）。
+        // 用 started 计数而不是布尔：多 Activity/分屏切换时不会因为一次 onStop 就误判成后台
+        registerActivityLifecycleCallbacks(object : ActivityLifecycleCallbacks {
+            private var started = 0
+            override fun onActivityStarted(activity: Activity) {
+                started++
+                io.github.lswlc33.maibms.data.AppForeground.setActive(true)
+            }
+
+            override fun onActivityStopped(activity: Activity) {
+                started = (started - 1).coerceAtLeast(0)
+                if (started == 0) io.github.lswlc33.maibms.data.AppForeground.setActive(false)
+            }
+
+            override fun onActivityCreated(activity: Activity, state: android.os.Bundle?) {}
+            override fun onActivityResumed(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, state: android.os.Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
         // 权限没给就先不连（连接在界面之前发起，权限对话框还没点就碰蓝牙栈会抛 SecurityException）；
         // 用户授权后从界面手动连接即可
         if (canAutoConnect()) {

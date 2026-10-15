@@ -477,6 +477,10 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         // 没收到过数据就一律 "--"：拿 0.0Ah / 0% 当读数是误导
         fun v(text: String) = if (status.hasData) text else "--"
+        // MOS 断开原因（MosStateDict：码值 ≥2 才有原因）接在开关读数后面：「关闭」两字
+        // 看不出是被什么断开的，而那正是排查要的信息。保留码/未定义码不给原因，
+        // 免得把固件占位码当含义显示；原始码在「告警详情 → 运行状态」里始终可见。
+        fun mos(openClose: String, reason: String?) = if (reason == null) openClose else "$openClose·$reason"
         val caps = MockBms.caps.collectAsState().value
         // 左=MOS/均衡，右=电池状态+容量，左右各三行（SOH 已按需求移除）。
         // 每行必须是同一个 Row：此前左右各一个 Column 自堆自的，行高由各行内容
@@ -484,15 +488,26 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
         // 电量计没有 MOS/均衡 → 只保留右侧的状态/容量列（不显示读不到的 MOS 行）
         val rows = listOf(
             listOfNotNull(
-                Triple(BmsColors.OffGray, "充电 MOS", v(status.chMos)).takeIf { caps.mos },
+                Triple(
+                    BmsColors.OffGray, "充电 MOS",
+                    v(mos(status.chMos, io.github.lswlc33.maibms.protocol.MosStateDict.chargeReason(status.chMosCode))),
+                ).takeIf { caps.mos },
                 Triple(BmsColors.WarnAmber, "电池状态", v(status.battState)),
             ),
             listOfNotNull(
-                Triple(BmsColors.OkGreen, "放电 MOS", v(status.disMos)).takeIf { caps.mos },
+                Triple(
+                    BmsColors.OkGreen, "放电 MOS",
+                    v(mos(status.disMos, io.github.lswlc33.maibms.protocol.MosStateDict.dischargeReason(status.disMosCode))),
+                ).takeIf { caps.mos },
                 Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".fmt(status.remainCapAh) + " Ah" else "--"),
             ),
             listOfNotNull(
-                Triple(BmsColors.OffGray, "均衡状态", v(status.balance)).takeIf { caps.balance },
+                // 均衡：有模式名就显示模式（自动均衡/极限均衡…），未定义码退回「均衡中」
+                Triple(
+                    BmsColors.OffGray, "均衡状态",
+                    io.github.lswlc33.maibms.protocol.MosStateDict.balanceMode(status.balanceCode)
+                        ?.let { v(it) } ?: v(status.balance),
+                ).takeIf { caps.balance },
                 Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".fmt(status.totalCapAh) + " Ah" else "--"),
             ),
         )
@@ -510,11 +525,24 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
 
 @Composable
 private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = Modifier) {
+    // 标签与读数**各占一半**并各自贴边（读数右对齐）：此前读数按内容宽度排，
+    // 值一长（「关闭·均衡线掉串」这类带原因的 MOS 读数、或缩放到大档时）就把标签挤没；
+    // 等分后短值外观与原来完全一致，长值在右半边自行省略，标签不再被挤掉。
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
         StatusDot(dot)
         Spacer(Modifier.width(6.dp))
-        Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-        Text(value, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
+        Text(
+            label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            value, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

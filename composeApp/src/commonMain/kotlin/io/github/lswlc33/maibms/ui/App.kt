@@ -46,6 +46,7 @@ sealed class Route(val key: String) {
     data object Snapshots : Route("snapshots")       // S16 快照管理与预览
     data object Devices : Route("devices")           // S17 历史设备（档案/密码/自动重连目标）
     data object Channels : Route("channels")         // 通信通道（默认 / 备用 A / 备用 B，docs/02 §2.2）
+    data object EventLogs : Route("eventlog")        // 设备历史事件日志 + 保护动作计数（0x13 / 0x15）
 }
 
 /** 弹窗种类 */
@@ -264,6 +265,10 @@ fun App(
                                 Route.Developer -> DeveloperScreen(onBack = popBack)
                                 Route.Devices -> DeviceScreen(onBack = popBack)
                                 Route.Channels -> ChannelScreen(onBack = popBack)
+                                Route.EventLogs -> EventLogScreen(
+                                    onBack = popBack,
+                                    onOpenPerm = { dialog.value = DialogKind.PermLevels },
+                                )
                                 Route.Snapshots -> SnapshotScreen(
                                     onBack = popBack,
                                     onPreviewed = { currentTab.value = Route.Dashboard; backStack.clear() },
@@ -300,7 +305,11 @@ fun App(
                             scope.launch { io.github.lswlc33.maibms.data.Bms.repository.connectTo(addr) }
                         },
                     )
-                    DialogKind.ProtectDetail -> ProtectDetailDialog(onDismiss = { dialog.value = null })
+                    DialogKind.ProtectDetail -> ProtectDetailDialog(
+                        onDismiss = { dialog.value = null },
+                        // 「为什么跳保护」的下一步就是查设备里存的历史事件
+                        onOpenLog = { dialog.value = null; push(Route.EventLogs) },
+                    )
                     is DialogKind.ControlConfirm -> ControlConfirmDialog(
                         d.cmd,
                         onDismiss = { dialog.value = null },
