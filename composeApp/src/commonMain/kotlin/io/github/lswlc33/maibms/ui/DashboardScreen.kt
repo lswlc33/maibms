@@ -76,11 +76,12 @@ fun DashboardScreen(
     val linkLost = link == io.github.lswlc33.maibms.transport.LinkState.Connected && stalled
     val linkDown = link != io.github.lswlc33.maibms.transport.LinkState.Connected
 
-    // 宽度断点拦截「横屏事件」：横屏/宽窗口（≥600dp）不再渲染竖屏布局，直接进横屏表盘；
-    // 竖屏顶栏的「横屏仪表」入口（锁向）与表盘内的「退出仪表」是手动进出的一对
+    // 仪表视图（横屏表盘）：**只按宽高比自动进入**（宽 ≥ 高 × 1.2，见 ClusterMode）——
+    // 手机/平板横屏、拉宽的桌面窗口自动进；正方形屏与大竖屏不进（表盘在那种窗口里只能压成
+    // 一条 2.4:1 的横带）。三端都可以手动进出：顶栏「仪表视图」进、表盘内「退出仪表」出。
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (maxWidth >= 600.dp) {
-            ClusterDashboard(status, onExit = { lockLandscape(false) })
+        if (useClusterLayout(maxWidth, maxHeight)) {
+            ClusterDashboard(status, onExit = { exitCluster() })
         } else {
         Column(Modifier.fillMaxSize()) {
             Spacer(Modifier.height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 4.dp))
@@ -88,21 +89,21 @@ fun DashboardScreen(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
                 Text("麻衣 BMS", fontSize = 19.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                 Spacer(Modifier.weight(1f))
-                if (supportsOrientationLock) {
-                    Box(
-                        Modifier.clip(RoundedCornerShape(99.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .clickable {
-                                lockLandscape(true)
-                                showSystemToast("已锁定横屏 · 转到横屏进入仪表")
-                            }
-                            .padding(horizontal = 11.dp, vertical = 5.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("横屏仪表", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                    }
-                    Spacer(Modifier.width(10.dp))
+                // 仪表视图入口：三端都显示（原先只给能锁方向的 Android）——手动进入不依赖屏幕方向，
+                // 正方形屏/竖屏平板上也能用；Android 顺带锁横屏，让表盘铺满整屏
+                Box(
+                    Modifier.clip(RoundedCornerShape(99.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable {
+                            enterCluster()
+                            if (supportsOrientationLock) showSystemToast("已进入仪表视图 · 转到横屏更完整")
+                        }
+                        .padding(horizontal = 11.dp, vertical = 5.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("仪表视图", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                 }
+                Spacer(Modifier.width(10.dp))
                 if (showScanEntry) {
                     // 直接开扫描面板（原先还要过一层「扫码连接/管理设备」菜单，两项指向同一个弹窗）
                     Box(

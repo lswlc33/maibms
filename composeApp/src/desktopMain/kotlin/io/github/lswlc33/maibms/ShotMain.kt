@@ -1,6 +1,7 @@
 // 离屏截图工具（QA 专用，不进 APK）：把真实 App 组合渲染成 PNG，不弹窗口、不需要显示器。
 // 用法：./gradlew :composeApp:shot   ->  build/shots/*.png
 //      SHOT_SIZE=360  -> 再按 360x640dp（MI6 窄屏）渲一套，文件名带 -360 后缀
+//      SHOT_UI_SCALE=1.3 -> 按「界面大小」档位渲染（文件名带 -s130 后缀），用来复核四档排版
 // 桌面端没有 BLE 后端，默认渲染「未连接」空态；需要看有数据的界面时用 seed=1：
 // 按 docs/05 的布局拼一帧协议合法的 20S 三元锂实时数据（数值取自真机实测），
 // 走 FrameParser → RealtimeDecoder → MockBms 这条与真机完全相同的解码/回填路径。
@@ -295,6 +296,12 @@ fun main(args: Array<String>) {
         }
     }
     val outDir = File(args.firstOrNull() ?: "build/shots").apply { mkdirs() }
+    // 界面大小档位（可选）：复核「小/标准/大/特大」四档排版用；文件名带 -s<百分比>，
+    // 不设则标准档——不设时绝不覆盖带档位后缀的图，避免把放大后的排版当成标准档
+    System.getenv("SHOT_UI_SCALE")?.toFloatOrNull()?.takeIf { it != 1f }?.let { s ->
+        io.github.lswlc33.maibms.ui.setUiScale(s)
+        shotSuffix += "-s" + (s * 100).toInt()
+    }
     val only = args.drop(1)
     shots.filter { only.isEmpty() || it.name in only }.forEach { shoot(it, outDir) }
     println("done -> ${outDir.absolutePath}")

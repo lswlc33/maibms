@@ -94,4 +94,27 @@ class ClusterMathTest {
         assertTrue(x < 0.01f && x > -0.01f)
         assertTrue(y < -0.99f)
     }
+
+    /**
+     * 仪表视图的自动进入判据：**按宽高比**（宽 ≥ 高 × 1.2），不是绝对宽度。
+     * 这是"正方形平板不该自动进表盘"的回归测试——旧实现按 `宽 ≥ 600dp` 判，
+     * 800×800 / 700×800 这类窗口会进去，而表盘在那种窗口里只能压成一条 2.4:1 的横带
+     * （上下各留三分之一空白）。
+     */
+    @Test fun wideViewportByAspectRatio() {
+        // 手机：横屏进、竖屏不进（与方向传感器等价）
+        assertTrue(ClusterMath.isWideViewport(914f, 411f), "手机横屏应自动进仪表视图")
+        assertTrue(!ClusterMath.isWideViewport(411f, 914f), "手机竖屏不该进")
+        // 平板：4:3 横屏进、竖屏不进
+        assertTrue(ClusterMath.isWideViewport(1180f, 840f))
+        assertTrue(!ClusterMath.isWideViewport(840f, 1180f))
+        // 正方形屏（用户提的反例）与大竖屏：都不进
+        assertTrue(!ClusterMath.isWideViewport(800f, 800f), "正方形屏不是横屏，不该自动进表盘")
+        assertTrue(!ClusterMath.isWideViewport(700f, 800f), "大竖屏不该进")
+        // 门槛两侧（1.2 附近留浮点余量）
+        assertTrue(ClusterMath.isWideViewport(610f, 500f), "1.22:1 算宽")
+        assertTrue(!ClusterMath.isWideViewport(590f, 500f), "1.18:1 不算宽")
+        // 退化尺寸不崩：高度 0 视为不宽
+        assertTrue(!ClusterMath.isWideViewport(0f, 0f))
+    }
 }

@@ -34,6 +34,22 @@ object ClusterMath {
     /** 低 SOC 阈值（与卡1 低电红同阈值） */
     const val SOC_LOW = 15
 
+    /**
+     * 「明显宽」（横屏形态）的宽高比门槛：宽 ≥ 高 × 1.2。
+     *
+     * 取 1.2 的理由：平板横屏 4:3 = 1.333 必须算宽（iPad 横着用就该进表盘）；
+     * 正方形屏（1.0）与大竖屏（0.875）绝不能算——表盘在那种窗口里只能压成一条 2.4:1 的横带、
+     * 上下各留三分之一空白。手机上这个判据与方向传感器完全等价（手机横屏 ≳1.6）。
+     */
+    const val WIDE_VIEWPORT_RATIO = 1.2f
+
+    /**
+     * 该窗口是不是「明显宽」的横屏形态（见 [WIDE_VIEWPORT_RATIO]）。
+     * 与界面缩放无关：宽高同乘一个缩放系数，比值不变。
+     */
+    fun isWideViewport(width: Float, height: Float): Boolean =
+        height > 0f && width >= height * WIDE_VIEWPORT_RATIO
+
     /** 值 → 盘面角度：sweepAngle(52.5f, 94.5f, 87.87f) = 362.4° */
     fun sweepAngle(min: Float, max: Float, v: Float): Float =
         START_ANGLE + ((v - min) / (max - min)).coerceIn(0f, 1f) * SWEEP

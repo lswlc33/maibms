@@ -213,6 +213,34 @@ object AppStore {
     private const val KEY_CLUSTER_POWER_KW = "cluster.powerKw"
 
     /**
+     * 手动进入仪表视图（横屏表盘）：三端都有入口，不依赖屏幕方向/宽度。
+     *
+     * 落盘：用户明确要的表盘视图属于"长期偏好"（与主题、kW/W、界面大小同类），
+     * 重启后仍按上次的进入；表盘内「退出仪表」会清掉它。
+     * 与之相对，"退出后本段宽窗口不再自动进"那个表态不落盘（见 ui/ClusterMode.kt）。
+     */
+    var clusterForced: Boolean
+        get() = get(KEY_CLUSTER_FORCED) == "1"
+        set(v) = put(KEY_CLUSTER_FORCED, if (v) "1" else "0")
+
+    private const val KEY_CLUSTER_FORCED = "ui.clusterForced"
+
+    // ---- 界面大小（整体缩放） ----
+
+    /**
+     * 界面大小：四档预设 [UI_SCALE_PRESETS]（小 / 标准 / 大 / 特大），默认 1.0。
+     *
+     * 这是**整体缩放**：文字、间距、图标、卡高一起按比例变（不是只改字号），
+     * 由 `BmsTheme` 覆盖 `LocalDensity` 落地（dp 与 sp 同乘，系统字号缩放仍然生效）。
+     * 读写都吸附到最近档位，非法值兜底回标准档。
+     */
+    var uiScale: Float
+        get() = get(KEY_UI_SCALE)?.toFloatOrNull()?.let { nearestUiScale(it) } ?: UI_SCALE_DEFAULT
+        set(v) = put(KEY_UI_SCALE, nearestUiScale(v).toString())
+
+    private const val KEY_UI_SCALE = "ui.scale"
+
+    /**
      * 轮询间隔（ms）：三档预设 [POLL_INTERVAL_PRESETS_MS]（900 / 600 / 300），默认 600。
      * 900 = 更稳更省电（弱信号场景）；300 = 数据最跟手（弱信号下可能丢帧）。
      * 读写都吸附到最近档位；老版本开发者页存过任意值（旧键 `test.pollIntervalMs`），
@@ -275,3 +303,23 @@ const val POLL_INTERVAL_DEFAULT_MS = 600
 /** 任意值吸附到最近的预设档位（并列取靠前的，如 450 → 600）；空列表兜底回默认 */
 internal fun nearestPollPreset(v: Int): Int =
     POLL_INTERVAL_PRESETS_MS.minByOrNull { kotlin.math.abs(it - v) } ?: POLL_INTERVAL_DEFAULT_MS
+
+/* ---------- 界面大小的四档预设 ---------- */
+
+/**
+ * 界面缩放预设：比例 → 档位名；顺序即界面展示顺序。
+ * 档位与安卓系统字号档位同量级（0.85 / 1.0 / 1.15 / 1.3），但作用于**整体**（dp 与 sp 同乘）。
+ */
+val UI_SCALE_PRESETS = listOf(
+    0.85f to "小",
+    1.0f to "标准",
+    1.15f to "大",
+    1.3f to "特大",
+)
+
+/** 默认界面缩放：1.0 = 标准（与系统密度一致，不放大也不缩小） */
+const val UI_SCALE_DEFAULT = 1.0f
+
+/** 任意值吸附到最近的预设档位（并列取靠前的）；非法值/空列表兜底回默认 */
+internal fun nearestUiScale(v: Float): Float =
+    UI_SCALE_PRESETS.minByOrNull { kotlin.math.abs(it.first - v) }?.first ?: UI_SCALE_DEFAULT

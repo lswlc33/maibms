@@ -165,12 +165,19 @@ fun App(
 
             Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
                 BoxWithConstraints(Modifier.fillMaxSize()) {
-            // 横屏表盘（宽屏 Dashboard）不显示底栏，表盘自己的底条取而代之
-            val onCluster = maxWidth >= 600.dp && route == Route.Dashboard
+            // 横屏表盘（仪表视图）不显示底栏，表盘自己的底条取而代之。
+            // 判据是宽高比（不是绝对宽度），见 ClusterMode：正方形屏/大竖屏不进表盘，
+            // 手动「仪表视图」进、表盘内「退出仪表」出（三端都可用）
+            val onCluster = useClusterLayout(maxWidth, maxHeight) && route == Route.Dashboard
             // 有底栏时，滚动内容末尾要留出底栏 + 系统导航栏的高度，否则最后一行被压在底栏下
             val navBarPad = if (isTabRoot && !onCluster) BottomNavHeight else 20.dp
+            // 非表盘态给内容限宽并居中：平板/横屏手机上不再把手机布局拉成"宽扁脸"
+            // （卡片铺满 900dp 时标签与取值被推到屏幕两端、单行卡片拉满全宽）。表盘态铺满整屏
+            val contentModifier = if (onCluster) Modifier.fillMaxSize()
+                else Modifier.fillMaxHeight().widthIn(max = ContentMaxWidth).align(Alignment.TopCenter)
                     // 窗口过渡：压栈/出栈横向滑动，底栏标签之间按左右顺序横移 + 淡入淡出
                     AnimatedContent(
+                        modifier = contentModifier,
                         targetState = route,
                         transitionSpec = {
                             val fromTab = initialState.tabIndex()
@@ -332,6 +339,12 @@ private fun androidx.compose.runtime.snapshots.SnapshotStateList<Route>.pop() {
 /** 底栏占位高度：悬浮条 64dp + 底部外边距 10dp + 系统导航条 + 与内容之间 8dp 气口 */
 val BottomNavHeight: Dp
     @Composable get() = 82.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/**
+ * 非表盘态的内容最大宽度：手机列布局是按 ~400dp 宽设计的，平板/横屏手机上铺满整屏会被拉扁。
+ * 限宽后居中显示（两侧是主题底色），与桌面/平板应用的常规做法一致；表盘态不受此限。
+ */
+val ContentMaxWidth: Dp = 600.dp
 
 /**
  * 悬浮大圆角底栏：左右留 16dp 边、底部让开系统导航条，白卡浮在页面上（带阴影）。

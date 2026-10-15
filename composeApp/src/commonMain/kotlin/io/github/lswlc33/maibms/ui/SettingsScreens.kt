@@ -19,6 +19,7 @@ import androidx.compose.runtime.collectAsState
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.POLL_INTERVAL_PRESETS_MS
+import io.github.lswlc33.maibms.data.UI_SCALE_PRESETS
 import kotlinx.coroutines.launch
 
 /* ---------- S10 设置主页（外观/连接/关于 的设置项平铺在本页，不再进二级页） ---------- */
@@ -75,6 +76,39 @@ fun SettingsHomeScreen(
                 )
             }
             // 深色恒为纯黑（原来的 AMOLED 开关已去掉，默认即纯黑）
+            // 界面大小：整体缩放（dp 与 sp 同乘，文字/间距/图标/卡高一起变），不是只改字号——
+            // 实现是覆盖 LocalDensity（ui/UiScale.kt），选完立刻全界面生效
+            val uiScale = uiScaleState.value
+            SettingRow(
+                title = "界面大小",
+                inlineValue = UI_SCALE_PRESETS.firstOrNull { it.first == uiScale }?.second,
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                UI_SCALE_PRESETS.forEach { (scale, label) ->
+                    val selected = uiScale == scale
+                    Box(
+                        Modifier.weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            .clickable { setUiScale(scale) }
+                            .padding(vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(label, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
+                            color = if (selected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+            Text("整体缩放：文字、间距、图标、卡片高度一起变（不是只改字号）",
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp))
             // UI 预览：内置一张 72114 锂电池的静态快照（特殊快照，不入库），没接板子也能看真实排版
             val previewing by io.github.lswlc33.maibms.data.Bms.repository.previewActive.collectAsState()
             SettingRow(

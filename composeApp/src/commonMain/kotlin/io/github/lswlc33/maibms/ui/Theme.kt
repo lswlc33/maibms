@@ -105,13 +105,17 @@ fun BmsTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    MaterialTheme(
-        colorScheme = if (darkTheme) DarkScheme else LightScheme,
-        shapes = BmsShapes,
-    ) {
-        // M3 的 bodyLarge 行高固定在 24sp，Text 只改 fontSize 时行高不变——13sp 的列表行会被
-        // 撑到 34dp（24 行参数就多出两屏）。这里换成随字号等比缩放的 1.2em，密集列表才能压紧。
-        ProvideTextStyle(TextStyle.Default.copy(lineHeight = 1.2.em)) { content() }
+    // 界面大小（整体缩放）挂在主题上：所有入口（App、离屏截图工具……）都渲染在主题之下，
+    // 改这一处就处处生效，不需要在每个入口各包一层。嵌套调用结果相同，见 ApplyUiScale
+    ApplyUiScale {
+        MaterialTheme(
+            colorScheme = if (darkTheme) DarkScheme else LightScheme,
+            shapes = BmsShapes,
+        ) {
+            // M3 的 bodyLarge 行高固定在 24sp，Text 只改 fontSize 时行高不变——13sp 的列表行会被
+            // 撑到 34dp（24 行参数就多出两屏）。这里换成随字号等比缩放的 1.2em，密集列表才能压紧。
+            ProvideTextStyle(TextStyle.Default.copy(lineHeight = 1.2.em)) { content() }
+        }
     }
 }
 

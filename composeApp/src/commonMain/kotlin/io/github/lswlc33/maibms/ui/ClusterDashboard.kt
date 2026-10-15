@@ -158,10 +158,8 @@ fun ClusterDashboard(
                     useKw = !useKw
                     AppStore.clusterPowerKw = useKw
                 }
-                // 退出回竖屏：只在能锁方向的平台上出现（桌面宽窗口无意义）
-                if (supportsOrientationLock) {
-                    ClusterChip("退出仪表 ✕", u, emphasize = true, onClick = onExit)
-                }
+                // 退出仪表视图：回到卡片列（宽窗口里也退、并保持卡片态；Android 上同时解除锁向）
+                ClusterChip("退出仪表 ✕", u, emphasize = true, onClick = onExit)
             }
             // ---- 三区主视图：16:9 约束（用户定稿）——宽富余按高定宽居中，高富余按宽定高居中；
             //      富余部分只显背景。竖分隔线画满 16:9 盒高（不再通到顶/底条）。
