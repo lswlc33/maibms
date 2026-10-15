@@ -681,8 +681,30 @@ cd unpack
 `DeviceCapabilities.LuXing.voltageDecimals = 1`；单测 `luxing_decodes_bms_data_len90` 改为断言这一帧
 **没有**电压，另加合并层回归 `MeterVoltageSourceTest`（108 → 90 交替三轮，总电压必须恒等于 108 的值）。
 
-> 待真机复核：把导出的日志里 `01 03 6C`（108）与 `01 03 5A`（90）两条原始帧的电压段解出来对比，
-> 即可量出这块硬件上两套测量的实际差值——也就是此前界面跳动的幅度上限。
+> **真机复核已补（2026-10-15，同一块硬件）：** 用户导出的日志里两条原始帧解出来是
+> `systemVoltage = 79.670 V`（108）对 `batTotalVolt = 79.177 V`（90）——**差 0.49 V**，
+> 就是此前界面在两个数之间来回跳的幅度；同帧 `volCalGain1 = 98`、`volCalOffset1 = 0`，
+> 正是官方留给这一路做校准的增益/偏置（108 帧没有对应参数）。
+
+## E.11 陆行电量计的「剩余容量」不是设备上报的（同批复核，2026-10-15）
+
+同一批日志里的 108 实时帧（`01 03 6C`，EM2APP-A581）显示：**额定容量与 `actualCapacity` 两个寄存器
+都是 `0x046A` = 113.0 Ah**，SOC 83%。项目此前拿 `actualCapacity` 当剩余容量 → 界面「剩余容量 113.0 Ah」
+与「总容量 113.0 Ah」永远相等（用户报障）。
+
+| 字段（EM02.js `z`） | 官方用途 | 本项目此前 | 结论 |
+|---|---|---|---|
+| `ratedCapacity = u16/10` | 首页「额定容量」、CSV「额定容量(Ah)」 | `totalCapAh` | ✔ 一致 |
+| `actualCapacity = u16/10` | 只出现在 `sysCfg` 诊断标签里（`pick` 列），**界面与 CSV 都不读** | `remainCapAh` | ✗ 弃用 |
+| 剩余容量（无此字段） | 现算：`(soc/100*ratedCapacity).toFixed(1)`（EM02.js 解析后立即 `remainCapacity = W`，CSV「实际容量(Ah)」列也是它） | —— | ✔ 照官方算 |
+
+本帧 83% × 113.0 = **93.79 Ah**，与这块保护板自己报的剩余容量（ANT 快照里 92.99 Ah）基本吻合，
+也印证了「两个容量寄存器同值」不是偶发：这块硬件上 `actualCapacity` 就没有独立含义。
+
+**本项目据此的改动**：`decodeRealtime` 不再读第二个容量寄存器，`remainCapAh` 改为按官方口径
+`soc × ratedCapacity` 计算（SOC 超 0~100 时夹取，避免设备未初始化时报出假容量）；单测
+`luxing_real_frame_remaining_capacity_is_soc_times_rated` 用上面这帧真机数据钉住 93.79 Ah。
+蓝宝不在此列——它的「剩余容量」是表1 里设备自报的字段，照原样采用。
 
 ---
 

@@ -110,7 +110,7 @@ class MeterProtocolTest {
         u16(0); u16(0)            // 最大充/放电流
         u8(0); u8(0)              // 死区
         u16(1000)                 // 额定容量 /10 → 100.0Ah
-        u16(500)                  // 实际容量 → 50.0Ah
+        u16(500)                  // actualCapacity：官方界面/CSV 都不用，解析层也不采用（见下）
         u8(80)                    // SOC
         u8(100)                   // SOH
         assertEquals(108, i)
@@ -120,7 +120,9 @@ class MeterProtocolTest {
         assertEquals(240, r.power)
         assertEquals(80, r.soc)
         assertEquals(100.0, r.totalCapAh)
-        assertEquals(50.0, r.remainCapAh)
+        // 剩余容量 = SOC × 额定容量（官方 EM02.js `(q/100*j).toFixed(1)`），**不是**帧里的
+        // actualCapacity——真机那个寄存器恒等于额定值，照搬会让「剩余容量」永远等于「总容量」
+        assertEquals(80.0, r.remainCapAh)
         assertEquals(4, r.cells!!.size)
         assertEquals(4.21, r.maxCell)
         assertEquals(4.18, r.minCell)
@@ -208,6 +210,32 @@ class MeterProtocolTest {
     }
 
     // ---- helpers ----
+
+    /**
+     * 真机实录（EM2APP-A581，2026-10-15 19:41，整车静置）：
+     * 额定容量与 actualCapacity 两处**都是 0x046A = 113.0Ah**，SOC 83%。
+     * 官方口径的剩余容量 = 113.0 × 83% = 93.79Ah；若照搬 actualCapacity 就会显示 113.0。
+     */
+    @Test
+    fun luxing_real_frame_remaining_capacity_is_soc_times_rated() {
+        val frame = hexStr(
+            "01 03 6C 14 00 00 00 00 00 00 04 40 40 40 40 00 00 00 00 00 00 40 40 07 00 36 37 01 00 0A 00 00 00 8D 0F 93 0F " +
+            "8E 0F 8E 0F 8E 0F 8F 0F 93 0F 94 0F 8F 0F 8E 0F 8E 0F 90 0F 92 0F 8F 0F 90 0F 8E 0F 8F 0F 8E 0F 8E 0F 93 0F 00 " +
+            "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 07 94 0F 8D 0F 00 00 00 00 00 00 6A 04 6A 04 53 64 " +
+            "96 0F"
+        )
+        val r = LuXingProtocol().onData(frame)!!
+        assertEquals(83, r.soc)
+        val total = r.totalCapAh!!
+        val remain = r.remainCapAh!!
+        assertEquals(113.0, total, 1e-9, "额定容量 0x046A/10")
+        assertEquals(93.79, remain, 1e-9, "剩余容量必须是 SOC×额定容量，不是帧里恒等于额定值的 actualCapacity")
+        assertTrue(remain < total, "车辆静置、SOC 83% 时剩余容量不该等于总容量")
+        assertEquals(79.67, r.totalVoltage!!, 1e-9)
+    }
+
+    private fun hexStr(s: String) =
+        s.trim().split(' ', '\n').filter { it.isNotBlank() }.map { it.toInt(16).toByte() }.toByteArray()
 
     private fun lanbaoFrame(dataNumber: Int, data: ByteArray): ByteArray {
         val head = ByteArray(16)

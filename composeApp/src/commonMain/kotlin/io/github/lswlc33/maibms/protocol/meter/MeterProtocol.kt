@@ -21,6 +21,11 @@ data class MeterReading(
     val power: Int? = null,
     val soc: Int? = null,
     val totalCapAh: Double? = null,
+    /**
+     * 剩余容量（Ah）。**不一定有专用寄存器**：陆行帧里那个 `actualCapacity` 真机恒等于额定值
+     * （照搬会让「剩余容量」永远等于「总容量」），官方是按 `SOC × 额定容量` 算出来显示/导出的，
+     * 所以陆行这一格是算出来的（见 LuXingProtocol.decodeRealtime）；蓝宝是设备自报。
+     */
     val remainCapAh: Double? = null,
     val cycles: Int? = null,
     val battState: String? = null,

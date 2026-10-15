@@ -129,12 +129,26 @@ object MockBms {
     fun captureSnapshot(id: Long, timeLabel: String): BmsSnapshot = BmsSnapshot(
         id = id,
         deviceAddress = savedAddress,
-        deviceName = connectedDeviceName.value ?: "--",
+        deviceName = sessionDeviceName(),
         timeLabel = timeLabel,
         status = _status.value.copy(connected = false),
         liveParams = liveParams.value,
         identity = identity.value,
     )
+
+    /**
+     * 快照上的设备名 = **本机连的那台设备**（电量计就是电量计自己的名字，保护板就是板名）：
+     * 连接时写入的广播名 → 设备档案显示名 → 上次记忆名 → 地址兜底。
+     *
+     * 绝不能取电量计协议里的那些名字：90 帧的 `BoundBmsBtName` 是**被中继的那块保护板**的
+     * 蓝牙名（真机上就是另一台设备的广播名），拿来当快照名会让人以为这记录是那块板建的。
+     */
+    private fun sessionDeviceName(): String {
+        connectedDeviceName.value?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        DeviceProfiles.find(savedAddress)?.displayName?.let { return it }
+        AppStore.savedDeviceName?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        return savedAddress ?: "--"
+    }
 
     /**
      * 载入快照供预览：回填 status/liveParams/identity/设备名。

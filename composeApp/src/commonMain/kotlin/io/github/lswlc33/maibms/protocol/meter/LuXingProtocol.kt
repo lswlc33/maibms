@@ -22,6 +22,8 @@ import io.github.lswlc33.maibms.transport.DeviceFamily
  *
  * **总电压只有一个来源**：108 帧的 `systemVoltage`（电量计自测）。90 帧的 `batTotalVolt` 是
  * 被中继的那块保护板自报的数，官方既不显示也不导出，本项目同样不采用（理由见 [decodeBmsData]）。
+ *
+ * **剩余容量是算出来的**：帧里没有可信的剩余容量寄存器，官方用 `SOC × 额定容量`（见 [decodeRealtime]）。
  */
 class LuXingProtocol : MeterProtocol {
     override val family = DeviceFamily.LuXing
@@ -79,8 +81,8 @@ class LuXingProtocol : MeterProtocol {
         val minVRaw = r.u16()
         r.u16(); r.u16()                         // 最大充/放电流
         r.u8(); r.u8()                           // 电流死区
-        val ratedRaw = r.u16()                   // 0xFFFF = 未上报
-        val actualRaw = r.u16()
+        val ratedRaw = r.u16()                   // 额定容量：0xFFFF = 未上报
+        r.u16()                                  // actualCapacity：不采用（见下）
         val soc = r.u8()
         r.u8()                                   // soh
 
@@ -92,13 +94,18 @@ class LuXingProtocol : MeterProtocol {
             batTemps.take(batTempNum.coerceIn(0, 8)).forEachIndexed { i, t -> add("T${i + 1}" to t.toDouble()) }
         }
         val cur = current ?: 0.0
+        val ratedAh = if (ratedRaw == 0xFFFF) null else ratedRaw / 10.0
         return MeterReading(
             totalVoltage = voltage,
             current = current,
             power = if (powerRaw == 32767) null else powerRaw,
             soc = soc,
-            totalCapAh = if (ratedRaw == 0xFFFF) null else ratedRaw / 10.0,
-            remainCapAh = if (actualRaw == 0xFFFF) null else actualRaw / 10.0,
+            totalCapAh = ratedAh,
+            // 剩余容量官方口径 = SOC × 额定容量（EM02.js：`(q/100*j).toFixed(1)`，q=soc、
+            // j=ratedCapacity）。帧里另一个容量寄存器（actualCapacity）真机实测恒等于额定值
+            // （两处都是 0x046A=113.0Ah），官方界面与 CSV 都不读它——照搬它「剩余容量」会永远
+            // 等于「总容量」。SOC 按名义量程 0..100 夹取：超量程是设备未初始化，不去放大成假容量。
+            remainCapAh = ratedAh?.let { it * soc.coerceIn(0, 100) / 100.0 },
             temps = temps.ifEmpty { null },
             cells = cells.ifEmpty { null },
             maxCell = if (maxVRaw == 0xFFFF) null else maxVRaw / 1000.0,

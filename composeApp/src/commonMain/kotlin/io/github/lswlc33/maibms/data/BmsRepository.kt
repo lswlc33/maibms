@@ -157,6 +157,10 @@ class BmsRepository(
     /** 连后序列协程：换连接 / 主动断开 / 进快照预览都要取消 */
     private var postConnectJob: Job? = null
 
+    /** 电量计会话的快照定时器与本会话是否已安排（见 collector 里的快照挂点） */
+    private var meterSnapshotJob: Job? = null
+    private var meterSnapshotScheduled = false
+
     fun start() {
         // 幂等守卫：MaibmsApp.onCreate 与 App() 的 LaunchedEffect 都会调 start()，
         // 只允许第一套收集器/自动重连生效——曾因守卫字段从未赋值而双跑，
@@ -227,6 +231,18 @@ class BmsRepository(
                         lastFrameAt = epochMillisNow()
                         MockBms.applyMeterReading(rd)
                         MockBms.connected.value = true
+                        // 快照挂点：保护板那边挂在「参数区读回完成」之后，电量计没有参数区，
+                        // 一次完整同步 = 一拍 4 条应答都到齐，所以收到第一帧带总电压的读数后
+                        // 稍等一拍内剩余应答落地再冻结（见 METER_SNAPSHOT_SETTLE_MS）。
+                        // 名字取连接设备的名称（见 captureSnapshot），不用中继保护板的名字。
+                        // 若某型号始终不报总电压，还有主动断开时的那张兜底快照（见 disconnect）。
+                        if (!meterSnapshotScheduled && rd.totalVoltage != null) {
+                            meterSnapshotScheduled = true
+                            meterSnapshotJob = scope.launch {
+                                delay(METER_SNAPSHOT_SETTLE_MS)
+                                if (sessionSnapshotId == 0L) recordSnapshot()
+                            }
+                        }
                     } else {
                         // 未识别（如匹配码错误/异常帧）：记 DEBUG，便于对照
                         BmsLog.d("METER", "未识别帧(${bytes.size}B) ${BmsLog.hex(bytes.take(24).toByteArray())}")
@@ -339,6 +355,9 @@ class BmsRepository(
         autoUpgraded = false
         paramsAttempted = false
         sessionSnapshotId = 0L   // 新连接 = 新快照（旧快照保留在库里，不删）
+        meterSnapshotJob?.cancel()
+        meterSnapshotJob = null
+        meterSnapshotScheduled = false
         MockBms.applyPermission(0)
         MockBms.clearForRealDevice()
     }
@@ -606,6 +625,7 @@ class BmsRepository(
     suspend fun disconnect() {
         // 兜底快照：本会话见过实时数据但参数区一直没读成（如权限卡在 0 级），
         // 趁状态还在先补一张仅实时帧的快照，别让这次连接什么都不留
+        meterSnapshotJob?.cancel(); meterSnapshotJob = null
         if (lastFrameAt > 0 && sessionSnapshotId == 0L) recordSnapshot()
         BmsLog.i("CONN", "主动断开连接")
         manualDisconnect.value = true
@@ -769,6 +789,12 @@ class BmsRepository(
         const val RE_AUTH_COOLDOWN_MS = 60_000L
         /** 等 0x42 同帧的 0xFF 结果段落地（真机弱信号下两段可能差数百毫秒，取文档建议值） */
         const val WRITE_STATUS_GRACE_MS = 200L
+        /**
+         * 电量计会话的快照延迟：一拍 4 条命令是背靠背发出去的，中继信息帧（90）、循环帧（96）
+         * 就落在同一个拍里。收到第一帧带电压的读数后再等这么久，快照才是一次完整的同步结果。
+         * 取值远小于 600ms 轮询间隔，不会跨到下一拍。
+         */
+        const val METER_SNAPSHOT_SETTLE_MS = 300L
     }
 
     private suspend fun handleFrame(f: ParsedFrame) {
