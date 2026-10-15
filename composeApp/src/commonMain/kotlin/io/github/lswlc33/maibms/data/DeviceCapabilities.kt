@@ -30,6 +30,14 @@ data class DeviceCapabilities(
     val controlBalance: Boolean = true,
     /** 逐串单体最多支持的串数（0 = 不支持逐串） */
     val maxCells: Int = 32,
+    /**
+     * 总电压的显示小数位。
+     *
+     * 跟官方走：蚂蚁保护板与蓝宝官方都按 2 位小数显示（蓝宝 `Total_Voltage` 表项
+     * `decimalPlaces:2`），**陆行 EM02 官方首页是 1 位**（`(systemVoltage/1e3).toFixed(1)`）——
+     * 电量计自测电压的末位本来就有几十毫伏的测量噪声，多显示一位只是让数字一直抖。
+     */
+    val voltageDecimals: Int = 2,
 ) {
     companion object {
         /** 蚂蚁保护板：全能力（与现状一致） */
@@ -49,6 +57,7 @@ data class DeviceCapabilities(
             perCellVoltage = true, multiTemp = true, extTimes = false,
             permission = false, controlCharge = false, controlDischarge = false,
             controlBalance = false, maxCells = 30,
+            voltageDecimals = 1,   // 官方首页 `(systemVoltage/1e3).toFixed(1)`
         )
 
         fun forFamily(f: DeviceFamily): DeviceCapabilities = when (f) {

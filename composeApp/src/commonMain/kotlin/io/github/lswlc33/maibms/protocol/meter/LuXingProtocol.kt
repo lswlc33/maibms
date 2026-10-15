@@ -19,6 +19,9 @@ import io.github.lswlc33.maibms.transport.DeviceFamily
  *
  * 字段偏移取自 EM02.js 的三个解析函数（`z`/`K`/`$`），均为**小端**；量纲按官方换算
  * （电压 `/1000`、电流 `/100`、容量 `/10`、单体 `/1000`）。CRC 已用官方 4 帧逐条核对通过。
+ *
+ * **总电压只有一个来源**：108 帧的 `systemVoltage`（电量计自测）。90 帧的 `batTotalVolt` 是
+ * 被中继的那块保护板自报的数，官方既不显示也不导出，本项目同样不采用（理由见 [decodeBmsData]）。
  */
 class LuXingProtocol : MeterProtocol {
     override val family = DeviceFamily.LuXing
@@ -50,7 +53,7 @@ class LuXingProtocol : MeterProtocol {
         }
     }
 
-    /** len=108：实时数据（EM02.js `z`） */
+    /** len=108：实时数据（EM02.js `z`）——界面上的总电压/电流/功率/SOC/单体都出自这一帧 */
     private fun decodeRealtime(f: ByteArray): MeterReading {
         val r = LeReader(f, 3)
         val cellNum = r.u8()
@@ -108,7 +111,14 @@ class LuXingProtocol : MeterProtocol {
         )
     }
 
-    /** len=90：BMS 数据（EM02.js `K`）——绑定/连接状态 + 中继的保护板品牌/名称/MAC */
+    /**
+     * len=90：BMS 数据（EM02.js `K`）——绑定/连接状态 + 中继的保护板品牌/名称/MAC。
+     *
+     * **电压不在这一帧取**：`batTotalVolt` 是**中继那块保护板自报**的电压，和 108 实时帧里
+     * 电量计自测的 `systemVoltage` 是两套测量（90 帧里专门给了 `volCalGain1/volCalOffset1`
+     * 给这一路做校准）。官方小程序首页与 CSV 的「总电压」都只认 108 帧——这帧的电压既没被
+     * 绑定到界面、也没进导出。真机反馈：两者都写进总电压时，静止的车电压也会来回跳。
+     */
     private fun decodeBmsData(f: ByteArray): MeterReading {
         val r = LeReader(f, 3)
         r.u8()                                   // bmsBound
@@ -117,7 +127,7 @@ class LuXingProtocol : MeterProtocol {
         r.u16(); r.u16()                         // hallRPM / hallSpeed
         r.u16(); r.u16()                         // tempIn / ntcTemp
         r.u16(); r.u16()                         // volCalGain1 / volCalOffset1
-        val batTotalVolt = r.u32()
+        r.u32()                                  // batTotalVolt：中继板自报电压，不采用（见上）
         r.u8()                                   // localSoc
         r.u8()                                   // skip
         r.u16()                                  // localcap
@@ -126,10 +136,8 @@ class LuXingProtocol : MeterProtocol {
         val vendorId = r.u8()
         val name = r.ascii(33)
         val mac = r.mac(6)
-        val voltage = if (batTotalVolt == 0xFFFFFFFFL) null else batTotalVolt / 1000.0
         return MeterReading(
-            deviceName = name.takeIf { it.isNotBlank() },
-            totalVoltage = voltage,
+            relayBoardName = name.takeIf { it.isNotBlank() },
             relayBoardBrand = vendorName(vendorId),
             relayBoardMac = mac,
         )

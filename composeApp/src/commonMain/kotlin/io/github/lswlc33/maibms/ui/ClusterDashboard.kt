@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.Bms
 import io.github.lswlc33.maibms.data.BmsStatus
+import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtRemainingMin
 import kotlin.math.cos
@@ -92,6 +93,8 @@ fun ClusterDashboard(
     var useKw by remember { mutableStateOf(AppStore.clusterPowerKw) }
     val link by Bms.repository.linkState.collectAsState()
     val stalled by Bms.repository.stalled.collectAsState()
+    // 电压小数位按家族能力位（陆行官方 1 位、保护板/蓝宝 2 位），与竖屏大卡同一口径
+    val voltsDecimals = MockBms.caps.collectAsState().value.voltageDecimals
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
     val linkLost = connected && stalled
     // 沉浸：表盘在组合期间隐藏状态栏+手势条（边缘滑动临时呼出），离开表盘自动恢复
@@ -174,7 +177,7 @@ fun ClusterDashboard(
                     Modifier.width(innerW).height(innerH).align(Alignment.Center)
                 ) {
                     Row(Modifier.fillMaxSize()) {
-                        ClusterGaugeV(status, Modifier.weight(1.08f).fillMaxHeight(), u)
+                        ClusterGaugeV(status, Modifier.weight(1.08f).fillMaxHeight(), u, voltsDecimals)
                         ClusterMidColumn(
                             status, connected, linkLost,
                             Modifier.weight(1.18f).fillMaxHeight()
@@ -329,7 +332,7 @@ private fun ClusterLed(label: String, u: Dp, color: Color, on: Boolean) {
 
 /** 左盘 · 总电压：量程 串数×2.5~4.5V，红区>过充、琥珀区<过放压在填充之上 */
 @Composable
-private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: Dp) {
+private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: Dp, voltsDecimals: Int = 2) {
     val textMeasurer = rememberTextMeasurer()
     val hasData = status.hasData
     val cellCount = status.cells.size.coerceAtLeast(1)
@@ -357,7 +360,7 @@ private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: D
         dialTicks(cx, cy, ClusterMath.ticksV(range), range, r, zeroBold = false)
         // 盘心数字
         drawCenterText(
-            textMeasurer, if (hasData) "%.2f".fmt(fillV) else "--", "总电压 V",
+            textMeasurer, if (hasData) "%.${voltsDecimals}f".fmt(fillV) else "--", "总电压 V",
             cx, cy, r, u,
         )
     }

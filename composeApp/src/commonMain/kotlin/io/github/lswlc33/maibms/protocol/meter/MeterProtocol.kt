@@ -8,7 +8,14 @@ import io.github.lswlc33.maibms.transport.DeviceFamily
  * 这些字段是各家电量计协议的解码结果，统一喂给 [io.github.lswlc33.maibms.data.MockBms]。
  */
 data class MeterReading(
-    val deviceName: String? = null,
+    /**
+     * 总电压（V）——**只能由电量计自测的那一帧提供**。
+     *
+     * 两家电量计都能同时拿到"自己测的电压"和"被中继保护板自报的电压"，这是两套测量，
+     * 数值本来就不一致（陆行 90 帧里专设 `volCalGain1/volCalOffset1` 给中继那一路做校准）。
+     * 一旦两个来源都往这个字段写，界面（600ms 一拍写两次）就会在两个值之间来回跳——
+     * 官方小程序首页的「电压」只绑 108 实时帧的 `systemVoltage`，CSV 的「总电压(V)」列同样是它。
+     */
     val totalVoltage: Double? = null,
     val current: Double? = null,
     val power: Int? = null,
@@ -31,14 +38,23 @@ data class MeterReading(
     val remainDischargeMin: Int? = null,
     /** 被中继的保护板品牌（如"蚂蚁保护板"）；两家电量计都能报 */
     val relayBoardBrand: String? = null,
+    /**
+     * 被中继的保护板的蓝牙名（陆行 90 帧 `BoundBmsBtName`、蓝宝表1 `boundDeviceName`）。
+     *
+     * **不是本机的设备名**：官方把这两个字段都算作"中继的那块板"的信息（陆行 CSV 里叫
+     * 「电池蓝牙名」列），设备自己的名字来自广告名/设备信息帧。所以它只喂「中继信息卡」，
+     * 绝不能进 `BmsStatus.deviceName`——否则大卡上显示的是另一台设备的名称。
+     */
+    val relayBoardName: String? = null,
     /** 被中继的保护板的 MAC（蓝宝可报；陆行可能无） */
     val relayBoardMac: String? = null,
 ) {
     val isEmpty: Boolean
         get() = listOfNotNull(
-            deviceName, totalVoltage, current, power, soc, totalCapAh, remainCapAh, cycles,
+            totalVoltage, current, power, soc, totalCapAh, remainCapAh, cycles,
             battState, chMos, disMos, balancing, temps, cells, maxCell, minCell, avgCell,
-            deltaCell, remainChargeMin, remainDischargeMin, relayBoardBrand, relayBoardMac,
+            deltaCell, remainChargeMin, remainDischargeMin, relayBoardBrand, relayBoardName,
+            relayBoardMac,
         ).isEmpty()
 }
 

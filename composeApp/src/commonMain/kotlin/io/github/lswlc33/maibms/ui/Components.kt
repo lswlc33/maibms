@@ -354,7 +354,8 @@ fun BatteryCard(
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        if (status.hasData) "%.2f".fmt(status.totalVoltage) else "--",
+                        // 小数位跟家族能力位走（陆行官方只显示 1 位，末位测量噪声不再抖）
+                        if (status.hasData) "%.${caps.voltageDecimals}f".fmt(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -437,10 +438,10 @@ fun SmallChip(text: String) {
  * 中继信息卡（仅电量计模式显示）。
  *
  * **标题 = 当前电量计品牌**（如"陆行电量计"/"蓝宝电量计"）——这样连上电量计后一眼能看出是哪家的模块；
- * 内容 = 它正在中继的保护板品牌 / MAC（蓝宝可报品牌+MAC，陆行能报品牌+MAC）。
+ * 内容 = 它正在中继的保护板：品牌 / 名称 / MAC（两家电量计这三个字段都出自"中继"这一路，见 [MeterReading.relayBoardName]）。
  */
 @Composable
-fun RelayBoardCard(meterLabel: String, brand: String, mac: String, modifier: Modifier = Modifier) {
+fun RelayBoardCard(meterLabel: String, brand: String, name: String, mac: String, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text(meterLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -451,6 +452,15 @@ fun RelayBoardCard(meterLabel: String, brand: String, mac: String, modifier: Mod
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("中继保护板", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
             Text(brand, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+        }
+        Spacer(Modifier.height(2.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("名称", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
+            // 中继板广播名最长 25 字节（蓝宝/陆行同规格）：超出卡片宽度时截断，不撑破布局
+            Text(
+                name, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
+            )
         }
         Spacer(Modifier.height(2.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

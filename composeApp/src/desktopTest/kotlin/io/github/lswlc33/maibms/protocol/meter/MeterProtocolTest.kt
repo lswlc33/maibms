@@ -41,6 +41,8 @@ class MeterProtocolTest {
         putBE(data, 86, 2, 20)
         data[50] = 2
         listOf(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33).forEachIndexed { i, v -> data[51 + i] = v.toByte() }
+        // 57 = 表1「名称」：被中继保护板的蓝牙名（不是本机设备名，见 MeterReading.relayBoardName）
+        "LB-PACK".forEachIndexed { i, c -> data[57 + i] = c.code.toByte() }
         val r = p.onData(lanbaoFrame(1, data))!!
         assertEquals(48.0, r.totalVoltage)
         assertEquals(5.0, r.current)
@@ -50,6 +52,7 @@ class MeterProtocolTest {
         assertEquals(4.18, r.minCell)
         assertEquals(0.02, r.deltaCell)
         assertEquals("彦阳保护板", r.relayBoardBrand)
+        assertEquals("LB-PACK", r.relayBoardName)
         assertEquals("AA:BB:CC:11:22:33", r.relayBoardMac)
     }
 
@@ -175,7 +178,7 @@ class MeterProtocolTest {
         u16(0); u16(0)            // rpm/speed
         u16(0); u16(0)            // tempIn/ntc
         u16(0); u16(0)            // cal
-        u32(48000)                // 总压 mV → 48.0V
+        u32(48000)                // 中继板自报 48.0V——**不采用**（见下）
         u8(0); u8(0)              // localSoc/skip
         u16(0)                    // localcap
         u8(0); u8(0)              // localCellNum/BatType
@@ -185,10 +188,12 @@ class MeterProtocolTest {
         listOf(0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33).forEach { u8(it) }
         assertEquals(90, i)
         val r = p.onData(modbusResp(d))!!
-        assertEquals(48.0, r.totalVoltage)
+        // 总电压只认 108 实时帧：90 帧的 batTotalVolt 是中继那块保护板自报的数，
+        // 两套测量不一致，写进去会让界面在 600ms 一拍里来回跳（官方首页/CSV 也都不用这一路）
+        assertNull(r.totalVoltage)
         assertEquals("蚂蚁保护板", r.relayBoardBrand)
         assertEquals("AA:BB:CC:11:22:33", r.relayBoardMac)
-        assertEquals("ANT-BLE", r.deviceName)
+        assertEquals("ANT-BLE", r.relayBoardName)
     }
 
     // ---- 家族/能力 ----

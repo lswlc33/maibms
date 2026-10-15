@@ -147,9 +147,9 @@ fun DashboardScreen(
                     linkLost ->
                         InfoBanner("设备失联：链路仍在但收不到数据，请靠近电池或检查干扰（以下为最后数据）", kind = "err")
                 }
-                // 电量计模式：显示这台中继器正在中继哪块保护板（品牌/MAC）
-                if (status.relayBoardBrand != "--" || status.relayBoardMac != "--") {
-                    RelayBoardCard(family.label, status.relayBoardBrand, status.relayBoardMac)
+                // 电量计模式：显示这台中继器正在中继哪块保护板（品牌/名称/MAC）
+                if (status.relayBoardBrand != "--" || status.relayBoardName != "--" || status.relayBoardMac != "--") {
+                    RelayBoardCard(family.label, status.relayBoardBrand, status.relayBoardName, status.relayBoardMac)
                 }
             }
             Column(

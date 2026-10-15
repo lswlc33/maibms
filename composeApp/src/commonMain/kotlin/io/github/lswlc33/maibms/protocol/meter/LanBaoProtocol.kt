@@ -85,11 +85,10 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
         val hiCell = raw(d, 82, 2) / 1000.0                // highestVoltage (dec 3)
         val loCell = raw(d, 84, 2) / 1000.0                // lowestVoltage
         val diff = raw(d, 86, 2) / 1000.0                  // voltageDifference
-        val boundName = ascii(d, 57, 25)                   // 被中继保护板的蓝牙名
+        val boundName = ascii(d, 57, 25)                   // 被中继保护板的蓝牙名（官方字段名「名称」）
         val boardBrand = boardBrandName(raw(d, 50, 1))     // 电池保护板类型
         val boardMac = macString(d, 51, 6)                 // 被中继保护板的 MAC
         return MeterReading(
-            deviceName = boundName.takeIf { it.isNotBlank() },
             totalVoltage = voltage,
             current = current,
             power = power,
@@ -105,6 +104,8 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
                 else -> "静置"
             },
             relayBoardBrand = boardBrand,
+            // 「名称」是中继那块板的名字，不是本机设备名（官方视图层不引用这个字段）→ 只进中继卡
+            relayBoardName = boundName.takeIf { it.isNotBlank() },
             relayBoardMac = boardMac,
         )
     }

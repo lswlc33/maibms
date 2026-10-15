@@ -57,6 +57,8 @@ data class BmsStatus(
     val trendVolt: List<Float> = emptyList(),
     /** 电量计中继的保护板品牌（如"蚂蚁保护板"）；保护板直连/未知 = "--" */
     val relayBoardBrand: String = "--",
+    /** 电量计中继的保护板的蓝牙名（不是本机的设备名，见 MeterReading.relayBoardName）；未知 = "--" */
+    val relayBoardName: String = "--",
     /** 电量计中继的保护板 MAC；未知 = "--" */
     val relayBoardMac: String = "--",
 )
@@ -311,7 +313,9 @@ object MockBms {
         _status.value = cur.copy(
             hasData = true,
             connected = true,
-            deviceName = r.deviceName ?: cur.deviceName,
+            // 本机设备名走 BLE 名/设备档案（与保护板路径 updateFromRealtime 同一口径）：
+            // 电量计协议里能读到的名字是"被中继那块板"的，不能当本机设备名（见 MeterReading）
+            deviceName = connectedDeviceName.value ?: cur.deviceName,
             totalVoltage = r.totalVoltage ?: cur.totalVoltage,
             current = r.current ?: cur.current,
             power = r.power ?: cur.power,
@@ -332,6 +336,7 @@ object MockBms {
             remainChargeMin = r.remainChargeMin ?: cur.remainChargeMin,
             remainDischargeMin = r.remainDischargeMin ?: cur.remainDischargeMin,
             relayBoardBrand = r.relayBoardBrand ?: cur.relayBoardBrand,
+            relayBoardName = r.relayBoardName ?: cur.relayBoardName,
             relayBoardMac = r.relayBoardMac ?: cur.relayBoardMac,
             trendCurrent = norm(histCurr.toList(), includeZero = true),
             trendVolt = norm(histVolt.toList(), includeZero = false),

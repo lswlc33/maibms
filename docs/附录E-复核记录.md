@@ -649,6 +649,41 @@ cd unpack
 > 上述文案键与判据均存在于本地解包的新版 `wxe7b6244f6461fc6c`。
 > 若拿到更新版本的小程序包，可比对这几个键是否变化。
 
+## E.10 陆行电量计的「总电压」数据源（定向复核，2026-10-15）
+
+起因：iOS 用户报障「陆行模块连上后车辆静止、电压却一直跳」。逐字节核对官方 EM02 小程序
+（`pages/mianEM02/EM02/EM02.js` 的三个解析函数 `z`/`K`/`$`，加上编译后的视图层 `chunk_78.webview.js`）
+后确认：**官方只有一个总电压来源，本项目此前把两个来源并成了同一个字段**。
+
+| 来源 | 官方字段（EM02.js） | 官方在哪里用到 | 结论 |
+|---|---|---|---|
+| 108 实时帧 `4092/54` | `systemVoltage`：先读 u16 `s`、再读 u16 `r`，拼 `r<<16\|s`（小端 u32）÷1000 | 首页「电压」绑定 `receivedData1.systemVoltage`（视图层 4 处，全部是 `receivedData1`）；CSV `buildCSVRow` 的「总电压(V)」列 = `a.systemVoltage`（`a = receivedData1`） | ✔ 总电压的**唯一**来源 |
+| 90 BMS 帧 `4200/45` | `batTotalVolt`（u32 小端）÷1000；同帧还带 `volCalGain1`/`volCalOffset1`——专给这一路做校准的增益/偏置 | 视图层 `receivedData2.systemVoltage` 出现 **0 次**；CSV 里这一帧只贡献 绑定/连接状态、BMS 类型、电池蓝牙名、MAC、数据来源 | ✗ 官方既不显示也不导出 |
+
+两条支撑结论：
+
+- 90 帧的 `bmsConnected`（0=本地数据 / 1=蓝牙数据 / 2=监听数据）说明这一帧的电压可能来自中继板自己或
+  监听；官方在 `bmsConnected === 0` 时把数据源标成「本地数据」，而「本地」的电压就是 108 帧那个。
+  本项目此前不看这个判据，也不把 `batTotalVolt == 0` 当无效值。
+- 小数位：官方首页对电量计电压是 `(systemVoltage/1e3).toFixed(1)`（**1 位**）；蓝宝官方表项
+  `Total_Voltage` 为 `decimalPlaces:2`（2 位）。本项目现按家族取：陆行 1 位，保护板/蓝宝 2 位。
+
+顺带核到「名称」字段的同类混淆（一并修正）：
+
+| 帧/表 | 字段 | 官方用途 | 结论 |
+|---|---|---|---|
+| 陆行 90 帧 | `BoundBmsBtName`（33 字节 ASCII） | CSV 的「电池蓝牙名」列——**被中继那块电池**的名字 | 不是本机设备名 |
+| 蓝宝表1（偏移 57） | `boundDeviceName`（25 字节，字段 title「名称」） | 视图层 0 引用 | 同上 |
+
+**本项目据此的改动**：90 帧不再写 `MeterReading.totalVoltage`（字段文档改为"只能由电量计自测帧提供"）；
+两家的「名称」改喂新增的 `MeterReading.relayBoardName` → 中继信息卡新增「名称」行；
+`BmsStatus.deviceName` 回到广播名/设备档案口径（与保护板路径 `updateFromRealtime` 一致）；
+`DeviceCapabilities.LuXing.voltageDecimals = 1`；单测 `luxing_decodes_bms_data_len90` 改为断言这一帧
+**没有**电压，另加合并层回归 `MeterVoltageSourceTest`（108 → 90 交替三轮，总电压必须恒等于 108 的值）。
+
+> 待真机复核：把导出的日志里 `01 03 6C`（108）与 `01 03 5A`（90）两条原始帧的电压段解出来对比，
+> 即可量出这块硬件上两套测量的实际差值——也就是此前界面跳动的幅度上限。
+
 ---
 
 **上一章** ← [附录 D 样例报文](附录D-样例报文.md)　|　**返回目录** → [README](README.md)
