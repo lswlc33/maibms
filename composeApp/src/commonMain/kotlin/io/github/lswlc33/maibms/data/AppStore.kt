@@ -166,6 +166,21 @@ object AppStore {
         get() = get(KEY_THEME) ?: "system"
         set(v) = put(KEY_THEME, v)
 
+    /**
+     * 中继信息卡（仅电量计模式）是否已收起，默认**展开**。
+     *
+     * 这张卡说的是"本机这台电量计正在中继哪块保护板"，属于连上后看一眼就够的信息，
+     * 却常驻在卡1 下方、跟着固定头部不随列表滚动，一直白占着几行。收起后卡1 右上角留一枚
+     * 「中继信息」小标（点卡1 或点小标都重新展开）。
+     * 落盘理由：用户既然嫌它占地方，这份表态就该跨重启有效——不落盘的话每次冷启动
+     * （Android 退后台被回收也算）都会自己弹回来，等于每天要重新收一次。
+     */
+    var relayCardCollapsed: Boolean
+        get() = get(KEY_RELAY_COLLAPSED) == "1"
+        set(v) = put(KEY_RELAY_COLLAPSED, if (v) "1" else "0")
+
+    private const val KEY_RELAY_COLLAPSED = "ui.relayCardCollapsed"
+
     // ---- 开发者日志偏好（BmsLog 启动时读回，设置页修改即落盘） ----
 
     /** 帧级日志（TX/RX 报文）开关 */

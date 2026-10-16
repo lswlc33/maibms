@@ -76,6 +76,14 @@ data class BmsStatus(
     val relayBoardMac: String = "--",
 )
 
+/**
+ * 是否已报到中继信息（品牌/名称/MAC 任一非 "--"）——**中继信息卡**与卡1 上的展开小标共用这一条判据：
+ * 两处各写一遍，迟早会出现"卡没了、小标还挂着"（或反过来）这类不一致。
+ * 只有电量计（中继器）会填这三个字段，保护板直连恒为 "--"。
+ */
+val BmsStatus.hasRelayInfo: Boolean
+    get() = relayBoardBrand != "--" || relayBoardName != "--" || relayBoardMac != "--"
+
 /** 参数条目（配置页） */
 data class ParamItem(
     val name: String,

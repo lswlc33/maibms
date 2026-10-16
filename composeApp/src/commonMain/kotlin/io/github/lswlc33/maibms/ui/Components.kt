@@ -94,6 +94,8 @@ fun SectionCard(
     modifier: Modifier = Modifier,
     /** 四边统一的内距；条目少的稀疏页面可以整体调大，但不要只调某一个方向 */
     padding: Dp = CardPadding,
+    /** 整卡点击（如中继信息卡点一下收起）；点击层在 clip/background **之后**，水波纹才跟着圆角走 */
+    onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(
@@ -102,6 +104,7 @@ fun SectionCard(
             .clip(CardShape)
             // 无描边扁平卡：靠底色与页面背景的明度差分块（截图风格）
             .background(MaterialTheme.colorScheme.surface)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
             .padding(padding)
     ) { content() }
 }
@@ -301,6 +304,10 @@ fun BatteryCard(
     /** 右下角连接态文案；null=按数据自行推断（兼容旧调用） */
     connLabel: String? = null,
     onPermClick: () -> Unit = {},
+    /** 电量计模式：中继信息卡**已收起**时给的右上角小标文案（「中继信息」）；null=不显示 */
+    collapsedRelayHint: String? = null,
+    /** 整卡点击（点卡1 展开被收起的中继信息卡）；null=卡面不可点 */
+    onClick: (() -> Unit)? = null,
 ) {
     // 填充色 = 电量进度色，未填充部分用同色淡底（截图里的「绿 + 淡绿」进度背景），不再是空卡底
     // 未连接/无数据时用中性灰：真实 0% 才是低电红，别让空态看着像报警
@@ -337,6 +344,9 @@ fun BatteryCard(
             .fillMaxWidth()
             .clip(CardShape)          // 无描边扁平卡，圆角 20dp
             .background(track)
+            // 卡面点击（电量计模式：展开被收起的中继信息卡）放在底色之后，
+            // 一碰整张卡就有反应；卡内的权限小标自带点击，命中它时不会落到这里
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
     ) {
         // 电量填充（左=有电，右=空电）：父级 clip 已把右缘裁直，与截图一致
         Box(Modifier.matchParentSize()) {
@@ -402,6 +412,22 @@ fun BatteryCard(
                     Text("权限 " + status.permissionLevel.toString() + " 级", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Text("▾", fontSize = 7.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 2.dp))
                 }
+                // 中继信息卡已收起时的小标：告诉用户"还有一块信息在这儿"，点整张卡（或点它）重新展开。
+                // 与权限小标同款外形（白底 + 主色字）——右上角这个位置本来就表示"点得动的小入口"
+                collapsedRelayHint?.let { hint ->
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 9.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            hint + " ▾",
+                            fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
                 Box(
                     Modifier
                         .clip(RoundedCornerShape(99.dp))
@@ -439,14 +465,24 @@ fun SmallChip(text: String) {
  *
  * **标题 = 当前电量计品牌**（如"陆行电量计"/"蓝宝电量计"）——这样连上电量计后一眼能看出是哪家的模块；
  * 内容 = 它正在中继的保护板：品牌 / 名称 / MAC（两家电量计这三个字段都出自"中继"这一路，见 [MeterReading.relayBoardName]）。
+ *
+ * **点整张卡收起**（行尾写着「收起」）：这是一张"看一眼就够"的信息卡，看完了不该继续占着地方。
+ * 收起 = 向上收进卡1（见 DashboardScreen 的收起动画），之后由卡1 右上角的小标重新展开。
  */
 @Composable
-fun RelayBoardCard(meterLabel: String, brand: String, name: String, mac: String, modifier: Modifier = Modifier) {
-    SectionCard(modifier) {
+fun RelayBoardCard(
+    meterLabel: String, brand: String, name: String, mac: String,
+    modifier: Modifier = Modifier,
+    onCollapse: () -> Unit = {},
+) {
+    SectionCard(modifier, onClick = onCollapse) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text(meterLabel, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.weight(1f))
             SmallChip("电量计中继")
+            Spacer(Modifier.width(7.dp))
+            // 收起入口的文案提示（不收字形的坑：这里只写字，不用 ▲/▴ 这类未在本项目出现过的字形）
+            Text("收起", fontSize = 9.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         }
         Spacer(Modifier.height(4.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {

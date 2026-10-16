@@ -1,5 +1,12 @@
 package io.github.lswlc33.maibms.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -18,10 +25,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.StartupTrace
 import io.github.lswlc33.maibms.data.fmt
+import io.github.lswlc33.maibms.data.hasRelayInfo
 import kotlinx.coroutines.launch
 
 /**
@@ -71,6 +80,13 @@ fun DashboardScreen(
     val scope = rememberCoroutineScope()
     /** 权限不够时点控制按钮的一次性说明（点掉即清） */
     var permDenied by remember { mutableStateOf<String?>(null) }
+    // 中继信息卡（电量计模式）收起/展开：内存态管本次显示，AppStore 落盘管下次启动
+    var relayCollapsed by remember { mutableStateOf(AppStore.relayCardCollapsed) }
+    fun setRelayCollapsed(v: Boolean) {
+        relayCollapsed = v
+        AppStore.relayCardCollapsed = v
+    }
+    val expandRelayCard: () -> Unit = { setRelayCollapsed(false) }
 
     /** 链路三态：正常 / 失联（GATT 在但数据停流）/ 断开（含未连接、连接中失败） */
     val linkLost = link == io.github.lswlc33.maibms.transport.LinkState.Connected && stalled
@@ -114,6 +130,11 @@ fun DashboardScreen(
                     }
                 }
             }
+            // 中继信息卡（电量计模式）的两态都从这一条判据出：品牌/名称/MAC 任一报到才算有这张卡；
+            // 收起时它不在场，改由卡1 右上角的小标代表它
+            val hasRelay = status.hasRelayInfo
+            val relayVisible = hasRelay && !relayCollapsed
+            val relayFolded = hasRelay && relayCollapsed
             // 卡1：电池大卡置顶固定（用户要求：始终显示，不随列表滚动）
             Column(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp),
@@ -129,6 +150,10 @@ fun DashboardScreen(
                         else -> "未连接"
                     },
                     onPermClick = onOpenPerm,
+                    // 中继信息卡收起后，卡1 右上角留一枚小标说明"信息在这儿"，点整张卡重新展开。
+                    // 非收起态不挂点击：不然随手点一下卡1 就把信息收掉了，反而像点坏了
+                    collapsedRelayHint = "中继信息".takeIf { relayFolded },
+                    onClick = if (relayFolded) expandRelayCard else null,
                 )
                 // 链路状态横幅也跟着固定：它是卡1状态的直接延续，不该滚走
                 when {
@@ -148,9 +173,21 @@ fun DashboardScreen(
                     linkLost ->
                         InfoBanner("设备失联：链路仍在但收不到数据，请靠近电池或检查干扰（以下为最后数据）", kind = "err")
                 }
-                // 电量计模式：显示这台中继器正在中继哪块保护板（品牌/名称/MAC）
-                if (status.relayBoardBrand != "--" || status.relayBoardName != "--" || status.relayBoardMac != "--") {
-                    RelayBoardCard(family.label, status.relayBoardBrand, status.relayBoardName, status.relayBoardMac)
+            }
+            // 电量计模式：这台中继器正在中继哪块保护板（品牌/名称/MAC）。
+            // **单独一块、不再塞进上面的固定头部**：收起动画要连它上方的 8dp 间距一起收掉，
+            // 否则动画结束时（高度归零那一帧）剩下的那段空隙会突然消失，下面整片内容会跳一下。
+            // 展开时它仍在固定头部下方、不随列表滚动——连带间距与原先完全一致。
+            AnimatedVisibility(
+                visible = relayVisible,
+                enter = expandVertically(tween(200, easing = FastOutSlowInEasing)) + fadeIn(tween(160)),
+                exit = shrinkVertically(tween(200, easing = FastOutSlowInEasing)) + fadeOut(tween(120)),
+            ) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 8.dp)) {
+                    RelayBoardCard(
+                        family.label, status.relayBoardBrand, status.relayBoardName, status.relayBoardMac,
+                        onCollapse = { setRelayCollapsed(true) },
+                    )
                 }
             }
             Column(
