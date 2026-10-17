@@ -337,14 +337,16 @@ object ParamTable {
 
     /** 参数区原始值 → 工程量显示；未读到返回 "--" */
     fun format(params: Map<Int, Int>, def: ParamDef): String {
+        // 真机实测：权限不足时整块返回 0xFFFF（未披露）。只有**整块**都是 0xFFFF 才按未披露处理；
+        // 否则温度类参数的 0xFFFF 是合法的 -1℃（s16），不能被哨兵吃掉。
+        val blockUnread = params.isNotEmpty() && params.values.all { it == 0xFFFF }
         val raw: Long = if (def.addr in u32Addrs) {
             val lo = params[def.addr]?.toLong() ?: return "--"
             val hi = params[def.addr + 2]?.toLong() ?: 0L
             (hi shl 16) or (lo and 0xFFFF)
         } else {
             val v = params[def.addr]?.toLong() ?: return "--"
-            // 真机实测：权限不足时整块返回 0xFFFF（未披露），不是真实读数
-            if (v == 0xFFFFL) return "--"
+            if (v == 0xFFFFL && (def.min >= 0 || blockUnread)) return "--"
             // 温度类参数允许负值，寄存器按 s16 存（真机实测 -2℃ = FE FF）
             if (def.min < 0) (v and 0xFFFF).let { if (it >= 0x8000) it - 0x10000 else it } else v
         }

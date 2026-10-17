@@ -128,7 +128,10 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
         val current = raw(d, 2, 4, signed = true) / 100.0  // Total_Current (dec 2, signed)
         val soc = raw(d, 6, 2) / 10                        // SOC_Estimate (dec 1)
         val temp = raw(d, 14, 1, signed = true)            // Current_Temperature
-        val remainCap = raw(d, 15, 4) / 100000.0           // Remaining_Capacity (dec 5, mAh)
+        // 官方主界面直接把这个值当 Ah 显示（`Remaining_Capacity.value.toFixed(2) + "Ah"`），
+        // decimalPlaces=5 只除一次 1e5。字段元数据里的 "mAh" 与官方自己的显示矛盾；从量程看
+        // u32/1e5 上限是 42949，若单位是 mAh 最大只有 42.9 Ah，放不下大电池包——它实际就是 Ah。
+        val remainCap = raw(d, 15, 4) / 100000.0
         val power = raw(d, 19, 4, signed = true)           // Realtime_Power (w)
         val hiCell = raw(d, 82, 2) / 1000.0                // highestVoltage (dec 3)
         val loCell = raw(d, 84, 2) / 1000.0                // lowestVoltage
@@ -141,11 +144,11 @@ class LanBaoProtocol(secret: String? = null) : MeterProtocol {
             current = current,
             power = power,
             soc = soc,
-            remainCapAh = remainCap / 1000.0,
+            remainCapAh = remainCap,
             temps = listOf("温度" to temp.toDouble()),
             maxCell = hiCell.takeIf { hiCell > 0 },
             minCell = loCell.takeIf { loCell > 0 },
-            deltaCell = diff.takeIf { diff > 0 },
+            deltaCell = diff,   // 0.000 V 是均衡良好的合法读数，不能当“无值”
             battState = when {
                 current > 0.3 -> "充电"
                 current < -0.3 -> "放电"

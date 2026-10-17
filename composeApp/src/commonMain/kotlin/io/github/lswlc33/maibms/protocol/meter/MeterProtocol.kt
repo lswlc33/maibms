@@ -35,6 +35,13 @@ data class MeterReading(
     val temps: List<Pair<String, Double>>? = null,
     /** 逐串单体电压（V） */
     val cells: List<Double>? = null,
+    /**
+     * 与 [cells] 一一对应的 1 起串号。null = 按顺序 1..N。
+     *
+     * 陆行 108 帧用 `0xFFFF` 表示该路未接；官方数组保留 `"--"` 占位，串号不能压缩。
+     * 这里只携带**有效**单体的原始串号，供合并层还原跳号（例如 `[1, 2, 4]`）。
+     */
+    val cellIndices: List<Int>? = null,
     val maxCell: Double? = null,
     val minCell: Double? = null,
     val avgCell: Double? = null,

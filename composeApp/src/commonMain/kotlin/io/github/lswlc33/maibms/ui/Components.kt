@@ -938,7 +938,7 @@ private fun PwCard(
 }
 
 /** 协议约定 -40℃ = 该路未接传感器（RealtimeDecoder 同注），界面直接隐藏 */
-private const val TEMP_NOT_CONNECTED = -40.0
+internal const val TEMP_NOT_CONNECTED = -40.0
 
 /**
  * 温度卡。未接的 -40 路不显示（通常是 T1~T4 没装探头），按 T 剩余路数收排：
@@ -949,8 +949,10 @@ private const val TEMP_NOT_CONNECTED = -40.0
 fun TempCard(temps: List<Pair<String, Double>>, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         val present = temps.filter { it.second != TEMP_NOT_CONNECTED }
-        SectionHeader("温度", tail = if (temps.isEmpty()) "--" else present.size.toString() + " 路")
-        if (temps.isEmpty()) {
+        SectionHeader("温度", tail = if (present.isEmpty()) "--" else present.size.toString() + " 路")
+        // 整帧没有任何温度、或所有通道都是 -40（未接）时，都走空态；
+        // 不能只看 temps.isEmpty()，否则会留下一张「0 路」的空卡。
+        if (present.isEmpty()) {
             Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 2.dp))
             return@SectionCard

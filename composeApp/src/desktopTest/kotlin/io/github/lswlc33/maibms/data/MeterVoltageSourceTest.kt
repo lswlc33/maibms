@@ -63,10 +63,10 @@ class MeterVoltageSourceTest {
         val w = Writer(d)
         w.u8(4)                       // cellNum
         w.u8(1)                       // batType
-        w.u8(1); w.i8(32)             // mosTemp
-        w.u8(0); w.i8(-40)            // 均衡温度 0 路
+        w.u8(1); w.i8(68)             // mosTemp：原始 68 − 40 = 28℃
+        w.u8(0); w.i8(0)              // 均衡温度 0 路
         w.u8(0)                       // rsv
-        w.u8(2); w.i8(20); w.i8(21); w.skip(6)   // batTemps[8]
+        w.u8(2); w.i8(60); w.i8(61); w.skip(6)   // batTemps：原始 60/61 − 40 = 20/21℃
         w.u8(0); w.u8(1)              // min/max temp idx
         w.u8(0); w.i8(0)              // validMaxTemp/minTemp
         w.u16(240)                    // power

@@ -112,12 +112,19 @@ class LuXingProtocol : MeterProtocol {
         val powerRaw = r.i16()
         val sysVolRaw = r.u32()                  // 0xFFFFFFFF = 未上报
         val sysCurrRaw = r.u32()                 // 0x7FFFFFFF = 未上报（注意不是 0xFFFFFFFF）
-        val cells = ArrayList<Double>(cellNum.coerceIn(0, 32))
-        for (i in 0 until cellNum) {
+        // 单体区固定预留 60 字节（最多 30 串）；cellNum 超界时按 30 读，避免 skip 变成负数。
+        val cellCount = cellNum.coerceIn(0, 30)
+        val cells = ArrayList<Double>(cellCount)
+        val cellIndices = ArrayList<Int>(cellCount)
+        for (i in 0 until cellCount) {
             val raw = r.u16()
-            if (raw != 0xFFFF) cells.add(raw / 1000.0)   // 0xFFFF = 该路未接
+            // 0xFFFF = 该路未接。**不能直接丢掉**：官方保留 "--" 占位，丢掉会让后面的串号整体前移。
+            if (raw != 0xFFFF) {
+                cells.add(raw / 1000.0)
+                cellIndices.add(i + 1)
+            }
         }
-        r.skip(60 - 2 * cellNum)
+        r.skip(60 - 2 * cellCount)
         r.u8(); r.u8()                           // max/min voltage index
         val maxVRaw = r.u16()                    // 0xFFFF = 未上报
         val minVRaw = r.u16()
@@ -148,8 +155,11 @@ class LuXingProtocol : MeterProtocol {
             // （两处都是 0x046A=113.0Ah），官方界面与 CSV 都不读它——照搬它「剩余容量」会永远
             // 等于「总容量」。SOC 按名义量程 0..100 夹取：超量程是设备未初始化，不去放大成假容量。
             remainCapAh = ratedAh?.let { it * soc.coerceIn(0, 100) / 100.0 },
-            temps = temps.ifEmpty { null },
-            cells = cells.ifEmpty { null },
+            // 显式传空列表（而不是 null）：本帧没有温度/单体时要把上一帧的旧值清掉，
+            // null 在增量合并语义里表示“本次未提供”，会保留旧值。
+            temps = temps,
+            cells = cells,
+            cellIndices = cellIndices,
             maxCell = if (maxVRaw == 0xFFFF) null else maxVRaw / 1000.0,
             minCell = if (minVRaw == 0xFFFF) null else minVRaw / 1000.0,
             battState = when {
@@ -217,6 +227,24 @@ class LuXingProtocol : MeterProtocol {
         13 -> "小哈换电"
         14 -> "电岭"
         15 -> "锋锐"
+        16 -> "比亚迪"
+        17 -> "亿纬"
+        18 -> "超威"
+        19 -> "天能"
+        20 -> "闪充"
+        21 -> "佰铭城"
+        22 -> "黄金锂电"
+        23 -> "华集源"
+        24 -> "弗铭"
+        25 -> "星恒"
+        26 -> "新途"
+        28 -> "优旦"
+        29 -> "中船海为"
+        30 -> "克林"
+        31 -> "乐充"
+        32 -> "澄芯"
+        33 -> "新能安"
+        34 -> "美顺"
         else -> null
     }
 }

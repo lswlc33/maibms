@@ -503,6 +503,8 @@ private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp, bottomSafe:
     val on = status.hasData
     val maxCell = status.cells.firstOrNull { it.isMax }
     val minCell = status.cells.firstOrNull { it.isMin }
+    // 没有 MOS 温度通道（如陆行 mosTempNum=0）或该路未接时不能显示 0.0°
+    val mosTemp = status.temps.firstOrNull { it.first == "MOS" && it.second != TEMP_NOT_CONNECTED }?.second
     // 背景延伸出安全区铺满全宽；文字与主区同宽（对称安全区内不显示内容）
     Row(
         Modifier.fillMaxWidth()
@@ -518,7 +520,7 @@ private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp, bottomSafe:
             " / ${if (on) status.minCell else "--"}@${if (on) minCell?.index ?: 0 else "-"}", u)
         ClusterBot("压差 ${if (on) status.deltaCell else "--"}V", u)
         ClusterBot("平均 ${if (on) status.avgCell else "--"}V", u)
-        ClusterBot("MOS ${if (on) "%.1f°".fmt(status.temps.firstOrNull { it.first == "MOS" }?.second ?: 0.0) else "--"}", u)
+        ClusterBot("MOS ${if (on && mosTemp != null) "%.1f°".fmt(mosTemp) else "--"}", u)
         ClusterBot("剩余 ${if (on) "%.1f".fmt(status.remainCapAh) else "--"}/${"%.0f".fmt(status.totalCapAh)}Ah", u)
         ClusterBot("电流 ${if (on) (if (status.current > 0.05f) "+" else "") + "%.1fA".fmt(status.current) else "--"}", u)
         if (on && status.alarmList.isNotEmpty()) {

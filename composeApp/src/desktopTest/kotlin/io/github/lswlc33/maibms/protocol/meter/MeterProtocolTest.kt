@@ -58,6 +58,26 @@ class MeterProtocolTest {
     }
 
     @Test
+    fun lanbao_remaining_capacity_uses_official_ah_scale() {
+        val data = ByteArray(111)
+        // 官方 Remaining_Capacity: decimalPlaces=5，主界面直接按 Ah 显示。
+        // 113.0 Ah → 11_300_000；此前的实现多除 1000，会算成 0.113 Ah。
+        putBE(data, 15, 4, 11_300_000)
+        val r = LanBaoProtocol().onData(lanbaoFrame(1, data))!!
+        assertEquals(113.0, r.remainCapAh)
+    }
+
+    @Test
+    fun lanbao_zero_voltage_difference_is_a_valid_reading() {
+        val data = ByteArray(111)
+        putBE(data, 82, 2, 4180)
+        putBE(data, 84, 2, 4180)
+        // 偏移 86 的 voltageDifference 保持 0：均衡良好时 0.000 V 是合法读数，不能显示 "--"
+        val r = LanBaoProtocol().onData(lanbaoFrame(1, data))!!
+        assertEquals(0.0, r.deltaCell)
+    }
+
+    @Test
     fun lanbao_rejects_bad_crc_or_foreign_frame() {
         val p = LanBaoProtocol()
         assertNull(p.onData(byteArrayOf(0x7E, 0x01, 0x11)))
@@ -133,6 +153,33 @@ class MeterProtocolTest {
     }
 
     @Test
+    fun luxing_unconnected_cell_keeps_original_index() {
+        val data = ByteArray(108)
+        data[0] = 4                                  // cellNum
+        putLE(data, 30, 2, 4200)
+        putLE(data, 32, 2, 4190)
+        putLE(data, 34, 2, 0xFFFF)                   // 第 3 串未接
+        putLE(data, 36, 2, 4210)
+        val r = LuXingProtocol().onData(modbusResp(data))!!
+        assertEquals(3, r.cells!!.size)
+        assertEquals(listOf(1, 2, 4), r.cellIndices, "未接串不能把后面的串号前移")
+        assertEquals(4.2, r.cells!![0], 1e-9)
+        assertEquals(4.19, r.cells!![1], 1e-9)
+        assertEquals(4.21, r.cells!![2], 1e-9)
+    }
+
+    @Test
+    fun luxing_relay_vendor_names_cover_newer_boards() {
+        val expected = mapOf(16 to "比亚迪", 17 to "亿纬", 25 to "星恒", 33 to "新能安", 34 to "美顺")
+        for ((id, name) in expected) {
+            val data = ByteArray(90)
+            data[50] = id.toByte()
+            val r = LuXingProtocol().onData(modbusResp(data))!!
+            assertEquals(name, r.relayBoardBrand, "vendorId=$id")
+        }
+    }
+
+    @Test
     fun luxing_realtime_sentinels_become_null() {
         val p = LuXingProtocol()
         val d = ByteArray(108)
@@ -166,7 +213,10 @@ class MeterProtocolTest {
         assertNull(r.totalCapAh)
         assertNull(r.remainCapAh)
         assertNull(r.maxCell)
-        assertNull(r.cells)
+        // 显式空列表（不是 null）：本帧没有任何单体/温度，合并层要把上一帧的旧值清掉
+        assertTrue(r.cells!!.isEmpty())
+        assertTrue(r.cellIndices!!.isEmpty())
+        assertTrue(r.temps!!.isEmpty())
     }
 
     @Test

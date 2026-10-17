@@ -387,11 +387,16 @@ object MockBms {
         r.disMos?.let { dischargeSwitch.value = it }
         r.balancing?.let { balanceSwitch.value = it }
         val cur = _status.value
-        val newCells = r.cells?.mapIndexed { i, v -> CellV(index = i + 1, volt = v, isMax = false, isMin = false, balancing = false) }
+        val newCells = r.cells?.mapIndexed { i, v ->
+            // 陆行未接单体（0xFFFF）不压缩：用原始串号还原跳号的位置
+            CellV(index = r.cellIndices?.getOrNull(i) ?: (i + 1), volt = v, isMax = false, isMin = false, balancing = false)
+        }
         val maxV = r.maxCell ?: r.cells?.maxOrNull()
         val minV = r.minCell ?: r.cells?.minOrNull()
         val avgV = r.avgCell ?: r.cells?.takeIf { it.isNotEmpty() }?.average()
         val deltaV = r.deltaCell ?: if (maxV != null && minV != null) maxV - minV else null
+        // 显式空列表 = 本帧所有单体都未接：连汇总值一起清空，别留上一帧的旧数字
+        val cellsCleared = r.cells != null && r.cells.isEmpty()
         _status.value = cur.copy(
             hasData = true,
             connected = true,
@@ -415,10 +420,10 @@ object MockBms {
             balanceCode = r.balancing?.let { if (it) 4 else 0 } ?: cur.balanceCode,
             temps = r.temps ?: cur.temps,
             cells = newCells?.let { reuse(cur.cells, it) } ?: cur.cells,
-            maxCell = maxV?.let { "%.3f".fmt(it) } ?: cur.maxCell,
-            minCell = minV?.let { "%.3f".fmt(it) } ?: cur.minCell,
-            avgCell = avgV?.let { "%.3f".fmt(it) } ?: cur.avgCell,
-            deltaCell = deltaV?.let { "%.3f".fmt(it) } ?: cur.deltaCell,
+            maxCell = if (cellsCleared) "--" else maxV?.let { "%.3f".fmt(it) } ?: cur.maxCell,
+            minCell = if (cellsCleared) "--" else minV?.let { "%.3f".fmt(it) } ?: cur.minCell,
+            avgCell = if (cellsCleared) "--" else avgV?.let { "%.3f".fmt(it) } ?: cur.avgCell,
+            deltaCell = if (cellsCleared) "--" else deltaV?.let { "%.3f".fmt(it) } ?: cur.deltaCell,
             remainChargeMin = r.remainChargeMin ?: cur.remainChargeMin,
             remainDischargeMin = r.remainDischargeMin ?: cur.remainDischargeMin,
             relayBoardBrand = r.relayBoardBrand ?: cur.relayBoardBrand,
