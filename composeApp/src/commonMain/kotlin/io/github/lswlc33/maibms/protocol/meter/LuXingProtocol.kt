@@ -4,6 +4,16 @@ import io.github.lswlc33.maibms.data.DeviceCapabilities
 import io.github.lswlc33.maibms.transport.DeviceFamily
 
 /**
+ * 温度寄存器是「实际温度 + 40」的偏移编码（signed int8），不是直接摄氏度。
+ *
+ * 官方 EM02.js 所有出口都先减 40：首页「最高/最低温度」绑的是
+ * `receivedData1.validMaxTemp - 40 + "℃"`；CSV 导出的 MOS 温度、最高/最低温度、T1~T4
+ * 也统一走 `o = t => t - 40`。漏减会让 28℃ 显示成 68℃；未接探头原始 0 减完是 -40，
+ * 正好命中界面已有的「未接」过滤（`TEMP_NOT_CONNECTED`）。
+ */
+private const val TEMP_OFFSET_C = 40
+
+/**
  * 陆行电量计（`EM2APP` / EM02 产品）。
  *
  * **重要**：EM2APP 用的**不是** `utils/bluetoothService.js` 那套（0/52/81/130/190——那是 CJ01/ECU02 等
@@ -18,7 +28,7 @@ import io.github.lswlc33.maibms.transport.DeviceFamily
  * | `sendCommand3` | 0x1038(4152) | 48 | **96**  | 循环次数 / 串口统计 / RSSI |
  *
  * 字段偏移取自 EM02.js 的三个解析函数（`z`/`K`/`$`），均为**小端**；量纲按官方换算
- * （电压 `/1000`、电流 `/100`、容量 `/10`、单体 `/1000`）。CRC 已用官方 4 帧逐条核对通过。
+ * （电压 `/1000`、电流 `/100`、容量 `/10`、单体 `/1000`、温度 `-40`）。CRC 已用官方 4 帧逐条核对通过。
  *
  * **总电压只有一个来源**：108 帧的 `systemVoltage`（电量计自测）。90 帧的 `batTotalVolt` 是
  * 被中继的那块保护板自报的数，官方既不显示也不导出，本项目同样不采用（理由见 [decodeBmsData]）。
@@ -92,13 +102,13 @@ class LuXingProtocol : MeterProtocol {
         val r = LeReader(f, 3)
         val cellNum = r.u8()
         r.u8()                                   // batType（w 码表）
-        val mosTempNum = r.u8(); val mosTemp = r.i8()
-        val balaTempNum = r.u8(); val balaTemp = r.i8()
+        val mosTempNum = r.u8(); val mosTemp = r.i8() - TEMP_OFFSET_C
+        val balaTempNum = r.u8(); val balaTemp = r.i8() - TEMP_OFFSET_C
         r.u8()                                   // rsv95_L
         val batTempNum = r.u8()
-        val batTemps = IntArray(8) { r.i8() }
+        val batTemps = IntArray(8) { r.i8() - TEMP_OFFSET_C }
         r.u8(); r.u8()                           // minTempInd / maxTempInd
-        r.u8(); r.i8()                           // validMaxTemp / validMinTemp
+        r.u8(); r.i8()                           // validMaxTemp / validMinTemp（同样 +40 偏移，当前未使用）
         val powerRaw = r.i16()
         val sysVolRaw = r.u32()                  // 0xFFFFFFFF = 未上报
         val sysCurrRaw = r.u32()                 // 0x7FFFFFFF = 未上报（注意不是 0xFFFFFFFF）

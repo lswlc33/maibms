@@ -95,10 +95,10 @@ class MeterProtocolTest {
         fun u32(v: Long) { u16((v and 0xFFFF).toInt()); u16(((v ushr 16) and 0xFFFF).toInt()) }
         u8(4)                     // cellNum
         u8(1)                     // batType
-        u8(1); i8(32)             // mosTemp
-        u8(0); i8(-40)            // 均衡温度 0 路
+        u8(1); i8(68)             // mosTemp：原始 68 − 40 = 28℃
+        u8(0); i8(0)              // 均衡温度 0 路
         u8(0)                     // rsv
-        u8(2); i8(20); i8(21); repeat(6) { i8(0) }   // batTemps[8]
+        u8(2); i8(60); i8(61); repeat(6) { i8(0) }   // batTemps：原始 60/61 − 40 = 20/21℃
         u8(0); u8(1)              // min/max temp idx
         u8(0); i8(0)              // validMaxTemp/minTemp
         i16(240)                  // power
@@ -127,7 +127,9 @@ class MeterProtocolTest {
         assertEquals(4, r.cells!!.size)
         assertEquals(4.21, r.maxCell)
         assertEquals(4.18, r.minCell)
-        assertTrue(r.temps!!.any { it.first == "MOS" && it.second == 32.0 })
+        assertEquals(28.0, r.temps!!.first { it.first == "MOS" }.second)
+        assertEquals(20.0, r.temps!!.first { it.first == "T1" }.second)
+        assertEquals(21.0, r.temps!!.first { it.first == "T2" }.second)
     }
 
     @Test
@@ -233,6 +235,8 @@ class MeterProtocolTest {
         assertEquals(93.79, remain, 1e-9, "剩余容量必须是 SOC×额定容量，不是帧里恒等于额定值的 actualCapacity")
         assertTrue(remain < total, "车辆静置、SOC 83% 时剩余容量不该等于总容量")
         assertEquals(79.67, r.totalVoltage!!, 1e-9)
+        // 帧里 T1~T4 原始字节 0x40=64，官方口径减 40 → 24℃
+        assertEquals(List(4) { "T${it + 1}" to 24.0 }, r.temps)
     }
 
     // ---- 通知分片 / 有符号值 / 快照就绪 ----
