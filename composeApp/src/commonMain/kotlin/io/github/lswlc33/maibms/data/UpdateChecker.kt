@@ -105,11 +105,19 @@ object UpdateChecker {
             accept = "application/vnd.github+json",
         ) ?: return null
         // 稳定版=单对象；预览版=release 数组取第一个（GitHub 按 created_at 倒序，即最近一次发布）
-        return when (channel) {
+        val info = when (channel) {
             UpdateChannel.STABLE -> json.decodeFromString(ReleaseInfo.serializer(), body)
             UpdateChannel.PREVIEW -> json.decodeFromString(
                 ListSerializer(ReleaseInfo.serializer()), body).firstOrNull()
-        }
+        } ?: return null
+        // 镜像回退是第三方服务：只接受本仓库的 release 链接，别把用户带去任意地址
+        return info.copy(htmlUrl = sanitizeHtmlUrl(info.htmlUrl))
+    }
+
+    /** 只放行本仓库的 Releases 页面；空/外站/带 .. 的 URL 一律回退到仓库 Releases 列表 */
+    internal fun sanitizeHtmlUrl(url: String): String {
+        val repoRelease = url == "$REPO_URL/releases" || url.startsWith("$REPO_URL/releases/")
+        return if (repoRelease && ".." !in url && '\\' !in url) url else "$REPO_URL/releases"
     }
 
     /**

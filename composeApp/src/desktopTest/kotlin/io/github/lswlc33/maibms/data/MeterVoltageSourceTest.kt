@@ -1,9 +1,12 @@
 package io.github.lswlc33.maibms.data
 
 import io.github.lswlc33.maibms.protocol.meter.LuXingProtocol
+import io.github.lswlc33.maibms.protocol.meter.MeterReading
 import io.github.lswlc33.maibms.protocol.meter.modbusCrc16
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * 陆行电量计「车辆静止、电压却一直跳」的回归测试（真机报障，2026-10）。
@@ -42,6 +45,25 @@ class MeterVoltageSourceTest {
             assertEquals("EM2APP-A1B2", st.deviceName, "本机设备名不得被中继板的名字顶替")
         } finally {
             MockBms.connectedDeviceName.value = null
+            MockBms.clearForRealDevice()
+        }
+    }
+
+    @Test
+    fun missing_cell_keeps_grid_slot_and_marks_it_missing() {
+        MockBms.clearForRealDevice()
+        try {
+            MockBms.applyMeterReading(MeterReading(
+                totalVoltage = 48.0,
+                cells = listOf(4.2, 4.19, 4.21),
+                cellIndices = listOf(1, 2, 4),
+                cellCount = 4,
+            ))
+            val cells = MockBms.status.value.cells
+            assertEquals(listOf(1, 2, 3, 4), cells.map { it.index })
+            assertTrue(cells[2].missing, "第 3 串未接应保留占位格并显示 --")
+            assertFalse(cells[3].missing)
+        } finally {
             MockBms.clearForRealDevice()
         }
     }

@@ -94,6 +94,27 @@ class UpdateCheckerTest {
         assertFalse(list[1].prerelease)
     }
 
+    @Test fun foreignHtmlUrlFallsBackToRepoReleases() {
+        // 更新检查会走第三方镜像；镜像返回的 html_url 不能直接拿去 openUri
+        assertEquals(
+            "https://github.com/lswlc33/maibms/releases",
+            UpdateChecker.sanitizeHtmlUrl("https://evil.example/phish"),
+        )
+        assertEquals(
+            "https://github.com/lswlc33/maibms/releases",
+            UpdateChecker.sanitizeHtmlUrl(""),
+        )
+        assertEquals(
+            "https://github.com/lswlc33/maibms/releases/tag/v1.0.0",
+            UpdateChecker.sanitizeHtmlUrl("https://github.com/lswlc33/maibms/releases/tag/v1.0.0"),
+        )
+        // 前缀对但带路径穿越的也不能放行
+        assertEquals(
+            "https://github.com/lswlc33/maibms/releases",
+            UpdateChecker.sanitizeHtmlUrl("https://github.com/lswlc33/maibms/releases/../../evil"),
+        )
+    }
+
     @Test fun channelFromKeyDefaultsToStable() {
         assertEquals(UpdateChecker.UpdateChannel.STABLE, UpdateChecker.UpdateChannel.fromKey("stable"))
         assertEquals(UpdateChecker.UpdateChannel.PREVIEW, UpdateChecker.UpdateChannel.fromKey("preview"))

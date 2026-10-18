@@ -162,6 +162,7 @@ class MeterProtocolTest {
         putLE(data, 36, 2, 4210)
         val r = LuXingProtocol().onData(modbusResp(data))!!
         assertEquals(3, r.cells!!.size)
+        assertEquals(4, r.cellCount, "帧声明的总串数要保留，供界面补占位格")
         assertEquals(listOf(1, 2, 4), r.cellIndices, "未接串不能把后面的串号前移")
         assertEquals(4.2, r.cells!![0], 1e-9)
         assertEquals(4.19, r.cells!![1], 1e-9)
@@ -290,6 +291,15 @@ class MeterProtocolTest {
     }
 
     // ---- 通知分片 / 有符号值 / 快照就绪 ----
+
+    @Test
+    fun meter_live_reading_flag_ignores_relay_cycle_and_table2_frames() {
+        // 90/96/表2 这类增量帧不能把 hasData 置真，否则界面会先显示 0.0 V / 0%
+        assertFalse(MeterReading(relayBoardName = "ANT-BLE", cycles = 12, totalCapAh = 113.0).hasLiveReading)
+        assertTrue(MeterReading(soc = 80).hasLiveReading)
+        assertTrue(MeterReading(totalVoltage = 48.0).hasLiveReading)
+        assertTrue(MeterReading(current = -1.2).hasLiveReading)
+    }
 
     @Test
     fun default_notification_api_keeps_whole_frame_callers() {

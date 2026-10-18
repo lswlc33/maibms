@@ -1092,7 +1092,7 @@ private fun CellBox(c: CellV, modifier: Modifier = Modifier) {
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("${c.index}", fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-            Text("%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = valueColor)
+            Text(if (c.missing) "--" else "%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = valueColor)
         }
         if (c.balancing) Box(
             Modifier.align(Alignment.TopEnd).padding(2.5.dp).size(4.5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary)

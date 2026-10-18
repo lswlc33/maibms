@@ -160,6 +160,7 @@ class LuXingProtocol : MeterProtocol {
             temps = temps,
             cells = cells,
             cellIndices = cellIndices,
+            cellCount = cellCount,
             maxCell = if (maxVRaw == 0xFFFF) null else maxVRaw / 1000.0,
             minCell = if (minVRaw == 0xFFFF) null else minVRaw / 1000.0,
             battState = when {

@@ -78,7 +78,10 @@ object DeviceProfiles {
     /** 新增或更新（按 address 合并），并滚动淘汰超限的最旧档案 */
     fun upsert(profile: DeviceProfile) = withLock(lock) {
         val merged = allLocked().filterNot { it.address == profile.address } + profile
-        save(merged.sortedByDescending { it.lastConnectedAt }.take(MAX))
+        val sorted = merged.sortedByDescending { it.lastConnectedAt }
+        // 静默淘汰最旧档案会连密码一起丢掉；至少留一条日志，排查"密码怎么没了"时有据可查
+        sorted.drop(MAX).forEach { BmsLog.w("DEV", "设备档案上限 $MAX，淘汰最旧：${it.displayName}") }
+        save(sorted.take(MAX))
     }
 
     /** 仅刷新最近连接时间（建链成功时调用，不动名称/密码/备注） */
@@ -175,7 +178,7 @@ object DeviceProfiles {
             when {
                 hit == null -> { profiles = profiles + DeviceProfile(address = last, name = AppStore.savedDeviceName.orEmpty()); changed = true }
                 hit.name.isBlank() && !AppStore.savedDeviceName.isNullOrBlank() -> {
-                    profiles = profiles.filterNot { it.address == last } + hit.copy(name = AppStore.savedDeviceName!!)
+                    profiles = profiles.filterNot { it.address == last } + hit.copy(name = AppStore.savedDeviceName.orEmpty())
                     changed = true
                 }
             }

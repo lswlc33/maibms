@@ -7,9 +7,16 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
 
-/** 单体电压格 */
+/** 单体电压格；[missing] = 该串未接（协议 0xFFFF），界面显示 "--" 但保留网格位置 */
 @Serializable
-data class CellV(val index: Int, val volt: Double, val isMax: Boolean = false, val isMin: Boolean = false, val balancing: Boolean = false)
+data class CellV(
+    val index: Int,
+    val volt: Double,
+    val isMax: Boolean = false,
+    val isMin: Boolean = false,
+    val balancing: Boolean = false,
+    val missing: Boolean = false,
+)
 
 /** 实时数据（全部来自 Mock，模拟 0x11 解码结果） */
 /** 实时数据（全部来自 0x11 解码回填；默认即「未连接」空态，不含任何演示数据）。可整体冻结进快照 */
@@ -387,9 +394,24 @@ object MockBms {
         r.disMos?.let { dischargeSwitch.value = it }
         r.balancing?.let { balanceSwitch.value = it }
         val cur = _status.value
-        val newCells = r.cells?.mapIndexed { i, v ->
-            // 陆行未接单体（0xFFFF）不压缩：用原始串号还原跳号的位置
-            CellV(index = r.cellIndices?.getOrNull(i) ?: (i + 1), volt = v, isMax = false, isMin = false, balancing = false)
+        val newCells = r.cells?.let { present ->
+            // 陆行未接单体（0xFFFF）不压缩：按原始串号放回网格，缺的格子显式标 missing
+            val total = r.cellCount ?: present.size
+            val byIndex = HashMap<Int, Double>(present.size)
+            present.forEachIndexed { i, v ->
+                byIndex[r.cellIndices?.getOrNull(i) ?: (i + 1)] = v
+            }
+            (1..total).map { idx ->
+                val v = byIndex[idx]
+                CellV(
+                    index = idx,
+                    volt = v ?: 0.0,
+                    isMax = false,
+                    isMin = false,
+                    balancing = false,
+                    missing = v == null,
+                )
+            }
         }
         val maxV = r.maxCell ?: r.cells?.maxOrNull()
         val minV = r.minCell ?: r.cells?.minOrNull()
@@ -398,7 +420,9 @@ object MockBms {
         // 显式空列表 = 本帧所有单体都未接：连汇总值一起清空，别留上一帧的旧数字
         val cellsCleared = r.cells != null && r.cells.isEmpty()
         _status.value = cur.copy(
-            hasData = true,
+            // 只有带实时量的帧才算“有数据”；中继信息/循环/表2 等增量帧不能把界面
+            // 从 "--" 切成 0.0 V（它们的数字字段是 null，合并后会保留 cur 的默认 0）
+            hasData = cur.hasData || r.hasLiveReading,
             connected = true,
             // 本机设备名走 BLE 名/设备档案（与保护板路径 updateFromRealtime 同一口径）：
             // 电量计协议里能读到的名字是"被中继那块板"的，不能当本机设备名（见 MeterReading）
@@ -440,7 +464,8 @@ object MockBms {
      *
      * 键名与保护板身份区一致（`serialNo`/`hwVersion`/`swVersion`/`batteryType`/`cellCount`），
      * 设置页复用同一批行即可，不必为电量计再写一套展示。只做增量合并：
-     * 协议里报什么写什么，没报的键不动（陆行目前只报读数，不报这些，身份区就保持空）。
+     * 协议里报什么写什么，没报的键不动（陆行目前只报 `cellCount`——108 帧的 cellNum；
+     * 序列号/版本/电池类型仍由蓝宝表2 提供，陆行这几项保持空）。
      */
     fun applyMeterDeviceInfo(r: io.github.lswlc33.maibms.protocol.meter.MeterReading) {
         val patch = buildMap {

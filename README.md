@@ -95,7 +95,9 @@
 | **E** 失败 | 扫描失败、写参数被拒（含设备返回的限值）、命令被拒、解码失败 | 开 |
 
 - 环形缓冲 600 条，约两次完整连接会话；可一键清空。
-- **导出日志**：Android 写入 `Download/maibms/` 并弹分享面板（MediaStore，无需存储权限），桌面写入 `~/maibms-logs/`；导出文本带可读时间戳与级别。
+- **导出日志**：Android 10+ 写入 `Download/maibms/` 并弹分享面板（MediaStore，无需存储权限）；
+  Android 8/9 没有存储权限，自动退到应用私有外部目录（路径会在界面上显示，USB/文件管理器可取）；
+  桌面写入 `~/maibms-logs/`；iOS 写入 Documents（需在「文件」App 里取）。导出文本带可读时间戳与级别。
 - 同时镜像到 logcat / stdout，`adb logcat -s System.out | grep ANTBMS` 照旧可用。
   **帧的十六进制只在「帧级日志」开关打开时才拼**（关着时输出 `← 245B` 这样的长度行）——
   一帧 245 字节的十六进制是 245 次字符串分配、还发生在蓝牙回调线程上，每拍都拼会推迟收帧；
@@ -259,6 +261,15 @@ Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂�
 正式版「先构建、都成功才提交」：失败时不会往 `main` 留一个「已自增未发布」的版本号提交；如果构建
 期间有人又推了版本号，发布步骤会直接中止，避免把基于旧版本构建出来的包当成最新版发出去。提交版本
 号时会顺手把 `docs/index.html` 里的内联版本兜底（接口拉不到时官网显示的就是它）同步到本次发布。
+
+### 发布前检查（正式版）
+
+- `./gradlew --offline :composeApp:desktopTest :composeApp:lintDebug` 全绿（lint 目前是独立检查，
+  不在 Release 工作流里，别漏跑）；
+- Actions 手动跑一次「IPA 测试」（framework 编链 + 模拟器启动冒烟 + 截图）；
+- 把 Release APK 装到真机/MuMu，走一遍连接、仪表盘、配置读写、日志导出、后台通知；
+- 确认 `composeApp/build.gradle.kts`、`iosApp/project.yml`、`docs/index.html` 三处版本号一致；
+- 确认 4 个签名 secret 已配置，Release 工作流的 apksigner 校验通过。
 
 ---
 

@@ -37,6 +37,9 @@ targets:
         # Compose Multiplatform 的 PlistSanityCheck 强制要求：缺了会在启动时抛异常闪退
         #（在 ProMotion 设备上解锁 120Hz 高刷）。模拟器启动冒烟测试实测抓到过这个崩溃。
         CADisableMinimumFrameDurationOnPhone: true
+        # 日志导出写入 Documents；不开这两个 key 的话「文件」App/Finder 看不到导出文件
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

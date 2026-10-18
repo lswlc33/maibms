@@ -23,8 +23,6 @@ object BmsLog {
     /** 环形缓冲上限：600 行约等于一次完整连接会话的帧日志量 */
     const val MAX = 600
 
-    private const val DAY_MS = 86_400_000L
-
     /** 一条已格式化的日志 */
     data class Entry(val level: Level, val tag: String, val text: String, val atMs: Long) {
         /** 开发者页单行展示：级别 + 类别 + 内容（时间由列表统一显示） */
@@ -47,7 +45,7 @@ object BmsLog {
 
     /** 启动时调用：读回上次运行留下的日志（文件按天存，最多 3 天），并清理过期文件 */
     fun restore() = withLock(lock) {
-        lastAppendDay = epochMillisNow() / DAY_MS
+        lastAppendDay = formatDate(epochMillisNow())
         LogFileStore.cleanup()
         val saved = LogFileStore.readRecentLines()
         if (saved.isNotEmpty()) {
@@ -69,9 +67,11 @@ object BmsLog {
         withLock(lock) {
             _entries.value = (_entries.value + e).takeLast(MAX)
             _lines.value = (_lines.value + e.render()).takeLast(MAX)
-            if (e.atMs / DAY_MS != lastAppendDay) {
-                // 跨天：先把旧日期的最后一批冲进旧文件再切文件，并清掉 3 天外的过期日志
-                lastAppendDay = e.atMs / DAY_MS
+            // 按**本地日期**跨天（文件命名和导出标题也是本地日期；用 UTC 天会在非 UTC
+            // 时区把凌晨的日志分到前一天，清理也会错开几个小时）
+            val day = formatDate(e.atMs)
+            if (day != lastAppendDay) {
+                lastAppendDay = day
                 LogFileStore.cleanup()
             }
         }
@@ -135,21 +135,17 @@ object BmsLog {
         if (list.isEmpty()) return "（日志为空）"
         val sb = StringBuilder("麻衣 BMS 日志导出 · ${list.size} 条\n")
         sb.appendLine("说明：0x23 密码校验帧的数据区已遮蔽（**），不会包含密码明文。")
-        var lastDay = -1L
+        var lastDay: String? = null
         for (e in list) {
-            val day = e.atMs / DAY_MS
+            val day = formatDate(e.atMs)
             if (day != lastDay) {
-                sb.appendLine("── ${dayLabel(e.atMs)} ──")
+                sb.appendLine("── $day ──")
                 lastDay = day
             }
             sb.appendLine(formatAbsolute(e))
         }
         return sb.toString()
     }
-
-    /** 墙钟转可读时间：跨会话的日志必须能看出「昨天几点」，所以导出与文件都用完整日期。
-     *  格式与原先 JVM 版逐字符一致（见 DateTime.kt，不做本地化） */
-    private fun dayLabel(epochMs: Long): String = formatDate(epochMs)
 
     private fun formatAbsolute(e: Entry): String =
         "${formatDateTime(e.atMs)} ${e.level.tag}/${e.tag} ${e.text}"
@@ -170,6 +166,6 @@ object BmsLog {
     /** 十六进制半字节查表（见 [hex]：避免逐字节起 StringBuilder） */
     private val HEX_TABLE = "0123456789ABCDEF".toCharArray()
 
-    /** 上次写入日志所在的「天」（epoch day）；restore 后为 restore 当天，跨天时触发一次清理 */
-    @Volatile private var lastAppendDay: Long = -1
+    /** 上次写入日志所在的本地日期（yyyy-MM-dd）；restore 后为当天，跨天时触发一次清理 */
+    @Volatile private var lastAppendDay: String? = null
 }

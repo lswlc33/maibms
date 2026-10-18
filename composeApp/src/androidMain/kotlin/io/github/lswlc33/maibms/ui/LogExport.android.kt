@@ -37,12 +37,20 @@ actual fun rememberLogExporter(): (String) -> String? {
                     })
                     "Download/maibms/$name"
                 } else {
-                    // Android 8/9：直接写公共 Download 目录（旧版上这是应用可写的）
-                    val dir = File(Environment.getExternalStoragePublicDirectory(
-                        Environment.DIRECTORY_DOWNLOADS), "maibms").apply { mkdirs() }
-                    val f = File(dir, name)
-                    f.writeText(text)
-                    "Download/maibms/$name"
+                    // Android 8/9：公共 Download 需要 WRITE_EXTERNAL_STORAGE，而本应用没有申请
+                    // （targetSdk 35 下它不再是安装即授予的权限）。先试公共目录，写不了就退回
+                    // 应用私有外部目录——不需要任何权限，USB/文件管理器仍能取到。
+                    val publicDir = File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "maibms")
+                    val appDir = File(
+                        ctx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: ctx.filesDir, "maibms")
+                    val target = sequenceOf(publicDir, appDir).firstNotNullOfOrNull { dir ->
+                        runCatching {
+                            dir.mkdirs()
+                            File(dir, name).also { it.writeText(text) }
+                        }.getOrNull()
+                    } ?: return@runCatching null
+                    target.absolutePath
                 }
             }.getOrNull()
         }

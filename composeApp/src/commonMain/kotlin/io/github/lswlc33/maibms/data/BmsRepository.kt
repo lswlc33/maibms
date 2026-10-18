@@ -665,6 +665,9 @@ class BmsRepository(
         // 节奏 = 开发者页三档（900/600/300，默认 600）：更快的轮询在弱信号下会持续占满
         // BLE 连接间隔、反而拖低成功率，遇到丢帧就切回 900 档；链路刚就绪时会被 pollWake
         // 立刻唤醒一次——首帧不用白等这个相位
+        // 上一拍是否处于「退后台暂停」：恢复的第一拍要把失联计时重置，
+        // 否则会拿暂停前的时间戳误判（电量计轮询是 fire-and-forget，写完立刻会查 since）
+        var wasPaused = false
         while (currentCoroutineContext().isActive) {
             if (_linkState.value == LinkState.Connected) {
                 // 后台策略：没开「后台监控」时，退到后台**整段跳过**（请求不发、失联检测也不做）。
@@ -672,6 +675,12 @@ class BmsRepository(
                 // "没发请求所以没数据"不是失联，继续判会误报并触发无谓的通道轮切
                 val paused = !AppForeground.active.value && !AppStore.backgroundMonitor
                 if (!paused) {
+                if (wasPaused) {
+                    // 回到前台：给第一帧一个完整的失联窗口（电量计的应答是异步通知，
+                    // 这一拍查 since 时第一帧还没到，不能拿暂停前的 lastFrameAt 判）
+                    lastFrameAt = epochMillisNow()
+                    BmsLog.i("LINK", "从后台恢复：重置失联计时")
+                }
                 val m = meter
                 if (m != null) {
                     // 电量计：写轮询帧（不等待应答，靠通知回调解码）；寄存器探测期间暂停
@@ -715,9 +724,12 @@ class BmsRepository(
                     BmsLog.i("LINK", "实时帧恢复")
                 }
                 }
+                wasPaused = paused
                 // 常驻监控通知的摘要（节流在函数内）：暂停态也要走一遍，
                 // 否则从后台恢复监控状态时会晚一拍才反映到通知栏
                 refreshMonitorNotification()
+            } else {
+                wasPaused = false
             }
             // 正常按当前档位走（默认 600ms）；链路刚就绪会提前唤醒（见 pollWake）
             withTimeoutOrNull(pollIntervalMs) { pollWake.receive() }
@@ -1212,10 +1224,16 @@ class BmsRepository(
                 }
                 withLock(sessionLock) {
                     checkSession(expected)
-                    if (acc.isNotEmpty()) MockBms.liveParams.value = acc
+                    // 权限不足时设备会把整块参数回成 0xFFFF（未披露）。这种结果既不能展示，
+                    // 也不能写进配置缓存——否则下次未连接时配置页会拿它当真实值。
+                    val paramsRead = acc.isNotEmpty() && !acc.values.all { it == 0xFFFF }
+                    if (paramsRead) MockBms.liveParams.value = acc
                     if (id.isNotEmpty()) MockBms.identity.value = id
-                    BmsLog.i("PARAM", "参数区读回 ${acc.size} 项，身份区 ${id.size} 项")
-                    if (acc.isNotEmpty() || id.isNotEmpty()) {
+                    BmsLog.i("PARAM", "参数区读回 ${acc.size} 项（有效 ${if (paramsRead) "是" else "否"}），身份区 ${id.size} 项")
+                    if (!paramsRead && acc.isNotEmpty()) {
+                        BmsLog.w("PARAM", "参数区整块 0xFFFF（权限不足/未披露），本次不展示也不落缓存")
+                    }
+                    if (paramsRead) {
                         recordSnapshot()
                         MockBms.paramsFromCache.value = false
                         persistParamsCache()

@@ -14,10 +14,14 @@ class MainActivity : ComponentActivity() {
         // 挖孔/刘海屏：允许内容延伸进 cutout 区（沉浸），具体避让交给 safeDrawing insets——
         // 不开 ALWAYS 的话横屏时系统不报告挖孔 inset，左侧摄像头区就会压住表盘
         if (android.os.Build.VERSION.SDK_INT >= 28) {
-            window.attributes = window.attributes.apply {
-                layoutInDisplayCutoutMode =
-                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            // ALWAYS 是 API 30 才有的值；Android 9（28/29）只认 SHORT_EDGES，
+            // 直接把 3 写进去在旧系统上行为未定义
+            val mode = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
+            window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = mode }
         }
         // 数据管线（持久化 + BLE 传输 + 自动重连）已在 MaibmsApp.onCreate 里装配并启动，
         // 与这里的界面创建并行；App() 里保留一次 start() 兜底（幂等，桌面端靠它挂收集器）

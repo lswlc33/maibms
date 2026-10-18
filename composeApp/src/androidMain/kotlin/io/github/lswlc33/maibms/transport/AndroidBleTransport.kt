@@ -2,6 +2,7 @@ package io.github.lswlc33.maibms.transport
 
 import android.annotation.SuppressLint
 import android.bluetooth.*
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -192,12 +193,20 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         }
     }
 
+    /** 退订一条候选通道。权限被回收时抛 SecurityException，这里按尽力而为处理。 */
+    @SuppressLint("MissingPermission")
+    private fun unsubscribe(g: BluetoothGatt, c: Candidate) {
+        runCatching { g.setCharacteristicNotification(c.notify, false) }
+    }
+
     /**
      * 订阅落地后的动作：保护板走 ANT 探测（发实时帧等 0x11/0x12 应答），
      * 电量计暂无探测帧，直接按“FFE0 + 写/通知就绪”判就绪（后续阶段再补各家握手）。
      */
     private fun afterSubscribed(g: BluetoothGatt, c: Candidate) {
         if (g !== gatt) return
+        // CCCD 失败翻页后，旧候选的 250ms 兜底仍可能迟到；不校验会把旧通道标成"已就绪"
+        if (candidates.getOrNull(candidateIndex) !== c) return
         if (targetFamily.isMeter) {
             _activeChannel.value = c.channel
             logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
@@ -281,7 +290,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 completeReady(g)
             } else {
                 logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
-                runCatching { g.setCharacteristicNotification(c.notify, false) }   // 退订这条通道，免得它的帧还往上游送
+                unsubscribe(g, c)   // 退订这条通道，免得它的帧还往上游送
                 candidateIndex++
                 probeNext(g)
             }
@@ -309,12 +318,16 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         stopScan()
         val cb = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val name = result.device.name ?: return
-                // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
-                if (!DeviceFamily.isTarget(name)) return
-                val family = DeviceFamily.matchName(name) ?: return
-                logD("scan 发现 $name ${result.device.address} rssi=${result.rssi} → ${family.label}")
-                onFound(ScanDevice(name, result.device.address, result.rssi, family))
+                // 权限在扫描过程中被回收时，device.name/address 会抛 SecurityException；
+                // 这里是 Binder 回调线程，未捕获会直接崩进程
+                runCatching {
+                    val name = result.device.name ?: return@runCatching
+                    // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
+                    if (!DeviceFamily.isTarget(name)) return@runCatching
+                    val family = DeviceFamily.matchName(name) ?: return@runCatching
+                    logD("scan 发现 $name ${result.device.address} rssi=${result.rssi} → ${family.label}")
+                    onFound(ScanDevice(name, result.device.address, result.rssi, family))
+                }.onFailure { logW("扫描回调异常（权限被回收？）：${it.message}") }
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -401,6 +414,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             logI("连接尝试 #$attempt${if (useAuto) "（等待广播）" else ""}")
             _linkState.value = LinkState.Connecting
 
+            // 先把上一轮的 GATT 收干净，再挂新信号。openGatt 不再内部 closeGatt：
+            // 否则它会把刚挂上的 servicesSignal 清掉，等待方只能吃满 12~25s 超时。
+            closeGatt()
             val ready = CompletableDeferred<Boolean>()
             readySignal = ready
             val servicesFound = CompletableDeferred<Unit>()
@@ -459,14 +475,10 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
 
     @SuppressLint("MissingPermission")
     private fun openGatt(device: BluetoothDevice, autoConnect: Boolean): Boolean {
-        closeGatt()
         mtu = 20
+        // minSdk 26 ≥ M，直接走 LE 传输；API 23 以下的分支不可能到达
         val g = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                device.connectGatt(context, autoConnect, callback, BluetoothDevice.TRANSPORT_LE)
-            } else {
-                device.connectGatt(context, autoConnect, callback)
-            }
+            device.connectGatt(context, autoConnect, callback, BluetoothDevice.TRANSPORT_LE)
         }.onFailure { logE("connectGatt 异常：$it") }.getOrNull()
         gatt = g
         return g != null
@@ -507,11 +519,19 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     lastDisconnectStatus = status
                     logW("GATT 断开：${statusText(status)}")
+                    // 先抓住信号再 closeGatt：closeGatt 会清空 servicesSignal/probeSignal，
+                    // 清完再完成等于没完成，等待方只能等满超时。且必须在 gatt 置空后再唤醒
+                    // 探测协程，否则它会以为当前连接还活着、继续翻候选。
+                    val services = servicesSignal
+                    val probe = probeSignal
+                    val ready = readySignal
+                    val drop = dropSignal
                     closeGatt()
                     _linkState.value = LinkState.Disconnected
-                    servicesSignal?.complete(Unit)
-                    readySignal?.complete(false)
-                    dropSignal?.complete(Unit)
+                    services?.complete(Unit)
+                    probe?.complete(false)
+                    ready?.complete(false)
+                    drop?.complete(Unit)
                 }
             }
         }
@@ -621,19 +641,40 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     private suspend fun writeChunks(g: BluetoothGatt, wc: BluetoothGattCharacteristic, frame: ByteArray) {
         val chunk = minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)
         var offset = 0
+        var retried = false
         while (offset < frame.size) {
             val len = minOf(chunk, frame.size - offset)
             val piece = frame.copyOfRange(offset, offset + len)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                g.writeCharacteristic(wc, piece, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE)
-            } else {
-                @Suppress("DEPRECATION")
-                wc.value = piece
-                @Suppress("DEPRECATION")
-                wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                @Suppress("DEPRECATION")
-                g.writeCharacteristic(wc)
+            // 写入可能被栈拒绝（返回 false）或在权限被回收时抛 SecurityException：
+            // 前者重试一次，后者按失败处理，不能让一帧丢掉后没人知道。
+            val queued = runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    // API 33+ 的新重载返回 BluetoothStatusCodes，不是 boolean
+                    g.writeCharacteristic(wc, piece, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) ==
+                        BluetoothStatusCodes.SUCCESS
+                } else {
+                    @Suppress("DEPRECATION")
+                    wc.value = piece
+                    @Suppress("DEPRECATION")
+                    wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    @Suppress("DEPRECATION")
+                    g.writeCharacteristic(wc)
+                }
+            }.getOrElse {
+                logW("写入分片异常（${offset}/${frame.size}）：${it.message}")
+                false
             }
+            if (!queued) {
+                if (!retried) {
+                    retried = true
+                    logW("写入分片被蓝牙栈拒绝（${offset}/${frame.size}），重试一次")
+                    delay(WRITE_GAP_MS)
+                    continue
+                }
+                logW("写入分片连续被拒（${offset}/${frame.size}），丢弃本帧剩余部分")
+                return
+            }
+            retried = false
             offset += len
             // 只在**还有下一片**时等：最后一片写完后没有后续写入，那 12ms 是白等的。
             // 电量计每拍要连发 4 条短帧（每条正好 1 片），省下的就是每拍 4×12ms

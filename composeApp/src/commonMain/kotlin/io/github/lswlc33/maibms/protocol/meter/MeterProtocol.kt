@@ -77,7 +77,10 @@ data class MeterReading(
      * `Battery_Type.options`）。换算在各协议实现里做，这里只传最终中文。
      */
     val batteryType: String? = null,
-    /** 电池串数（蓝宝表2 偏移 47） */
+    /**
+     * 设备/帧声明的单体总数：蓝宝表2 偏移 47、陆行 108 帧的 `cellNum`。
+     * 身份区用它显示串数；合并层用陆行这个值给 0xFFFF 的通道补 "--" 占位格。
+     */
     val cellCount: Int? = null,
 ) {
     val isEmpty: Boolean
@@ -87,6 +90,15 @@ data class MeterReading(
             deltaCell, remainChargeMin, remainDischargeMin, relayBoardBrand, relayBoardName,
             relayBoardMac, serialNo, hwVersion, swVersion, batteryType, cellCount,
         ).isEmpty()
+
+    /**
+     * 本帧是否包含**实时量**（电压/电流/功率/SOC）。
+     *
+     * 电量计的 90/96/表2 这类增量帧只带中继信息、循环或容量；它们到达时不能把
+     * `BmsStatus.hasData` 置真，否则界面会在真正的实时帧到达前显示 0.0 V / 0%。
+     */
+    val hasLiveReading: Boolean
+        get() = totalVoltage != null || current != null || power != null || soc != null
 }
 
 /**

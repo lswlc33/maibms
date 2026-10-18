@@ -1,5 +1,6 @@
 package io.github.lswlc33.maibms
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
@@ -11,7 +12,13 @@ import io.github.lswlc33.maibms.transport.AndroidBleTransport
 import io.github.lswlc33.maibms.transport.canAutoConnect
 import java.io.File
 
-/** 进程级 ApplicationContext：权限检查与 Toast 都要用（由 [MaibmsApp] 注入） */
+/**
+ * 进程级 ApplicationContext：权限检查与 Toast 都要用（由 [MaibmsApp] 注入）。
+ *
+ * `context` 是 Application context（进程级，不泄漏）；`activity` 由 MainActivity.onDestroy
+ * 清空，只在界面存活期间持有。两处都是有意为之的静态引用，lint 的 StaticFieldLeak 在这里抑制。
+ */
+@SuppressLint("StaticFieldLeak")
 object AndroidApp {
     @Volatile var context: Context? = null
 
