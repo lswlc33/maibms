@@ -6,10 +6,49 @@
 <title>麻衣 BMS · MAI BMS — 最纯粹的保护板蓝牙查看器</title>
 <meta name="description" content="麻衣 BMS（MAI BMS）：蚂蚁 BMS 保护板的非官方蓝牙客户端。不联网、不加仪表、不要大炮充电器，一部手机直连保护板，极致的连接速度与信息展示率。支持 Android(APK) 与 iOS(IPA)。">
 <meta name="theme-color" content="#0a0c10">
+<link rel="canonical" href="https://lswlc33.github.io/maibms/">
 <meta property="og:title" content="麻衣 BMS · MAI BMS">
 <meta property="og:description" content="最纯粹的保护板蓝牙查看器。极致的连接速度，极致的信息展示率。">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://lswlc33.github.io/maibms/">
+<meta property="og:image" content="https://lswlc33.github.io/maibms/images/app-icon-512.png">
+<meta property="og:site_name" content="麻衣 BMS">
+<meta property="og:locale" content="zh_CN">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="麻衣 BMS · MAI BMS">
+<meta name="twitter:description" content="最纯粹的保护板蓝牙查看器。极致的连接速度，极致的信息展示率。">
+<meta name="twitter:image" content="https://lswlc33.github.io/maibms/images/app-icon-512.png">
 <link rel="icon" href="images/app-icon-512.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "麻衣 BMS",
+  "alternateName": ["MAI BMS", "麻衣BMS", "maibms"],
+  "url": "https://lswlc33.github.io/maibms/",
+  "image": "https://lswlc33.github.io/maibms/images/app-icon-512.png",
+  "description": "麻衣 BMS（MAI BMS）：蚂蚁 BMS（ANT BMS）保护板的非官方 Android / iOS 蓝牙客户端。直连 BLE，不联网、不加仪表，把仪表盘、实时数据与参数配置装进手机。",
+  "applicationCategory": "UtilitiesApplication",
+  "applicationSubCategory": "Battery Management System",
+  "operatingSystem": "Android 8.0+, iOS",
+  "softwareVersion": "0.1.9",
+  "license": "https://github.com/lswlc33/maibms/blob/main/LICENSE",
+  "isAccessibleForFree": true,
+  "inLanguage": "zh-CN",
+  "downloadUrl": "https://github.com/lswlc33/maibms/releases/latest",
+  "codeRepository": "https://github.com/lswlc33/maibms",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "CNY"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "lswlc33",
+    "url": "https://github.com/lswlc33"
+  }
+}
+</script>
 <style>
   :root{
     --bg:#0a0c10; --bg-soft:#0e1116;
@@ -86,6 +125,12 @@
   .slogan{margin:22px 0 0; font-size:clamp(19px,2.7vw,26px); font-weight:700; line-height:1.5; letter-spacing:.01em}
   .slogan .no{color:var(--accent-2); display:inline-block; white-space:nowrap; margin-right:16px}
   .lead{color:var(--muted); font-size:16px; margin:18px 0 0; max-width:52ch}
+  .name-note{
+    margin:22px 0 0; padding:18px 20px; border-radius:16px;
+    background:var(--panel); border:1px solid var(--line);
+    color:var(--muted); font-size:14.5px; line-height:1.75;
+  }
+  .name-note b{color:var(--text); font-weight:600}
   .cta{display:flex; flex-wrap:wrap; gap:12px; margin-top:30px}
   .btn{
     display:inline-flex; align-items:center; gap:9px; height:50px; padding:0 24px;
@@ -501,6 +546,11 @@
           <p>源码在 GitHub 开放，采用 MIT 许可证。非官方项目，与保护板厂商无任何关联；协议实现来自对设备通信的观察与逆向分析。</p>
         </div>
       </div>
+      <p class="name-note">
+        <b>关于名称：</b>本项目叫「麻衣 BMS」（拼音 mái yī，英文写作 MAI BMS），是一个第三方客户端；
+        「蚂蚁 BMS」/「蚂蚁兴能」/「蚂蚁物联」（ANT BMS）是保护板厂商与其官方客户端的名字。
+        两者没有关联，搜索时注意区分。
+      </p>
     </div>
   </section>
 
