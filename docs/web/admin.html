@@ -145,9 +145,9 @@
   .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
 
   /* ---------- 温度 / 趋势 ---------- */
-  .temps { display: flex; flex-wrap: wrap; gap: 8px; }
+  .temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px; }
   .temp {
-    flex: 1 1 80px; text-align: center;
+    text-align: center;
     background: var(--bs-tertiary-bg); border-radius: 12px; padding: 8px 10px;
   }
   .temp .k { font-size: 10.5px; opacity: .6; }
@@ -191,7 +191,7 @@
 
 <div class="layout">
   <nav class="sidebar bg-body-tertiary border-end" id="sidebar">
-    <a class="brand" href="#?v=7fbba2c961" onclick="return false">
+    <a class="brand" href="#?v=d76ec57d6e" onclick="return false">
       <img src="../images/app-icon-512.png" alt="">
       <span class="t">麻衣 BMS</span>
     </a>
@@ -208,9 +208,9 @@
   </div>
 </div>
 
-<script src="maibms-host.js?v=7fbba2c961"></script>
-<script src="../maibms-data.js?v=7fbba2c961"></script>
+<script src="maibms-host.js?v=d76ec57d6e"></script>
+<script src="../maibms-data.js?v=d76ec57d6e"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="theme-admin.js?v=7fbba2c961"></script>
+<script src="theme-admin.js?v=d76ec57d6e"></script>
 </body>
 </html>

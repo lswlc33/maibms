@@ -161,7 +161,9 @@
       sw.addEventListener('click', function () {
         location.href = 'switch.html?from=' + encodeURIComponent(THEME_FILE);
       });
-      body.appendChild(h('p', null, sw));
+      var sp = h('p');
+      sp.appendChild(sw);
+      body.appendChild(sp);
     });
   }
 
@@ -565,7 +567,9 @@
     sw.addEventListener('click', function () {
       location.href = 'switch.html?from=' + encodeURIComponent(THEME_FILE);
     });
-    themeBody.appendChild(h('p', null, sw));
+    var sp2 = h('p');
+    sp2.appendChild(sw);
+    themeBody.appendChild(sp2);
 
     themeBody.appendChild(h('p', 'muted', '需要更大的字？用浏览器的页面缩放即可（Chrome 菜单 → 缩放）。'));
     main.appendChild(section('外观', '', themeBody));

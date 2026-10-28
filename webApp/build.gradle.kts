@@ -159,6 +159,9 @@ val syncWebToDocs by tasks.registering(Copy::class) {
             rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/data"),
             rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/protocol"),
             rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/transport"),
+            // webApp 自己的 Kotlin 源码（Bridge 等）也编进产物，必须参与哈希——
+            // 漏掉的话数据层修了 bug、?v= 却不推进，缓存住旧 data.js 的浏览器拿不到修复
+            rootProject.file("webApp/src/jsMain/kotlin"),
             webDir
         )
         sourceRoots.forEach { root ->

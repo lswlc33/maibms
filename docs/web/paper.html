@@ -188,17 +188,23 @@
 
   .muted { color: var(--pico-muted-color); font-size: 12.5px; line-height: 1.7; }
   .empty { padding: 22px 0; color: var(--pico-muted-color); text-align: center; font-size: 13.5px; }
+
+  /* Pico 在窄屏断点清零了 body>main 的左右内边距，杂志排行的细线行会贴到屏幕边 */
+  @media (max-width: 575px) {
+    body > header, body > main { padding-left: 16px; padding-right: 16px; }
+  }
 </style>
 </head>
 <body>
 
-<div id="app">
-  <div class="top" id="top"></div>
-  <main id="content"></main>
-</div>
+<!-- top 与 main 必须是 body 的直接子元素：Pico classless 的容器规则
+     （body>header / body>main）靠直接子代选择器命中，套一层 div 就全部落空
+     ——表现为窄屏零内边距、宽屏不居中（全出血）。 -->
+<header class="top" id="top"></header>
+<main id="content"></main>
 
-<script src="maibms-host.js?v=7fbba2c961"></script>
-<script src="../maibms-data.js?v=7fbba2c961"></script>
-<script src="theme-paper.js?v=7fbba2c961"></script>
+<script src="maibms-host.js?v=d76ec57d6e"></script>
+<script src="../maibms-data.js?v=d76ec57d6e"></script>
+<script src="theme-paper.js?v=d76ec57d6e"></script>
 </body>
 </html>

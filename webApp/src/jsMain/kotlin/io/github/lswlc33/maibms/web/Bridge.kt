@@ -272,8 +272,13 @@ object Bridge {
 
     fun subscribeState(fn: (dynamic) -> Unit) {
         stateListeners += fn
-        // 首次订阅立刻补一份当前状态：主题页不必等下一个轮询拍才画出界面
-        lastState?.let { s -> runCatching { fn(s) } }
+        // 首次订阅立刻补一份当前状态：主题页不必等下一个轮询拍才画出界面。
+        // 不能写 lastState?.let{...}：lastState 是 JSON.parse 出来的纯 JS 对象，
+        // dynamic 收者的 let 不会被内联、编译成真实成员调用，纯 JS 对象上没有
+        // .let → 注册即抛 TypeError，主题脚本从这一行起整个启动链中断。
+        if (lastState != null) {
+            runCatching { fn(lastState) }
+        }
     }
 
     fun subscribeLog(fn: (dynamic) -> Unit) {

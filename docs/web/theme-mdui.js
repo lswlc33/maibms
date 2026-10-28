@@ -230,8 +230,9 @@
     TABS.forEach(function (t) {
       var item = h('mdui-navigation-bar-item');
       item.setAttribute('value', t.id);
-      slotIcon(item, t.icon);
+      // 先给标签再塞图标：textContent 会替换全部子节点，反着写图标就被清掉了
       item.textContent = t.label;
+      slotIcon(item, t.icon);
       item.addEventListener('click', function () { ui.tab = t.id; renderAll(); });
       nav.appendChild(item);
     });
@@ -312,7 +313,6 @@
     if (!M.supportsWebBluetooth()) {
       wrap.appendChild(card((function () {
         var d = h('div');
-        d.appendChild(h('div', null, '此浏览器无法连接保护板').then ? null : null);
         var t = h('div', null, '此浏览器无法连接保护板');
         t.style.cssText = 'font-size:15px;font-weight:600;margin-bottom:8px';
         d.appendChild(t);
@@ -898,7 +898,7 @@
     var pollBody = h('div');
     var poll = h('mdui-segmented-button-group');
     poll.setAttribute('selects', 'single');
-    poll.setAttribute('value', String(M.meta().settings.pollInterval));
+    poll.setAttribute('value', String((st.settings || {}).pollInterval || 600));
     [[900, '更稳'], [600, '默认'], [300, '更跟手']].forEach(function (kv) {
       var b = h('mdui-segmented-button', null, kv[1] + ' ' + kv[0] + 'ms');
       b.setAttribute('value', String(kv[0]));

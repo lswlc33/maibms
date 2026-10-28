@@ -54,6 +54,14 @@ html, body {
 /* 卡片间距（mdui-card 自带内边距，只补外面） */
 .stack > * + * { margin-top: 12px; }
 
+/* mdui-card 默认是 inline-block（收缩包裹）——卡片内容窄时整卡缩起来，
+ * 和旁边满宽的卡对不齐。这里统一定成块级满宽。 */
+mdui-card {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .card-pad { padding: 16px; }
 
 /* ---------- 卡1：SOC 环 + 设备信息 ---------- */
