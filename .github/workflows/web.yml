@@ -53,16 +53,20 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x ./gradlew
+          # syncWebToDocs 会构建数据层、拷进 docs/，并校验四套主题页仍在
           ./gradlew --no-daemon :webApp:syncWebToDocs
-          test -f docs/web.html || { echo "::error::docs/web.html 未生成"; exit 1; }
-          ls -la docs/web.html docs/maibms-web.js docs/maibms-web.css
+          # 数据层是唯一产物；主题页是手写静态文件，由上面的任务顺带校验存在性
+          test -f docs/maibms-data.js || { echo "::error::docs/maibms-data.js 未生成"; exit 1; }
+          ls -la docs/maibms-data.js
+          ls -la docs/web/
 
       - name: 提交产物（无变化则跳过）
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/web.html docs/maibms-web.js docs/maibms-web.css
+          # 只提交构建产物；主题页与 host 脚本是手写源码，由 PR 正常提交，不由本工作流覆盖
+          git add docs/maibms-data.js
           if git diff --cached --quiet; then
             echo "网页版产物无变化，跳过提交"
             exit 0
