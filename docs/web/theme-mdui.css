@@ -303,10 +303,29 @@ mdui-top-app-bar mdui-button-icon {
   --mdui-comp-icon-button-size: 40px;
 }
 
-/* ---------- 主题切换徽标（顶栏右侧） ---------- */
-.theme-fab {
-  cursor: pointer;
+/* ---------- 内联 SVG 图标 ----------
+ * mdui 组件的 icon 属性靠 Material Icons 字体，那个字体从国内/CI 环境加载不可靠，
+ * 所以图标改成内联 SVG（见 theme-mdui.js 的 mduiIcon）。这里是排版对齐。
+ */
+.ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  line-height: 0;
 }
+.ic svg { display: block; }
+
+/* 按钮内的图标与文字留一点缝 */
+mdui-button .ic,
+mdui-button-icon .ic { margin-right: 6px; }
+mdui-button-icon .ic { margin-right: 0; }
+
+/* 导航栏图标稍大一点 */
+mdui-navigation-bar-item .ic svg { width: 24px; height: 24px; }
+
+/* note 提示条里的图标 */
+.note .ic { margin-top: 1px; }
 
 /* ---------- 空态 ---------- */
 .empty {

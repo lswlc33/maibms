@@ -66,6 +66,52 @@
       .catch(function () { cb(false); });
   }
 
+  /* ---------------- 图标（内联 SVG，不依赖字体） ---------------- */
+
+  /*
+   * 为什么不用 mdui 的 `icon="xxx"` 属性：那个属性靠 Material Icons 字体渲染，
+   * 字体只能从 fonts.googleapis.com（国内不可达）或第三方镜像取；
+   * 镜像在 GitHub Pages 上实测会失败，图标就退化成文字（palette 显示成 pal）。
+   *
+   * 这里把用到的十来个图标写成 SVG path：离线可用、零依赖、颜色跟随 currentColor。
+   */
+  var ICON_PATHS = {
+    bolt: 'M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z',
+    tune: 'M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3M15 4v4M9 10v4M15 16v4',
+    gamepad: 'M7 12h2m-1-1v2m6-1h.01M17 12h.01M6 8h12a3 3 0 0 1 3 3v2a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-2a3 3 0 0 1 3-3z',
+    menu: 'M4 7h16M4 12h16M4 17h16',
+    palette: 'M12 3a9 9 0 1 0 0 18 2 2 0 0 0 1.6-3.2 2 2 0 0 1 1.6-3.2H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3z M7.5 10.5h.01M10.5 7.5h.01M14.5 7.5h.01',
+    dashboard: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
+    bluetooth: 'M7 7l10 10-5 4V3l5 4L7 17',
+    arrow_back: 'M19 12H5M12 19l-7-7 7-7',
+    error: 'M12 8v5M12 16h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+    warning: 'M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+    info: 'M12 16v-5M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z'
+  };
+
+  /** 造一个内联 SVG 图标元素（替代 mdui 的 icon 字体） */
+  function mduiIcon(name, size) {
+    var span = h('span', 'ic');
+    var path = ICON_PATHS[name] || ICON_PATHS.info;
+    var px = size || 20;
+    span.innerHTML =
+      '<svg width="' + px + '" height="' + px + '" viewBox="0 0 24 24" fill="none" ' +
+      'stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" ' +
+      'aria-hidden="true"><path d="' + path + '"/></svg>';
+    return span;
+  }
+
+  /**
+   * 给 mdui 组件挂图标：优先用 slot（组件内部的具名插槽），
+   * 因为 `icon` 属性依赖字体，而 slot 接受任意元素。
+   */
+  function slotIcon(host, name, slotName) {
+    var ic = mduiIcon(name);
+    ic.setAttribute('slot', slotName || 'icon');
+    host.appendChild(ic);
+    return ic;
+  }
+
   /* ---------------- 主题（深/浅） ---------------- */
 
   /*
@@ -103,9 +149,7 @@
 
   function note(text, kind) {
     var n = h('div', 'note ' + (kind || ''));
-    var icon = document.createElement('mdui-icon');
-    icon.setAttribute('name', kind === 'bad' ? 'error' : kind === 'warn' ? 'warning' : 'info');
-    n.appendChild(icon);
+    n.appendChild(mduiIcon(kind === 'bad' ? 'error' : kind === 'warn' ? 'warning' : 'info', 18));
     n.appendChild(h('div', null, text));
     return n;
   }
@@ -127,7 +171,7 @@
     var b = h('mdui-button');
     b.textContent = text;
     if (opts.variant) b.setAttribute('variant', opts.variant);
-    if (opts.icon) b.setAttribute('icon', opts.icon);
+    if (opts.icon) slotIcon(b, opts.icon);
     if (opts.danger) b.setAttribute('variant', 'tonal');
     if (opts.disabled) b.setAttribute('disabled', '');
     if (opts.className) b.className = opts.className;
@@ -169,7 +213,7 @@
     statusChip.id = 'statusChip';
     bar.appendChild(statusChip);
     var themeBtn = h('mdui-button-icon');
-    themeBtn.setAttribute('icon', 'palette');
+    themeBtn.appendChild(mduiIcon('palette', 20));
     themeBtn.setAttribute('title', '外观与主题');
     themeBtn.addEventListener('click', openAppearance);
     bar.appendChild(themeBtn);
@@ -183,7 +227,7 @@
     TABS.forEach(function (t) {
       var item = h('mdui-navigation-bar-item');
       item.setAttribute('value', t.id);
-      item.setAttribute('icon', t.icon);
+      slotIcon(item, t.icon);
       item.textContent = t.label;
       item.addEventListener('click', function () { ui.tab = t.id; renderAll(); });
       nav.appendChild(item);

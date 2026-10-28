@@ -12,16 +12,14 @@
      离线/内网环境下会加载失败，页面会降级成"提示+原始 HTML"（见 theme-mdui.js 的兜底）。 -->
 <link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
 <script src="https://unpkg.com/mdui@2/mdui.global.js"></script>
-<!-- Material Icons（Filled 变体）：mdui 的 `icon`/`name` 属性靠这个字体渲染。
-     不引就会出现"图标名当文字显示"（palette 渲染成 pal）。
+<!--
+  图标不用 Material Icons 字体，改用内联 SVG（见 theme-mdui.js 的 mduiIcon()）。
 
-     用 Filled 变体的原因：它的图标名**不需要后缀**（`name="delete"`），
-     而 Outlined/Rounded/Sharp/TwoTone 要加 `--outlined` 之类的双横线后缀
-     （mdui 2 的约定是 `--`，不是 `-`，写成 `-round` 会渲染成文字）。
-
-     fonts.googleapis.com 国内不可达（实测超时），走 fonts.loli.net 镜像——
-     Google Fonts 的国内反代，内容一致。 -->
-<link rel="stylesheet" href="https://fonts.loli.net/icon"?family=Material+Icons">
+  原因：mdui 的 `icon="xxx"` 属性依赖 Material Icons 字体，而这个字体只能从
+  fonts.googleapis.com（国内不可达）或第三方镜像拿；镜像在 GitHub Pages 上
+  实测会失败，表现为"图标名当文字显示"（palette 渲染成 pal、bolt 渲染成 bolt）。
+  与其赌 CDN，不如把用到的十来个图标直接写成 SVG path——离线可用、零依赖。
+-->
 
 <link rel="stylesheet" href="theme-mdui.css">
 </head>
