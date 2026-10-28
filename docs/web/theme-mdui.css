@@ -1,0 +1,367 @@
+/* mdui 主题的外观补充
+ *
+ * 组件样式全部交给 mdui（Material You），这里只补三件它不自带的东西：
+ *   1. 页面骨架（顶栏固定 + 内容滚动 + 底部导航占位）；
+ *   2. 实时数据的小排版（SOC 环、单体网格、温度块）——这些是"数据可视化"，
+ *      没有现成组件，硬套卡片反而更丑；
+ *   3. 主题切换入口的小徽标。
+ *
+ * 颜色一律走 mdui 的 CSS 变量（--mdui-color-*），于是深/浅色、动态取色都由 mdui 管。
+ */
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: rgb(var(--mdui-color-background));
+  color: rgb(var(--mdui-color-on-background));
+  font-family: var(--mdui-typescale-body-large-font, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+}
+
+#app { min-height: 100vh; }
+
+/* 加载占位 */
+.boot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  min-height: 60vh;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+
+/* ---------- 骨架 ---------- */
+/* 骨架：mdui 的组件默认 block 布局，宽度交给 body；
+   这里只做居中与底部留白（底部导航是 fixed 的，不留白会盖住最后一张卡） */
+.shell {
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+
+.mdui-top-app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.content { padding: 12px 12px 0; }
+
+/* 卡片间距（mdui-card 自带内边距，只补外面） */
+.stack > * + * { margin-top: 12px; }
+
+.card-pad { padding: 16px; }
+
+/* ---------- 卡1：SOC 环 + 设备信息 ---------- */
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.ring { position: relative; width: 96px; height: 96px; flex: 0 0 auto; }
+.ring svg { transform: rotate(-90deg); display: block; }
+
+.ring .pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--mdui-color-on-surface));
+}
+.ring .pct small {
+  font-size: 12px;
+  font-weight: 500;
+  margin-left: 1px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+
+.hero-info { flex: 1; min-width: 0; }
+.hero-info .name {
+  font-size: 17px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hero-info .state {
+  font-size: 13px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  margin-top: 2px;
+}
+.hero-info .cap {
+  font-size: 12.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  margin-top: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 指标网格 ---------- */
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+@media (min-width: 600px) {
+  .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+.metric {
+  background: rgb(var(--mdui-color-surface-container-high));
+  border-radius: 16px;
+  padding: 10px 12px;
+}
+.metric .k {
+  font-size: 11px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+.metric .v {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.metric .v small {
+  font-size: 11px;
+  font-weight: 500;
+  margin-left: 2px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+
+/* ---------- 状态胶囊（用 mdui 的 chip 观感，但不是交互控件） ---------- */
+.pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+.pill {
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgb(var(--mdui-color-surface-container-highest));
+  color: rgb(var(--mdui-color-on-surface-variant));
+  white-space: nowrap;
+}
+.pill.on { background: rgb(var(--mdui-color-primary-container)); color: rgb(var(--mdui-color-on-primary-container)); }
+.pill.warn { background: rgb(var(--mdui-color-tertiary-container)); color: rgb(var(--mdui-color-on-tertiary-container)); }
+.pill.bad { background: rgb(var(--mdui-color-error-container)); color: rgb(var(--mdui-color-on-error-container)); }
+
+/* ---------- 单体电压网格 ---------- */
+.cells {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+}
+.cell {
+  position: relative;
+  background: rgb(var(--mdui-color-surface-container-high));
+  border-radius: 12px;
+  padding: 7px 4px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  border: 2px solid transparent;
+}
+.cell .idx {
+  font-size: 9.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  opacity: .7;
+}
+.cell .v { font-size: 13px; font-weight: 600; }
+.cell.max { border-color: rgb(var(--mdui-color-tertiary)); }
+.cell.min { border-color: rgb(var(--mdui-color-primary)); }
+.cell.missing .v { opacity: .38; }
+.cell .bal {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(var(--mdui-color-primary));
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 11.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  margin-top: 10px;
+}
+.legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+
+/* ---------- 温度 ---------- */
+.temps { display: flex; flex-wrap: wrap; gap: 8px; }
+.temp {
+  flex: 1 1 76px;
+  background: rgb(var(--mdui-color-surface-container-high));
+  border-radius: 14px;
+  padding: 8px 10px;
+  text-align: center;
+}
+.temp .k {
+  font-size: 10.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+.temp .v {
+  font-size: 16px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.temp.hot .v { color: rgb(var(--mdui-color-error)); }
+.temp.cold .v { color: rgb(var(--mdui-color-primary)); }
+
+/* ---------- 趋势 ---------- */
+.trend { width: 100%; height: 68px; display: block; }
+
+/* ---------- 保护 / 告警 ---------- */
+.flags {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.flags .block {
+  background: rgb(var(--mdui-color-surface-container-high));
+  border-radius: 14px;
+  padding: 10px 12px;
+}
+.flags h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.flags ul { margin: 0; padding-left: 18px; }
+.flags li { font-size: 12.5px; color: rgb(var(--mdui-color-error)); }
+.flags .empty { font-size: 12.5px; color: rgb(var(--mdui-color-on-surface-variant)); opacity: .7; }
+
+/* ---------- 参数行 ---------- */
+.param-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 2px;
+  border-bottom: 1px solid rgba(var(--mdui-color-outline-variant), .6);
+}
+.param-row:last-child { border-bottom: none; }
+.param-row .main { flex: 1; min-width: 0; }
+.param-row .title { font-size: 14px; }
+.param-row .desc {
+  font-size: 11.5px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+  margin-top: 2px;
+}
+.param-row .val {
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: rgb(var(--mdui-color-on-surface));
+}
+.param-row .val.dim { color: rgb(var(--mdui-color-on-surface-variant)); opacity: .6; }
+.param-row .val small {
+  font-size: 11px;
+  margin-left: 2px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+
+/* ---------- 底部导航 ---------- */
+mdui-navigation-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  /* 窄屏（412px 及以下）四个 tab 容易挤：显式收小字号并允许均分 */
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* mdui 的图标按钮默认有过大内边距，在窄屏挤压标题——收紧一点 */
+mdui-top-app-bar mdui-button-icon {
+  --mdui-comp-icon-button-size: 40px;
+}
+
+/* ---------- 主题切换徽标（顶栏右侧） ---------- */
+.theme-fab {
+  cursor: pointer;
+}
+
+/* ---------- 空态 ---------- */
+.empty {
+  text-align: center;
+  padding: 32px 16px;
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+.empty .big { font-size: 40px; margin-bottom: 10px; }
+.empty h3 { margin: 0 0 6px; font-size: 16px; color: rgb(var(--mdui-color-on-surface)); }
+.empty p { margin: 0 0 16px; font-size: 13px; line-height: 1.6; }
+
+/* ---------- 提示条 ---------- */
+.note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: rgb(var(--mdui-color-surface-container-high));
+  color: rgb(var(--mdui-color-on-surface-variant));
+}
+.note.warn {
+  background: rgb(var(--mdui-color-tertiary-container));
+  color: rgb(var(--mdui-color-on-tertiary-container));
+}
+.note.bad {
+  background: rgb(var(--mdui-color-error-container));
+  color: rgb(var(--mdui-color-on-error-container));
+}
+
+/* ---------- 日志 ---------- */
+.log-box {
+  background: rgb(var(--mdui-color-surface-container-highest));
+  border-radius: 14px;
+  padding: 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
+.log-box .w { color: rgb(var(--mdui-color-tertiary)); }
+.log-box .e { color: rgb(var(--mdui-color-error)); }
+.log-box .d { opacity: .55; }
+
+/* ---------- 行为辅助 ---------- */
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn-row > * { flex: 0 1 auto; }
+.w-full { width: 100%; }
+.mt-2 { margin-top: 8px; }
+.mt-3 { margin-top: 12px; }
+.mt-4 { margin-top: 16px; }
+.muted { color: rgb(var(--mdui-color-on-surface-variant)); font-size: 12.5px; line-height: 1.7; }

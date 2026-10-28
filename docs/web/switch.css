@@ -1,0 +1,254 @@
+/*
+ * 主题切换页样式。
+ *
+ * 刻意**不依赖任何主题的 CSS**：这一页要在所有主题之间保持中立、永远可用
+ * （哪怕某套主题的样式表坏了、或者 mdui 的 CDN 挂了）。
+ * 所以这里自带一套完整的极简变量与排版。
+ */
+
+:root {
+  --bg: #0a0c10;
+  --card: #16181c;
+  --card-hover: #1d2026;
+  --text: #e8ebf1;
+  --muted: #9aa4b4;
+  --faint: #6b7484;
+  --line: rgba(255, 255, 255, .1);
+  --accent: #4caf50;
+  --radius: 18px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f2f3f5;
+    --card: #ffffff;
+    --card-hover: #f7f8fa;
+    --text: #1a1a1a;
+    --muted: #5a6577;
+    --faint: #8a93a0;
+    --line: rgba(16, 24, 40, .1);
+    --accent: #3e9e4a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 20px 16px 48px;
+}
+
+header { margin-bottom: 20px; }
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.back:hover { color: var(--text); }
+
+h1 {
+  font-size: 24px;
+  margin: 0 0 6px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+}
+
+.sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+/* ---------- 主题卡片 ---------- */
+
+.themes {
+  display: grid;
+  gap: 12px;
+}
+
+.theme-card {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: transform .16s ease, border-color .16s ease, background .16s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.theme-card:hover {
+  transform: translateY(-2px);
+  background: var(--card-hover);
+  border-color: var(--accent);
+}
+
+/* 左侧色条：一眼看出这套主题的主色 */
+.theme-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--swatch, var(--accent));
+}
+
+.theme-card .row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.theme-card .info { flex: 1; min-width: 0; }
+
+.theme-card .name {
+  font-size: 16px;
+  font-weight: 650;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.theme-card .badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  letter-spacing: .02em;
+}
+
+.theme-card .desc {
+  font-size: 12.5px;
+  color: var(--muted);
+  margin-top: 3px;
+  line-height: 1.6;
+}
+
+.theme-card .file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--faint);
+  margin-top: 6px;
+}
+
+.theme-card .go {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 当前主题：加一圈实线 + "当前" 标记 */
+.theme-card.current { border-color: var(--accent); }
+.theme-card.current::after {
+  content: "当前";
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: .04em;
+}
+
+/* ---------- 预览提示 ---------- */
+
+.preview {
+  margin-top: 26px;
+  padding: 16px;
+  border-radius: var(--radius);
+  background: var(--card);
+  border: 1px solid var(--line);
+}
+
+.preview h2 {
+  font-size: 14px;
+  margin: 0 0 6px;
+  font-weight: 650;
+}
+
+.preview p {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.preview code {
+  background: var(--card-hover);
+  border: 1px solid var(--line);
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.preview-actions a {
+  text-decoration: none;
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: transparent;
+  transition: border-color .15s ease, background .15s ease;
+}
+.preview-actions a:hover {
+  border-color: var(--accent);
+  background: var(--card-hover);
+}
+
+/* ---------- 其它 ---------- */
+
+.loading {
+  font-size: 13px;
+  color: var(--muted);
+  padding: 20px 4px;
+}
+
+footer {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--faint);
+  align-items: center;
+}
+
+footer a {
+  color: var(--muted);
+  text-decoration: none;
+}
+footer a:hover { color: var(--text); }

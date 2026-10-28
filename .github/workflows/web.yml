@@ -1,0 +1,71 @@
+name: Web · 同步网页版到 docs
+
+# 网页版的发布位置是 `docs/web.html`（Pages 的发布目录就是 docs/，legacy 模式直接读分支文件），
+# 所以构建产物**必须提交进仓库**。这个工作流负责在源码变化后重新生成并提交，
+# 避免"改了代码但线上页面还是旧的"这种看不见的漂移。
+#
+# 只在相关路径变化时触发；产物无变化时（例如只改了注释）不产生空提交。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'webApp/src/**'
+      - 'webApp/build.gradle.kts'
+      - 'composeApp/src/commonMain/**'   # 引擎源码被 webApp 直接复用，改协议要重新出包
+      - '.github/workflows/web.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: web-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: 重新生成并提交
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Kotlin/JS 的 npm 工具链约 80MB：缓存住，否则每次都要现装
+      - name: Cache Kotlin/JS npm dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/yarn
+            build/js/node_modules
+          key: kotlinjs-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+
+      - name: 构建并同步到 docs/
+        run: |
+          set -euo pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :webApp:syncWebToDocs
+          test -f docs/web.html || { echo "::error::docs/web.html 未生成"; exit 1; }
+          ls -la docs/web.html docs/maibms-web.js docs/maibms-web.css
+
+      - name: 提交产物（无变化则跳过）
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/web.html docs/maibms-web.js docs/maibms-web.css
+          if git diff --cached --quiet; then
+            echo "网页版产物无变化，跳过提交"
+            exit 0
+          fi
+          git commit -m "chore(web): 同步网页版产物到 docs [skip ci]"
+          git push

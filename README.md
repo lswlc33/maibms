@@ -14,7 +14,12 @@
 | :--- | :--- | :--- |
 | **正式版**（推荐） | 日常使用，稳定优先 | **[⬇ 最新正式版 Releases ›](../../releases/latest)** |
 | **测试版** | 抢先体验新功能，可能不稳定 | **[⬇ 最新测试版（Pre-release）›](../../releases)** |
+| **网页版** | 不想装东西、临时看一眼 | **[🌐 在浏览器里直接打开 ›](https://lswlc33.github.io/maibms/web/)** |
 
+> **网页版**用安卓 Chrome（桌面 Chrome / Edge 也行）打开即可，不下载、不安装，靠 Web Bluetooth
+> 直连保护板看实时数据与参数。受浏览器限制：关掉页面就断开、没有后台监控与通知、每次打开要重新选一次设备。
+> 明细见 [网页版](#网页版)。
+>
 > 两个渠道每次发布都同时提供 **APK**（`maibms-<版本>.apk`，已签名）和 **未签名 ipa**
 > （`maibms-<版本>-unsigned.ipa`，需自签安装，见 [iOS 构建](#ios-构建)）。
 > 已签名 APK 两渠道同一密钥、可互相覆盖升级；应用内「设置 → 关于本软件」还能按渠道自动检查更新（默认稳定版）。
@@ -141,10 +146,12 @@ export ANDROID_HOME="$LOCALAPPDATA/Android/Sdk"
 
 # 离屏渲染 UI 截图到 composeApp/build/shots/（无需设备）
 ./gradlew :composeApp:shot
+
+# 网页版：打包并同步到 docs/（Node 18+，首次会自动装 webpack 工具链）
+./gradlew :webApp:syncWebToDocs
 ```
 
 ### iOS 构建
-
 KMP 让界面、协议解析、数据这些**共享代码**一次编写三端复用；但**蓝牙**与 **App 外壳**
 天生要按平台各写一份，iOS 侧这两块现在也补齐了（`iosMain/transport/IosBleTransport.kt`
 与 `iosApp/` 壳工程）。iOS 侧在 CI 里分成两条线：**出包**（预发布与正式版两条流水线各自打一个
@@ -298,6 +305,104 @@ Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂�
 
 ---
 
+## 网页版
+
+网页版把同一个 Kotlin 引擎（`protocol/` + `data/` + `transport/`）编到 **Kotlin/JS**，
+配一层自写的 DOM 界面（`webApp/`），用 **Web Bluetooth** 直连保护板。协议解析、参数表、
+命令语义与 Android/iOS 版**是同一份代码**，所以不会出现"网页和 App 读数不一样"。
+
+- **在线地址**：<https://lswlc33.github.io/maibms/web/>（默认主题；其它主题见页面内「切换主题」）
+- **支持的浏览器**：安卓 Chrome（免开任何 flag）、桌面 Chrome / Edge。
+  Safari、Firefox、微信/QQ 内置浏览器都不支持 Web Bluetooth。
+- **必须 https 或 localhost**：浏览器的安全上下文要求，不是本项目的选择。
+
+### 浏览器带来的限制（不是 bug）
+
+| 限制 | 原因 |
+| :--- | :--- |
+| 关掉页面就断开 | 浏览器不允许网页在后台常驻蓝牙连接 |
+| 没有告警通知、没有后台监控 | 没有后台执行环境，通知也无从发起 |
+| 每次打开要重新选一次设备 | `requestDevice()` 必须在用户手势里调用，且授权只在该页面会话内有效 |
+| 设置里没有「检查更新」 | 网页每次打开加载的都是最新构建，不存在"已安装的旧版本" |
+| 日志不落盘 | 浏览器不能写用户磁盘；改为「复制到剪贴板」 |
+| 配置只存在本机浏览器 | 密码/历史设备/快照存 `localStorage`，清缓存或换浏览器会丢 |
+
+想要后台监控、告警通知、常驻重连这些能力，请用 Android 版。
+
+### 本地构建与预览
+
+网页版是**一个数据层 + 多套主题页**的结构，全部在 `docs/web/` 下：
+
+```
+docs/maibms-data.js     ← Kotlin/JS 产物：BLE + 协议 + 状态桥（唯一需要构建的文件）
+docs/web/index.html     ← 默认主题（手写静态）
+docs/web/mdui.html      ← Material 主题（mdui 2 组件库）
+docs/web/daisy.html     ← Daisy 主题（Tailwind + daisyUI）
+docs/web/switch.html    ← 主题切换页
+docs/web/maibms-host.js ← Kotlin 与 JS 之间 5 个动态属性函数（见下方「为什么需要它」）
+```
+
+**加一套新主题不用重编 Kotlin**：写一个 `theme-xxx.html` + `theme-xxx.js`，吃同一份
+`window.Maibms` 数据，再在 `Bridge.themes()` 里登记一行即可。
+
+```bash
+# 构建数据层并同步到 docs/（只同步 maibms-data.js；主题页是手写文件，不经过构建）
+./gradlew :webApp:syncWebToDocs
+
+# 本地看效果（Web Bluetooth 在 localhost 上可用）
+cd docs && python -m http.server 8099
+# 浏览器打开 http://127.0.0.1:8099/web/
+```
+
+没有保护板也想看界面？地址后面加 `?preview=1`（如 `http://127.0.0.1:8099/web/?preview=1`），
+会载入一份内置示例数据，把总览/单体/温度/趋势/参数全画出来。它不写任何持久化状态，刷新即回真实态。
+
+### 实现要点
+
+Kotlin 侧**只做数据层**，通过 `window.Maibms` 暴露三类东西（`webApp/src/jsMain/.../Bridge.kt`）：
+
+| 成员 | 用途 |
+| :--- | :--- |
+| `Maibms.state` / `onState(fn)` | 一份 JSON 快照 + 订阅（每次数据变化推整份） |
+| `Maibms.meta()` | 参数分组、命令表、设备列表、设置（不常变，含**已格式化的参数显示值**） |
+| `Maibms.connect()` / `auth()` / `writeParam()` / `control()` … | 动作，返回 Promise（鉴权、写参数、控制命令的结果对象） |
+
+刻意**不做细粒度 diff**：轮询 600~900ms 一次，整份重画对浏览器毫无压力；
+而细粒度更新会在每套主题里引入"某处忘了刷新"的 bug——这是主题系统最容易翻车的地方。
+
+三套主题的取舍：
+
+- **默认**：无边框扁平卡片，手写 CSS。视觉与 Android/iOS 版对齐，无外部依赖，离线可用。
+- **Material**：mdui 2 组件库（Web Component）。验证"换成组件库不影响功能"。
+  图标需要额外的 Material Icons 字体，且**必须用 Filled 变体**（图标名不带后缀）——
+  Rounded/Outlined 的写法是 `name--rounded`（双横线），写成 `-round` 会渲染成文字。
+  `fonts.googleapis.com` 在国内不可达，用 `fonts.loli.net` 镜像。
+- **Daisy**：Tailwind CSS + daisyUI 4。验证"换成原子化 CSS 框架也不影响功能"。
+  注意 Tailwind 自带 `.ring` 工具类，自定义类名要避开（这里把 SOC 环改成了 `.soc-ring`）。
+
+#### 为什么需要 `maibms-host.js`
+
+Kotlin/JS 里"往 JS 对象上挂动态键"三条路都有坑（都实测过）：
+
+- `api.foo = x`（`dynamic` 静态名赋值）会被编译成属性/设置器访问，**静默丢弃**——
+  `window.Maibms` 存在但 `Object.getOwnPropertyNames()` 是空数组，且不报错；
+- `js("(function(o,k,v){o[k]=v})")` 会被当**表达式求值**（编译期就调掉了），
+  `o[k]=v` 根本不会出现在产物里；
+- `@JsFun` 在 Kotlin 2.1 的 stdlib 里是 `internal`，业务代码引不到。
+
+所以这 5 个函数写成真正的手写 JS（`maibms-host.js` 的 `MaibmsHost`），Kotlin 只做 external 声明。
+**页面加载顺序必须是**：`maibms-host.js` → `maibms-data.js` → `theme-xxx.js`。
+
+另外两个踩过的坑（写在新主题里时要避开）：
+
+- `external object JSON` 的名字**必须与全局一致**。曾写成 `external object JsJson`，
+  运行时抛 `ReferenceError: JsJson is not defined`，又被外层 `runCatching` 吞掉，
+  表现成"数据层加载了但 `window.Maibms` 不存在"——极难查。
+- webpack 默认把产物打成 **UMD library**，那种形态下 `main()` **不会自动执行**。
+  已在 `webApp/build.gradle.kts` 里清掉 `output.library`，让 `main()` 随脚本加载即运行。
+
+---
+
 ## 目录结构
 
 ```
@@ -306,11 +411,14 @@ composeApp/src/
 │   └── kotlin/io/github/lswlc33/maibms/
 │       ├── protocol/    # 帧解析、实时数据解码、参数字典、位域字典
 │       ├── data/        # 仓库层（连接/轮询/命令队列）、状态流、落盘
-│       ├── transport/   # 传输抽象（Android BLE / Noop）
+│       ├── transport/   # 传输抽象（Android BLE / iOS CoreBluetooth / Noop）
 │       └── ui/          # Compose 界面
 ├── androidMain/         # Android BLE 实现、Activity、系统返回键、剪贴板、启动器图标资源、后台监控服务与通知
+├── iosMain/             # iOS CoreBluetooth 传输与各平台实现
 ├── desktopMain/         # 桌面入口 + 离屏截图工具（QA 用，不进 APK）
 └── desktopTest/         # 协议与数据管线单元测试
+webApp/src/jsMain/       # 网页版：复用上面 protocol/data/transport 源码 + DOM 界面
+iosApp/                  # iOS 壳工程（Xcode 工程文件，见 iOS 构建）
 ```
 
 图标原画与生成脚本在 `tools/icon/`（见[应用图标](#应用图标)）。

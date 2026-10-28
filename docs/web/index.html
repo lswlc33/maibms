@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c10">
+<title>麻衣 BMS · 网页版</title>
+<meta name="description" content="麻衣 BMS 网页版：在安卓 Chrome 里直接连接蚂蚁 BMS 保护板查看实时数据，无需安装。">
+<link rel="icon" href="../images/app-icon-512.png">
+<!--
+  主题：默认（无边框扁平卡片）
+
+  这个页面只负责"画"，所有数据与动作都来自 ../maibms-data.js 暴露的 window.Maibms：
+    · Maibms.onState(fn)  —— 每次数据变化收到整份状态
+    · Maibms.meta()       —— 参数分组/命令表/设备等不常变的表
+    · Maibms.connect() 等 —— 动作
+  换主题就是换这套 HTML/CSS/JS；协议与 BLE 只有一份。
+-->
+<link rel="stylesheet" href="theme-default.css">
+</head>
+<body>
+<div id="app">
+  <div class="boot">
+    <div class="boot-inner">
+      <div class="spinner"></div>
+      <p>正在加载…</p>
+      <noscript>这个页面需要 JavaScript 才能工作。</noscript>
+    </div>
+  </div>
+</div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<!-- 数据层：BLE + 协议 + 状态（Kotlin/JS 编译产物） -->
+<script src="maibms-host.js"></script>
+<script src="../maibms-data.js"></script>
+<script>
+/* 启动数据层：bundle 以 UMD 输出，main() 不会自动跑，必须显式调用（幂等） */
+if (window.MaibmsBoot) window.MaibmsBoot();
+</script>
+<!-- 主题逻辑 -->
+<script src="theme-default.js"></script>
+</body>
+</html>

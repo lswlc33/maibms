@@ -3,6 +3,7 @@
 .kotlin/
 build/
 composeApp/build/
+webApp/build/
 local.properties
 
 # 本地 Gradle 发行版（约 276MB）
@@ -62,6 +63,10 @@ $RECYCLE.BIN/
 *.bak
 *~
 
-# Node（若后续使用工具链）
+# Node / Kotlin-JS 工具链
 node_modules/
 __pycache__/
+# yarn.lock 里钉的是**本机** registry（这里解析出来的是 registry.npmmirror.com 国内镜像），
+# 入库会让 CI（ubuntu-latest，直连 npmjs）去访问一个国内镜像源，慢或直接失败。
+# 不入库 = 每次按 runner 自己的 registry 解析；代价只是首次构建慢一点（有 npm 缓存兜着）。
+kotlin-js-store/

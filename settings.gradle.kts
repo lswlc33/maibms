@@ -13,3 +13,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "ant_bms_open"
 include(":composeApp")
+include(":webApp")

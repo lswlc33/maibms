@@ -213,7 +213,8 @@
   .dl-ver{color:var(--faint); font-size:13.5px}
   .dl-ver b{color:var(--text)}
 
-  .dl-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:22px}
+  /* auto-fit：两张卡时是两列，加了网页版后自动排成三列，窄屏再退成单列 */
+  .dl-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; margin-top:22px}
   .dl-card{
     display:flex; flex-direction:column; gap:14px; text-decoration:none; color:inherit;
     border:1px solid var(--line); border-radius:var(--radius); padding:22px;
@@ -330,6 +331,7 @@
       <a href="#features">软件特色</a>
       <a href="#shots">界面预览</a>
       <a href="#download">下载</a>
+      <a href="web/">网页版</a>
       <a href="#notes">安装说明</a>
     </nav>
     <button class="icon-btn" id="themeBtn" title="切换深色 / 浅色" aria-label="切换主题">◐</button>
@@ -355,12 +357,13 @@
         </p>
         <div class="cta">
           <a class="btn btn-primary" href="#download">⬇ 立即下载</a>
+          <a class="btn btn-ghost" href="web/">🌐 网页版直接用</a>
           <a class="btn btn-ghost" href="https://github.com/lswlc33/maibms" target="_blank" rel="noopener">查看源码</a>
         </div>
         <div class="tri">
           <span><b>直连 BLE</b>　不经过小程序容器</span>
           <span><b>一屏尽览</b>　不用来回翻页</span>
-          <span><b>Android / iOS</b>　同一套代码</span>
+          <span><b>Android / iOS / Web</b>　同一套代码</span>
         </div>
       </div>
     </div>
@@ -495,6 +498,18 @@
             </div>
             <div class="meta" id="ipaMeta">…</div>
             <span class="go">下载 IPA <span class="arrow">→</span></span>
+          </a>
+
+          <!-- 网页版：不下载、不安装，安卓 Chrome 直接连保护板（Web Bluetooth）。
+               网页版在 web/ 子目录，多套主题（默认 / Material / Daisy）共用同一个数据层。 -->
+          <a class="dl-card" href="web/">
+            <span class="ribbon">Web</span>
+            <div class="os">
+              <div class="glyph">🌐</div>
+              <div><h3>网页版</h3><small>免安装 · 安卓 CHROME</small></div>
+            </div>
+            <div class="meta">关掉页面即断开，无后台通知</div>
+            <span class="go">浏览器打开 <span class="arrow">→</span></span>
           </a>
         </div>
 
