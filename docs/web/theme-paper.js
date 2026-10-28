@@ -13,6 +13,9 @@
  */
 (function () {
   'use strict';
+  // 设备被宿主拦截（iOS 无 Web Bluetooth）：宿主已铺全页提示，这里不再渲染任何界面
+  if (window.__MAIBMS_BLOCKED) return;
+
 
   var M = window.Maibms;
   var THEME_FILE = 'paper.html';

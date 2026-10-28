@@ -314,12 +314,15 @@ Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂�
 - **在线地址**：<https://lswlc33.github.io/maibms/web/>（默认主题；其它主题见页面内「切换主题」）
 - **支持的浏览器**：安卓 Chrome（免开任何 flag）、桌面 Chrome / Edge。
   Safari、Firefox、微信/QQ 内置浏览器都不支持 Web Bluetooth。
+  **iPhone / iPad 会整页拦截**：iOS 的 Safari 与所有 iOS 浏览器（套壳也走 WebKit）
+  都没有 Web Bluetooth，进页面直接显示提示，引导换 Android Chrome 或装 App。
 - **必须 https 或 localhost**：浏览器的安全上下文要求，不是本项目的选择。
 
 ### 浏览器带来的限制（不是 bug）
 
 | 限制 | 原因 |
 | :--- | :--- |
+| iPhone / iPad 整页屏蔽 | iOS 的 Safari 和所有 iOS 浏览器都不提供 Web Bluetooth（App Store 要求套壳也走 WebKit）；由 `maibms-host.js` 在数据层之前识别并铺全页提示 |
 | 关掉页面就断开 | 浏览器不允许网页在后台常驻蓝牙连接 |
 | 没有告警通知、没有后台监控 | 没有后台执行环境，通知也无从发起 |
 | 每次打开要重新选一次设备 | `requestDevice()` 必须在用户手势里调用，且授权只在该页面会话内有效 |
@@ -342,7 +345,7 @@ docs/web/admin.html     ← 控制台主题（Bootstrap 侧栏仪表盘，宽屏
 docs/web/console.html   ← 终端主题（等宽 HUD + 字符进度条 + 键盘快捷键）
 docs/web/paper.html     ← 杂志主题（排版优先，特大数字，无卡片）
 docs/web/switch.html    ← 主题切换页
-docs/web/maibms-host.js ← Kotlin 与 JS 之间 5 个动态属性函数（见下方「为什么需要它」）
+docs/web/maibms-host.js ← Kotlin 与 JS 之间 5 个动态属性函数 + iOS 设备拦截（见下方「为什么需要它」）
 ```
 
 **六套主题 = 三种导航布局（底部标签 / 底部导航 / 侧栏 / 顶部文字链接）× 多种视觉语言**，
@@ -368,21 +371,26 @@ Kotlin 侧**只做数据层**，通过 `window.Maibms` 暴露三类东西（`web
 | 成员 | 用途 |
 | :--- | :--- |
 | `Maibms.state` / `onState(fn)` | 一份 JSON 快照 + 订阅（每次数据变化推整份） |
-| `Maibms.meta()` | 参数分组、命令表、设备列表、设置（不常变，含**已格式化的参数显示值**） |
+| `Maibms.meta()` | 参数分组、命令表、设备族（不常变，含**已格式化的参数显示值**）；设备列表与设置随 `state` 每拍推 |
 | `Maibms.connect()` / `auth()` / `writeParam()` / `control()` … | 动作，返回 Promise（鉴权、写参数、控制命令的结果对象） |
 
 刻意**不做细粒度 diff**：轮询 600~900ms 一次，整份重画对浏览器毫无压力；
 而细粒度更新会在每套主题里引入"某处忘了刷新"的 bug——这是主题系统最容易翻车的地方。
 
-三套主题的取舍：
+六套主题的取舍（后三套是本轮新增的**布局风格**实验）：
 
 - **默认**：无边框扁平卡片，手写 CSS。视觉与 Android/iOS 版对齐，无外部依赖，离线可用。
 - **Material**：mdui 2 组件库（Web Component）。验证"换成组件库不影响功能"。
-  图标需要额外的 Material Icons 字体，且**必须用 Filled 变体**（图标名不带后缀）——
-  Rounded/Outlined 的写法是 `name--rounded`（双横线），写成 `-round` 会渲染成文字。
-  `fonts.googleapis.com` 在国内不可达，用 `fonts.loli.net` 镜像。
+  图标用**内联 SVG**（`ICON_PATHS` 表）而非 Material Icons 字体——那个字体只能从
+  `fonts.googleapis.com`（国内不可达）或镜像（Pages 实测也挂）拿，赌 CDN 不如零依赖。
+  若回退字体方案：变体后缀是**双横线**（`name--rounded`），Filled 不带后缀。
 - **Daisy**：Tailwind CSS + daisyUI 4。验证"换成原子化 CSS 框架也不影响功能"。
   注意 Tailwind 自带 `.ring` 工具类，自定义类名要避开（这里把 SOC 环改成了 `.soc-ring`）。
+- **控制台（admin）**：Bootstrap 5 侧栏仪表盘，宽屏 12 列 bento。注意 Bootstrap 5.1+
+  自带 `.grid`/`.col-*` 组件类，自定义网格要换前缀（这里用 `.mw-grid`），
+  且列模板要 `minmax(0, 1fr)` 防内容撑爆。
+- **终端（console）**：等宽字体 HUD，字符进度条 + 键盘快捷键，深色常驻。
+- **杂志（paper）**：Pico classless，排版优先——特大 SOC 数字、图注式指标、细线键值行，无卡片。
 
 #### 为什么需要 `maibms-host.js`
 
