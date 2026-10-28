@@ -220,7 +220,8 @@ class BmsRepository(
             if (started) true else { started = true; false }
         }
         if (alreadyStarted) return
-        BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（Android BLE）" else "（无 BLE 后端）"))
+        // 不写死平台名：这条日志被 Android/iOS/桌面/网页共用，说「真实 BLE 后端」才准确
+        BmsLog.i("APP", "应用启动" + (if (realTransport != null) "（真实 BLE 后端）" else "（无 BLE 后端）"))
         // 自动重连目标：历史列表里显式指定的设备优先，否则默认上次连接；
         // 被指定的设备若已从历史删除，回退到上次连接
         val target = AppStore.autoConnectAddress
