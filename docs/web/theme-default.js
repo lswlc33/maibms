@@ -30,6 +30,7 @@
   /* ---------------- 界面状态（不落盘的纯 UI 状态） ---------------- */
 
   var ui = {
+    lastRenderKey: null,
     tab: 'dash',
     settingsPage: 'root',
     paramsGroup: 0,
@@ -194,15 +195,26 @@
     }
   }
 
-  function renderTabbar() {
+  /**
+   * 底栏：**只建一次**，之后只更新选中态。
+   * 与顶栏同一个坑：早先每拍 clear() 重建，节点被换掉后用户的点击会落在
+   * 即将被丢弃的旧节点上——表现为"点标签偶尔没反应"。
+   */
+  function renderTabbar(st) {
     var bar = $('.tabbar');
-    clear(bar);
-    TABS.forEach(function (t) {
-      var b = el('button', t.id === ui.tab ? 'on' : '');
-      b.appendChild(icon(t.icon));
-      b.appendChild(el('span', null, t.label));
-      b.addEventListener('click', function () { ui.tab = t.id; renderAll(); });
-      bar.appendChild(b);
+    if (!bar.querySelector('button')) {
+      clear(bar);
+      TABS.forEach(function (t) {
+        var b = el('button');
+        b.appendChild(icon(t.icon));
+        b.appendChild(el('span', null, t.label));
+        b.addEventListener('click', function () { ui.tab = t.id; renderAll(); });
+        b.dataset.tab = t.id;
+        bar.appendChild(b);
+      });
+    }
+    bar.querySelectorAll('button').forEach(function (b) {
+      b.className = b.dataset.tab === ui.tab ? 'on' : '';
     });
   }
 
@@ -316,8 +328,7 @@
     row.appendChild(b);
     body.appendChild(row);
 
-    var meta = ui.meta || {};
-    var saved = (meta.devices || []).filter(function (d) { return d.saved; })[0];
+    var saved = (st.devices || []).filter(function (d) { return d.saved; })[0];
     if (saved) {
       body.appendChild(el('p', 'hint-line', '上次连接：' + saved.name +
         '（' + saved.familyLabel + '）。浏览器要求每次打开都重新选择一次设备。'));
@@ -547,8 +558,7 @@
     if (st.params.reading) wrap.appendChild(banner('正在读取参数区…（200+ 项，通常几秒）', 'info'));
     if (st.params.fromCache) wrap.appendChild(banner('显示的是上次成功连接时缓存的配置（非实时）。'));
 
-    var meta = ui.meta || {};
-    var groups = meta.paramGroups || [];
+    var groups = (ui.meta || {}).paramGroups || [];
     var live = st.connected;
     if (!groups.length || !Object.keys(st.params.values || {}).length) {
       wrap.appendChild(card(null, '', emptyState('⚙', '还没有参数数据',
@@ -829,7 +839,7 @@
       { value: 900, label: '更稳 900ms' },
       { value: 600, label: '默认 600ms' },
       { value: 300, label: '更跟手 300ms' }
-    ], M.meta().settings.pollInterval, function (v) {
+    ], st.settings.pollInterval, function (v) {
       M.setPollInterval(v); toast('轮询频率已设为 ' + v + ' ms'); renderAll();
     }));
     pollBody.appendChild(el('p', 'hint-line',
@@ -845,11 +855,11 @@
         function () { ui.settingsPage = 'channels'; renderAll(); }));
     }
 
-    wrap.appendChild(settingsRow('历史设备', (meta.devices || []).length + ' 台',
+    wrap.appendChild(settingsRow('历史设备', (st.devices || []).length + ' 台',
       function () { ui.settingsPage = 'devices'; renderAll(); }));
     wrap.appendChild(settingsRow('运行日志', ui.logLines.length + ' 条',
       function () { ui.settingsPage = 'log'; renderAll(); }));
-    wrap.appendChild(settingsRow('关于', 'v' + ((meta.version || {}).name || ''),
+    wrap.appendChild(settingsRow('关于', 'v' + ((st.version || {}).name || ''),
       function () { ui.settingsPage = 'about'; renderAll(); }));
 
     // 网页版限制（显眼说明，避免"为什么没有通知"的困惑）
@@ -1039,7 +1049,7 @@
     fmain.appendChild(el('div', 'desc', '记录每一条 TX/RX 十六进制（密码帧已遮蔽）'));
     frow.appendChild(fmain);
     var meta = ui.meta || {};
-    var sw = el('div', 'switch' + (meta.settings.logFrameOn ? ' on' : ''));
+    var sw = el('div', 'switch' + (st.settings.logFrameOn ? ' on' : ''));
     sw.appendChild(el('div', 'track'));
     frow.appendChild(sw);
     frow.addEventListener('click', function () {
@@ -1150,7 +1160,41 @@
 
   /* ---------------- 整页渲染 ---------------- */
 
+  /**
+   * 按页渲染策略：不同标签对"变化"的定义不同。
+   * 总览是实时数据每拍都画；参数/控制/设置页只依赖低频字段（参数原始值、权限、
+   * 连接态、设备与设置），若每次状态推送都整页重建，用户在 200+ 行的参数列表里
+   * 滚到一半就会被拽回顶部——真机不可接受。低频页用 renderKey 判断是否跳过重绘。
+   */
+  function renderKey(st) {
+    switch (ui.tab) {
+      case 'params':
+        return JSON.stringify([st.params, st.permission, st.connected, st.stalled]);
+      case 'control':
+        return JSON.stringify([st.connected, st.permission, st.caps, st.device.chMos, st.device.disMos, st.device.balance]);
+      case 'settings':
+        return JSON.stringify([st.connected, st.permission, st.passwords, st.channels,
+          st.devices, st.settings, ui.settingsPage, ui.settingsPage === 'log' ? ui.logLines.length : 0]);
+      default:
+        return null; // 总览：总是重画（实时读数）
+    }
+  }
+
   function renderAll() {
+    try { renderAllInner(); }
+    catch (e) {
+      // 渲染异常显示到页面上而不是静默终止脚本：
+      // 本函数由桥的 onState 回调触发，抛错会顺着回调终止整个主题脚本，
+      // 页面表现为"半截内容 + 无提示"。显示出来才有的查。
+      var msg = String(e && e.stack || e);
+      var c = document.getElementById('content') || document.body;
+      var box = c.querySelector('.render-error') || c.appendChild(h('div', 'render-error'));
+      box.textContent = '渲染出错：' + msg;
+      box.style.cssText = 'color:var(--bs-danger-text-emphasis, #ff7b72);padding:12px;font-size:12px;white-space:pre-wrap';
+    }
+  }
+
+  function renderAllInner() {
     var st = ui.state || {};
     var app = document.getElementById('app');
     if (!app) return;
@@ -1165,6 +1209,17 @@
       app.appendChild(root);
     }
 
+    // 低频页：内容没变就不重绘（避免滚动跳变与点击丢失）
+    var key = renderKey(st);
+    if (key !== null && key === ui.lastRenderKey) {
+      renderTopbar(st);
+      return;
+    }
+    ui.lastRenderKey = key;
+
+    // 滚动保持：同页重绘后内容高度通常不变，把滚动位置放回去
+    var y = window.scrollY;
+
     renderTopbar(st);
     renderTabbar();
 
@@ -1175,6 +1230,9 @@
       case 'control': main.appendChild(renderControl(st)); break;
       case 'settings': main.appendChild(renderSettings(st)); break;
       default: main.appendChild(renderDashboard(st));
+    }
+    if (Math.abs(document.documentElement.scrollHeight - main.scrollHeight - y) < 200) {
+      window.scrollTo(0, y);
     }
   }
 

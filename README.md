@@ -335,15 +335,19 @@ Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂�
 
 ```
 docs/maibms-data.js     ← Kotlin/JS 产物：BLE + 协议 + 状态桥（唯一需要构建的文件）
-docs/web/index.html     ← 默认主题（手写静态）
-docs/web/mdui.html      ← Material 主题（mdui 2 组件库）
-docs/web/daisy.html     ← Daisy 主题（Tailwind + daisyUI）
+docs/web/index.html     ← 默认主题（移动卡片流 + 底部标签）
+docs/web/mdui.html      ← Material 主题（mdui 2 组件库，底部导航）
+docs/web/daisy.html     ← Daisy 主题（Tailwind + daisyUI，卡片网格）
+docs/web/admin.html     ← 控制台主题（Bootstrap 侧栏仪表盘，宽屏多列 bento）
+docs/web/console.html   ← 终端主题（等宽 HUD + 字符进度条 + 键盘快捷键）
+docs/web/paper.html     ← 杂志主题（排版优先，特大数字，无卡片）
 docs/web/switch.html    ← 主题切换页
 docs/web/maibms-host.js ← Kotlin 与 JS 之间 5 个动态属性函数（见下方「为什么需要它」）
 ```
 
-**加一套新主题不用重编 Kotlin**：写一个 `theme-xxx.html` + `theme-xxx.js`，吃同一份
-`window.Maibms` 数据，再在 `Bridge.themes()` 里登记一行即可。
+**六套主题 = 三种导航布局（底部标签 / 底部导航 / 侧栏 / 顶部文字链接）× 多种视觉语言**，
+全部吃同一份 `window.Maibms` 数据，加一套新主题不用重编 Kotlin。
+终端主题还支持键盘快捷键（1~4 切面板、C 连接、X 断开）。
 
 ```bash
 # 构建数据层并同步到 docs/（只同步 maibms-data.js；主题页是手写文件，不经过构建）

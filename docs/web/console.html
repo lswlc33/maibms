@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#050807">
+<title>麻衣 BMS · 终端主题</title>
+<meta name="description" content="麻衣 BMS 网页版（终端主题）：等宽字体的 HUD 界面，键盘可操作，在安卓 Chrome 里直连保护板。">
+<link rel="icon" href="../images/app-icon-512.png">
+
+<!--
+  终端主题（布局实验②）：**HUD 仪表**。
+  与其余主题的差别：
+   · 没有"卡片"这个概念——信息放在 ASCII 风格的边框面板里，像串口调试工具；
+   · 顶部一条固定 HUD：SOC 用字符进度条（█░），关键读数排成一行；
+   · 支持键盘快捷键 1~4 切换面板、C 连接、X 断开（桌面体验）；
+   · 等宽字体、磷光绿 + 琥珀警示，深色常驻（终端没有"浅色模式"）。
+  无框架，纯手写 CSS。
+-->
+<style>
+  :root {
+    --bg: #050807;
+    --panel: #0a120d;
+    --fg: #7ee787;        /* 磷光绿 */
+    --fg-dim: #3e8e52;
+    --fg-faint: #2a5a38;
+    --amber: #ffb454;
+    --red: #ff7b72;
+    --cyan: #79c0ff;
+    --line: #1d3a28;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", "Cascadia Mono", monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: contain;
+    min-height: 100vh;
+  }
+  a { color: var(--fg); }
+  ::selection { background: var(--fg-dim); color: var(--bg); }
+
+  .wrap { max-width: 900px; margin: 0 auto; padding: 0 12px 56px; }
+
+  /* ---------- HUD 顶栏（固定） ---------- */
+  .hud {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    padding: 8px 12px;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .hud-line { display: flex; gap: 16px; align-items: baseline; }
+  .hud-item { white-space: nowrap; }
+  .hud-item .k { color: var(--fg-faint); }
+  .hud-item .v { font-weight: 700; }
+  .hud-item .v.warn { color: var(--amber); }
+  .hud-item .v.bad { color: var(--red); }
+
+  .bar { letter-spacing: -1px; }
+  .bar .on { color: var(--fg); }
+  .bar .off { color: var(--fg-faint); }
+
+  .cursor {
+    display: inline-block;
+    width: 8px; height: 15px;
+    background: var(--fg);
+    vertical-align: -2px;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ---------- 标签条（命令式） ---------- */
+  .tabs {
+    display: flex; gap: 8px; flex-wrap: wrap;
+    padding: 10px 12px 2px;
+  }
+  .tab {
+    background: none; border: 1px solid var(--line); color: var(--fg-dim);
+    font: inherit; font-size: 12px;
+    padding: 4px 12px; cursor: pointer;
+  }
+  .tab:hover { border-color: var(--fg-dim); color: var(--fg); }
+  .tab.on { border-color: var(--fg); color: var(--bg); background: var(--fg); font-weight: 700; }
+  .tab .key { opacity: .6; margin-right: 5px; }
+
+  /* ---------- ASCII 面板 ---------- */
+  .panel { margin: 12px 0; }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px;
+    color: var(--fg-faint);
+    margin-bottom: -1px;
+    white-space: nowrap; overflow: hidden;
+  }
+  .panel-head::before, .panel-head .rule { content: ""; flex: 1; border-top: 1px solid var(--line); }
+  .panel-head .t { color: var(--fg-dim); }
+  .panel-body {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    padding: 10px 12px;
+  }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 18px; }
+  .kv .k { color: var(--fg-faint); }
+  .kv .v { text-align: right; font-weight: 600; }
+  .kv .v.warn { color: var(--amber); }
+  .kv .v.bad { color: var(--red); }
+
+  .big { font-size: 30px; font-weight: 700; letter-spacing: -.5px; }
+  .big small { font-size: 13px; font-weight: 400; color: var(--fg-dim); margin-left: 4px; }
+
+  .cells {
+    display: grid; gap: 3px;
+    grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+  }
+  .cell {
+    border: 1px solid var(--line);
+    padding: 3px 5px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    position: relative;
+  }
+  .cell .idx { position: absolute; left: 4px; top: 2px; font-size: 9px; color: var(--fg-faint); }
+  .cell.max { border-color: var(--amber); }
+  .cell.max .v { color: var(--amber); }
+  .cell.min { border-color: var(--cyan); }
+  .cell.min .v { color: var(--cyan); }
+  .cell.missing .v { color: var(--fg-faint); }
+  .cell.bal::after {
+    content: "◈"; position: absolute; right: 3px; top: 1px;
+    font-size: 8px; color: var(--fg);
+  }
+
+  /* ---------- 按钮（命令式） ---------- */
+  .cmds { display: flex; flex-wrap: wrap; gap: 8px; }
+  .cmd {
+    background: none; border: 1px solid var(--fg-dim); color: var(--fg);
+    font: inherit; font-size: 12px;
+    padding: 5px 13px; cursor: pointer;
+  }
+  .cmd:hover:not(:disabled) { border-color: var(--fg); background: rgba(126,231,135,.08); }
+  .cmd:disabled { opacity: .35; cursor: not-allowed; }
+  .cmd.danger { border-color: var(--red); color: var(--red); }
+  .cmd.danger:hover:not(:disabled) { background: rgba(255,123,114,.1); }
+  .cmd.primary { border-color: var(--fg); background: rgba(126,231,135,.12); font-weight: 700; }
+
+  /* ---------- 输入 ---------- */
+  input, select {
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--fg-dim);
+    font: inherit; font-size: 13px;
+    padding: 6px 9px; width: 100%;
+    outline: none;
+  }
+  input:focus, select:focus { border-color: var(--fg); }
+  label { display: block; color: var(--fg-faint); font-size: 11.5px; margin: 12px 0 4px; }
+
+  /* ---------- 日志 ---------- */
+  .log {
+    background: #020403;
+    border: 1px solid var(--line);
+    padding: 8px 10px;
+    max-height: 220px; overflow-y: auto;
+    font-size: 11.5px;
+    white-space: pre-wrap; word-break: break-all;
+    user-select: text;
+  }
+  .log .w { color: var(--amber); }
+  .log .e { color: var(--red); }
+  .log .d { color: var(--fg-faint); }
+
+  /* ---------- 提示 ---------- */
+  .sysmsg {
+    border: 1px dashed var(--fg-dim);
+    color: var(--fg-dim);
+    padding: 6px 10px; margin: 10px 0;
+    font-size: 12px;
+  }
+  .sysmsg.bad { border-color: var(--red); color: var(--red); }
+
+  /* ---------- 弹层 ---------- */
+  .mask {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0, 0, 0, .78);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .dialog {
+    background: var(--panel);
+    border: 1px solid var(--fg-dim);
+    width: 100%; max-width: 460px;
+    padding: 14px 16px;
+    max-height: 86vh; overflow-y: auto;
+  }
+  .dialog h3 { margin: 0 0 10px; font-size: 14px; color: var(--fg); }
+  .dialog h3::before { content: "> "; color: var(--fg-faint); }
+
+  .empty { color: var(--fg-faint); padding: 14px 4px; text-align: center; }
+  .empty::before { content: "-- "; }
+  .empty::after { content: " --"; }
+</style>
+</head>
+<body>
+
+<div class="hud" id="hud"></div>
+<div class="wrap">
+  <div class="tabs" id="tabs"></div>
+  <div id="content"></div>
+</div>
+<div id="toastHost"></div>
+
+<script src="maibms-host.js?v=9fba43ca92"></script>
+<script src="../maibms-data.js?v=9fba43ca92"></script>
+<script src="theme-console.js?v=9fba43ca92"></script>
+</body>
+</html>

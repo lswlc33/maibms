@@ -17,7 +17,7 @@
   var DARK_THEME = 'dim';
   var LIGHT_THEME = 'light';
 
-  var ui = { tab: 'dash', settingsPage: 'root', meta: null, state: {}, logLines: [] };
+  var ui = { tab: 'dash', settingsPage: 'root', meta: null, state: {}, logLines: [], lastRenderKey: null };
 
   /* ---------------- 工具 ---------------- */
 
@@ -292,8 +292,7 @@
 
     body.appendChild(primaryBtn('选择设备并连接', function () { M.connect(); }, 'btn-block'));
 
-    var meta = ui.meta || {};
-    var saved = (meta.devices || []).filter(function (d) { return d.saved; })[0];
+    var saved = (st.devices || []).filter(function (d) { return d.saved; })[0];
     if (saved) {
       body.appendChild(h('p', 'text-xs opacity-60 mt-3 mb-0',
         '上次连接：' + saved.name + '（' + saved.familyLabel + '）。浏览器要求每次打开都重新选择一次设备。'));
@@ -523,8 +522,7 @@
     if (st.params.reading) wrap.appendChild(alert('正在读取参数区…（200+ 项，通常几秒）'));
     if (st.params.fromCache) wrap.appendChild(alert('显示的是上次成功连接时缓存的配置（非实时）。', 'warn'));
 
-    var meta = ui.meta || {};
-    var groups = meta.paramGroups || [];
+    var groups = (ui.meta || {}).paramGroups || [];
     var live = st.connected;
 
     if (!groups.length || !Object.keys(st.params.values || {}).length) {
@@ -786,7 +784,7 @@
       { value: 900, label: '更稳 900ms' },
       { value: 600, label: '默认 600ms' },
       { value: 300, label: '更跟手 300ms' }
-    ], M.meta().settings.pollInterval, function (v) {
+    ], st.settings.pollInterval, function (v) {
       M.setPollInterval(v); toast('轮询频率已设为 ' + v + ' ms'); renderAll();
     }));
     pollBody.appendChild(h('p', 'text-xs opacity-60 mt-2 mb-0',
@@ -801,11 +799,11 @@
       navList.appendChild(listRow('通信通道', st.channelLabel || '自动',
         function () { ui.settingsPage = 'channels'; renderAll(); }));
     }
-    navList.appendChild(listRow('历史设备', (meta.devices || []).length + ' 台',
+    navList.appendChild(listRow('历史设备', (st.devices || []).length + ' 台',
       function () { ui.settingsPage = 'devices'; renderAll(); }));
     navList.appendChild(listRow('运行日志', ui.logLines.length + ' 条',
       function () { ui.settingsPage = 'log'; renderAll(); }));
-    navList.appendChild(listRow('关于', 'v' + ((meta.version || {}).name || ''),
+    navList.appendChild(listRow('关于', 'v' + ((st.version || {}).name || ''),
       function () { ui.settingsPage = 'about'; renderAll(); }));
     wrap.appendChild(card(navList));
 
@@ -1062,13 +1060,51 @@
 
   /* ---------------- 渲染 ---------------- */
 
+  /**
+   * 按页渲染策略（与默认/mdui 主题一致）：总览实时画，
+   * 参数/控制/设置页只在低频字段变化时重建，避免滚动跳变。
+   */
+  function renderKey(st) {
+    switch (ui.tab) {
+      case 'params':
+        return JSON.stringify([st.params, st.permission, st.connected, st.stalled]);
+      case 'control':
+        return JSON.stringify([st.connected, st.permission, st.caps, st.device.chMos, st.device.disMos, st.device.balance]);
+      case 'settings':
+        return JSON.stringify([st.connected, st.permission, st.passwords, st.channels,
+          st.devices, st.settings, ui.settingsPage, ui.settingsPage === 'log' ? ui.logLines.length : 0]);
+      default:
+        return null;
+    }
+  }
+
   function renderAll() {
+    try { renderAllInner(); }
+    catch (e) {
+      // 渲染异常显示到页面上而不是静默终止脚本：
+      // 本函数由桥的 onState 回调触发，抛错会顺着回调终止整个主题脚本，
+      // 页面表现为"半截内容 + 无提示"。显示出来才有的查。
+      var msg = String(e && e.stack || e);
+      var c = document.getElementById('content') || document.body;
+      var box = c.querySelector('.render-error') || c.appendChild(h('div', 'render-error'));
+      box.textContent = '渲染出错：' + msg;
+      box.style.cssText = 'color:var(--bs-danger-text-emphasis, #ff7b72);padding:12px;font-size:12px;white-space:pre-wrap';
+    }
+  }
+
+  function renderAllInner() {
     var st = ui.state || {};
     ensureShell();
     renderTopbar(st);
 
     var content = document.getElementById('content');
     if (!content) return;
+
+    var key = renderKey(st);
+    if (key !== null && key === ui.lastRenderKey) { renderTopbar(st); return; }
+    ui.lastRenderKey = key;
+
+    var y = window.scrollY;
     clear(content);
 
     switch (ui.tab) {
@@ -1078,7 +1114,10 @@
       default: content.appendChild(renderDashboard(st));
     }
 
-    // 底栏选中态
+    if (Math.abs(document.documentElement.scrollHeight - content.scrollHeight - y) < 200) {
+      window.scrollTo(0, y);
+    }
+
     var btns = document.querySelectorAll('.btm-nav > button');
     btns.forEach(function (b, i) {
       b.className = TABS[i].id === ui.tab ? 'active' : '';

@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     kotlin("multiplatform")
     kotlin("plugin.serialization")
@@ -140,9 +142,49 @@ val syncWebToDocs by tasks.registering(Copy::class) {
         require(data.exists()) { "同步失败：docs/maibms-data.js 不存在" }
         val webDir = docs.resolve("web")
         // 主题页是手工维护的静态文件，构建不生成它们——但要在同步时确认它们仍在
-        listOf("index.html", "mdui.html", "daisy.html", "switch.html").forEach { name ->
+        listOf("index.html", "mdui.html", "daisy.html", "admin.html", "console.html", "paper.html", "switch.html").forEach { name ->
             require(webDir.resolve(name).exists()) { "缺少主题页 docs/web/$name" }
         }
-        println("数据层已同步 → docs/maibms-data.js（${data.length() / 1024} KB）")
+        // 给主题页引用的本站资源打上**内容哈希**版本号：
+        // 浏览器会缓存静态资源，改了主题 JS 后同名文件可能一直命中旧缓存
+        // （Pages 的 max-age=600 内必然如此）。哈希取自数据层产物与各主题文件的**内容**，
+        // 内容不变则哈希不变（git 无噪音），变了则所有引用同步更新。
+        // 剥旧再加，反复执行结果稳定（幂等）。
+        var digest = MessageDigest.getInstance("SHA-256")
+        // 只哈希**会被浏览器缓存的 JS/CSS/数据文件**；
+        // 主题 HTML 本身带版本号，若也参与哈希就会"哈希依赖上一次的哈希"，永远不收敛
+        // 哈希**源文件**（引擎三个包 + 主题手写源码），不哈希 minified 产物——
+        // webpack 输出每次构建字节级都不同（变量名重排），哈希它会永远不收敛。
+        val sourceRoots = listOf(
+            rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/data"),
+            rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/protocol"),
+            rootProject.file("composeApp/src/commonMain/kotlin/io/github/lswlc33/maibms/transport"),
+            webDir
+        )
+        sourceRoots.forEach { root ->
+            // docs/web 里的 HTML 不参与哈希：它们会被本次运行改写（带上版本号），
+            // 哈希改写后的 HTML 会让版本号永远不收敛（实测）
+            root.walkTopDown().filter { it.isFile && it.extension != "html" }.sortedBy { it.path }.forEach {
+                digest.update(it.name.toByteArray())
+                digest.update(it.readBytes())
+            }
+        }
+        val stamp = digest.digest().joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }.take(10)
+        listOf("index.html", "mdui.html", "daisy.html", "admin.html", "console.html", "paper.html", "switch.html").forEach { name ->
+            val f = webDir.resolve(name)
+            var text = f.readText()
+            // 先剥旧版本号再加新的（幂等）；只处理本站相对路径，外链 CDN 与静态图片不动
+            text = Regex("""(src|href)="([^"?]+)(\?v=[0-9a-f]+)?"""").replace(text) { m ->
+                val attr = m.groupValues[1]
+                val url = m.groupValues[2]
+                if (url.startsWith("http") || url.startsWith("../images")) {
+                    attr + "=\"" + url + "\""
+                } else {
+                    attr + "=\"" + url + "?v=" + stamp + "\""
+                }
+            }
+            f.writeText(text)
+        }
+        println("数据层已同步 → docs/maibms-data.js（${data.length() / 1024} KB），版本 $stamp")
     }
 }

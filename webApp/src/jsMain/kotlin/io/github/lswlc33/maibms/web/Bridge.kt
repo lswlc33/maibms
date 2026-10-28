@@ -61,6 +61,8 @@ internal data class ThemeState(
     val flags: ThemeFlags,
     val relay: ThemeRelay,
     val params: ThemeParams,
+    val devices: List<ThemeMetaDevice>,
+    val settings: ThemeSettings,
     val version: ThemeVersion,
 )
 
@@ -208,8 +210,6 @@ internal data class ThemeMeta(
     val builtAt: Long,
     val paramGroups: List<ThemeMetaGroup>,
     val commands: List<ThemeMetaCommand>,
-    val devices: List<ThemeMetaDevice>,
-    val settings: ThemeSettings,
     val families: Map<String, String>,
 )
 
@@ -355,6 +355,8 @@ object Bridge {
                 identity = MockBms.identity.value,
                 values = MockBms.liveParams.value.mapKeys { it.key.toString() },
             ),
+            devices = devices(),
+            settings = settings(),
             version = ThemeVersion(AppVersion.name, AppVersion.code),
         )
         return state.toJs(ThemeState.serializer())
@@ -362,20 +364,18 @@ object Bridge {
 
     internal fun metaPublic(): ThemeMeta = meta()
 
+    /**
+     * meta 只放**不随轮询变的表**（参数分组、命令表）。
+     * 设备列表与设置曾经也在这里，但那是个坑：主题页在加载时抓一份 ui.meta，
+     * 之后删除设备/改设置都只触发 pushState（推的是 state），ui.meta 里的
+     * devices 不会更新——界面上已删的行还在，直到刷新页面。
+     * 现在 devices/settings 随 state 每拍推（见 [ThemeState]），主题页只读 state 即可。
+     */
     private fun meta(): ThemeMeta = ThemeMeta(
         version = ThemeVersion(AppVersion.name, AppVersion.code),
         builtAt = AppVersion.builtAtEpochSec,
         paramGroups = paramGroups(),
         commands = commands(),
-        devices = devices(),
-        settings = ThemeSettings(
-            themeMode = AppStore.themeMode,
-            pollInterval = AppStore.pollIntervalMs,
-            autoUpgradeTarget = AppStore.autoUpgradeTarget,
-            autoReconnect = AppStore.autoReconnect,
-            logFrameOn = BmsLog.frameLogOn.value,
-            logMinLevel = BmsLog.minLevel.value.tag,
-        ),
         families = DeviceFamily.entries.associate { it.name to it.label },
     )
 
@@ -434,6 +434,15 @@ object Bridge {
         )
     }
 
+    private fun settings(): ThemeSettings = ThemeSettings(
+        themeMode = AppStore.themeMode,
+        pollInterval = AppStore.pollIntervalMs,
+        autoUpgradeTarget = AppStore.autoUpgradeTarget,
+        autoReconnect = AppStore.autoReconnect,
+        logFrameOn = BmsLog.frameLogOn.value,
+        logMinLevel = BmsLog.minLevel.value.tag,
+    )
+
     private fun devices(): List<ThemeMetaDevice> = DeviceProfiles.all().map { p ->
         ThemeMetaDevice(
             address = p.address,
@@ -451,6 +460,9 @@ object Bridge {
         ThemeInfo("default", "默认", "无边框扁平卡片 · 深色/浅色跟随系统", "index.html", "#4caf50"),
         ThemeInfo("mdui", "Material", "mdui 2 组件库 · Material You 动态取色", "mdui.html", "#6750a4"),
         ThemeInfo("daisy", "Daisy", "Tailwind + daisyUI · 现代卡片与徽标", "daisy.html", "#1dcdbc"),
+        ThemeInfo("admin", "控制台", "Bootstrap 侧栏仪表盘 · 宽屏并排布局", "admin.html", "#0d6efd"),
+        ThemeInfo("console", "终端", "等宽字体 HUD · 键盘快捷键", "console.html", "#7ee787"),
+        ThemeInfo("paper", "杂志", "排版优先 · 特大数字与细分隔线", "paper.html", "#c9a227"),
     )
 
     private fun deviceDto(st: BmsStatus, caps: DeviceCapabilities) = ThemeDevice(
