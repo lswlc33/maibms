@@ -120,7 +120,9 @@ mdui-card {
   margin-top: 14px;
 }
 @media (min-width: 600px) {
-  .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  /* auto-fit 而非固定 4 列：宽屏双列布局下半宽卡里 4 列会截断（87.…），
+     让列数跟着卡片实际宽度走 */
+  .metrics { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 }
 
 .metric {
@@ -392,3 +394,75 @@ mdui-navigation-bar-item .ic svg { width: 24px; height: 24px; }
 .mt-3 { margin-top: 12px; }
 .mt-4 { margin-top: 16px; }
 .muted { color: rgb(var(--mdui-color-on-surface-variant)); font-size: 12.5px; line-height: 1.7; }
+
+/* ---------- 健康摘要行 / 能量流 / 单体分布带 / 最弱串（升级件） ---------- */
+.summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: 16px;
+  font-size: 13px; font-weight: 550;
+}
+.summary .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.summary.ok { background: rgb(var(--mdui-color-primary-container)); color: rgb(var(--mdui-color-on-primary-container)); }
+.summary.ok .dot { background: rgb(var(--mdui-color-primary)); }
+.summary.warn { background: rgb(var(--mdui-color-secondary-container)); color: rgb(var(--mdui-color-on-secondary-container)); }
+.summary.warn .dot { background: rgb(var(--mdui-color-tertiary)); }
+.summary.bad { background: rgb(var(--mdui-color-error-container)); color: rgb(var(--mdui-color-on-error-container)); }
+.summary.bad .dot { background: rgb(var(--mdui-color-error)); }
+
+.flow { display: flex; align-items: center; gap: 10px; }
+.flow .lbl { font-size: 11.5px; color: rgb(var(--mdui-color-on-surface-variant)); white-space: nowrap; }
+.flow .track {
+  flex: 1; height: 20px; border-radius: 10px; position: relative; overflow: hidden;
+  background: rgb(var(--mdui-color-surface-container-high, var(--mdui-color-surface-variant)));
+}
+.flow .dash {
+  position: absolute; top: 0; bottom: 0; left: 0; width: 200%;
+  background: repeating-linear-gradient(90deg, transparent 0 7px, var(--flow-c) 7px 15px);
+  opacity: .6;
+}
+.flow.fwd { --flow-c: rgb(var(--mdui-color-primary)); }
+.flow.rev { --flow-c: rgb(var(--mdui-color-tertiary)); }
+.flow.fwd .dash { animation: mdui-flow-r 1.1s linear infinite; }
+.flow.rev .dash { left: auto; right: 0; animation: mdui-flow-l 1.1s linear infinite; }
+.flow.idle .dash { opacity: .15; }
+@keyframes mdui-flow-r { from { transform: translateX(0); } to { transform: translateX(-15px); } }
+@keyframes mdui-flow-l { from { transform: translateX(0); } to { transform: translateX(15px); } }
+.flow .bubble {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: rgb(var(--mdui-color-surface)); border: 1px solid rgb(var(--mdui-color-outline-variant, var(--mdui-color-outline)));
+  border-radius: 10px; padding: 1px 10px;
+  font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.flow.fwd .bubble { color: rgb(var(--mdui-color-primary)); }
+.flow.rev .bubble { color: rgb(var(--mdui-color-tertiary)); }
+.flow-sub { text-align: center; font-size: 11.5px; color: rgb(var(--mdui-color-on-surface-variant)); margin-top: 3px; }
+
+.band {
+  position: relative; height: 26px; border-radius: 13px;
+  background: rgb(var(--mdui-color-surface-container-high, var(--mdui-color-surface-variant)));
+}
+.band .bdot {
+  position: absolute; top: 50%; width: 9px; height: 9px;
+  margin: -4.5px 0 0 -4.5px; border-radius: 50%;
+  border: 1px solid rgb(var(--mdui-color-surface));
+}
+.band .bdot.bal { box-shadow: 0 0 0 2px rgb(var(--mdui-color-surface)), 0 0 0 3.5px rgb(var(--mdui-color-primary)); }
+.band-lab { display: flex; justify-content: space-between; font-size: 10.5px; color: rgb(var(--mdui-color-on-surface-variant)); margin: 3px 0 8px; }
+
+.weak { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; font-size: 12.5px; }
+.weak .k { color: rgb(var(--mdui-color-error)); font-weight: 650; font-size: 11.5px; }
+.weak .w { font-variant-numeric: tabular-nums; font-weight: 600; }
+.weak .sep { color: rgb(var(--mdui-color-on-surface-variant)); }
+
+.temp.warm .v { color: rgb(var(--mdui-color-tertiary)); }
+
+/* fragment 平铺后卡片间距由 .content 统一管 */
+.content > * + * { margin-top: 12px; }
+
+/* ---------- 宽屏双列 ---------- */
+@media (min-width: 768px) {
+  #app .content { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  #app .content > * { grid-column: 1 / -1; margin-top: 0; }
+  #app .content > mdui-card { grid-column: auto / span 1; }
+  #app .content > mdui-card:only-child { grid-column: 1 / -1; }
+}

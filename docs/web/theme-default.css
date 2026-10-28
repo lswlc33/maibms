@@ -188,9 +188,9 @@ html, body {
 .cell-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
 
 /* ---------- 温度 ---------- */
-.temps { display: flex; flex-wrap: wrap; gap: 8px; }
+.temps { display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 8px; }
 .temp {
-  flex: 1 1 72px; background: var(--card-2); border-radius: 12px;
+  background: var(--card-2); border-radius: 12px;
   padding: 7px 9px; text-align: center;
 }
 .temp .k { font-size: 10px; color: var(--muted); }
@@ -396,4 +396,79 @@ html, body {
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
   .grid-2 > .card { margin-bottom: 0; }
   .metrics { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* ---------- 健康摘要行 ---------- */
+.summary {
+  display: flex; align-items: center; gap: 8px;
+  margin: 2px 0 10px; padding: 8px 12px;
+  border-radius: 12px; font-size: 12.5px; font-weight: 550;
+}
+.summary .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.summary.ok   { background: var(--primary-soft); color: var(--primary-ink); }
+.summary.ok   .dot { background: var(--primary); }
+.summary.warn { background: var(--warn-soft); color: var(--warn); }
+.summary.warn .dot { background: var(--warn); }
+.summary.bad  { background: var(--bad-soft); color: var(--bad); }
+.summary.bad  .dot { background: var(--bad); }
+
+/* ---------- 能量流向条 ---------- */
+.flow { display: flex; align-items: center; gap: 10px; margin: 12px 0 2px; }
+.flow .lbl { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.flow .track {
+  flex: 1; height: 18px; border-radius: 9px; position: relative;
+  background: var(--card-2); overflow: hidden;
+}
+.flow .dash {
+  position: absolute; inset: 0; width: 200%;
+  background: repeating-linear-gradient(90deg, transparent 0 7px, var(--flow-c, var(--primary)) 7px 15px);
+  opacity: .55;
+}
+.flow.fwd .dash { animation: flow-r 1.1s linear infinite; }
+.flow.rev .dash { right: 0; left: auto; animation: flow-l 1.1s linear infinite; }
+.flow.idle .dash { opacity: .18; }
+@keyframes flow-r { from { transform: translateX(0); } to { transform: translateX(-15px); } }
+@keyframes flow-l { from { transform: translateX(0); } to { transform: translateX(15px); } }
+.flow .bubble {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  background: var(--card); border: 1px solid var(--line);
+  border-radius: 9px; padding: 1px 10px;
+  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.flow.rev .bubble { color: #2f6fe0; }
+.flow.fwd .bubble { color: var(--primary-ink); }
+.flow-sub { text-align: center; font-size: 11px; color: var(--muted); margin: 3px 0 0; }
+
+/* ---------- 单体分布带 ---------- */
+.band {
+  position: relative; height: 26px; margin: 10px 0 2px;
+  background: var(--card-2); border-radius: 13px;
+}
+.band .bdot {
+  position: absolute; top: 50%; width: 9px; height: 9px;
+  margin: -4.5px 0 0 -4.5px; border-radius: 50%;
+  border: 1px solid var(--card);
+}
+.band .bdot.bal { box-shadow: 0 0 0 2px var(--primary-soft), 0 0 0 3.5px var(--primary); }
+.band-lab { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint); margin: 3px 0 8px; }
+
+/* ---------- 最弱几串 ---------- */
+.weak { display: flex; align-items: baseline; gap: 7px; margin-top: 9px; font-size: 12px; }
+.weak .k { color: var(--bad); font-weight: 650; font-size: 11px; }
+.weak .w { font-variant-numeric: tabular-nums; font-weight: 600; }
+.weak .sep { color: var(--faint); }
+
+/* ---------- 温度 warm 档 ---------- */
+.temp.warm .v { color: var(--warn); }
+
+/* ---------- 宽屏双列（≥768px 平板/横屏） ----------
+ * 用 grid 而非 multicol：Chrome 对无高度约束的 multicol 平衡不可靠
+ * （实测全部内容落进第一列）。横幅/摘要类通栏，卡片两两并排，
+ * 单卡片页面（参数）自动通栏。 */
+@media (min-width: 768px) {
+  .app main { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  .app main > * { grid-column: 1 / -1; margin-left: 0; margin-right: 0; }
+  .app main > .card { grid-column: auto / span 1; }
+  .app main > .card:only-child { grid-column: 1 / -1; }
 }

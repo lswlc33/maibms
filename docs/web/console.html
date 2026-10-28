@@ -61,6 +61,10 @@
   .hud-item { white-space: nowrap; }
   .hud-item .k { color: var(--fg-faint); }
   .hud-item .v { font-weight: 700; }
+  .hud-status { font-size: 11px; padding: 2px 8px 0; color: var(--fg-dim); }
+  .hud-status.ok { color: var(--fg); }
+  .hud-status.warn { color: var(--amber); }
+  .hud-status.bad { color: var(--red); }
   .hud-item .v.warn { color: var(--amber); }
   .hud-item .v.bad { color: var(--red); }
 
@@ -128,6 +132,8 @@
     position: relative;
   }
   .cell .idx { position: absolute; left: 4px; top: 2px; font-size: 9px; color: var(--fg-faint); }
+  .spark { font-size: 15px; letter-spacing: 1.5px; line-height: 1.35; color: var(--fg); }
+  .spark.dim { color: var(--fg-dim); }
   .cell.max { border-color: var(--amber); }
   .cell.max .v { color: var(--amber); }
   .cell.min { border-color: var(--cyan); }
@@ -216,8 +222,8 @@
 </div>
 <div id="toastHost"></div>
 
-<script src="maibms-host.js?v=d76ec57d6e"></script>
-<script src="../maibms-data.js?v=d76ec57d6e"></script>
-<script src="theme-console.js?v=d76ec57d6e"></script>
+<script src="maibms-host.js?v=9d3e575fba"></script>
+<script src="../maibms-data.js?v=9d3e575fba"></script>
+<script src="theme-console.js?v=9d3e575fba"></script>
 </body>
 </html>

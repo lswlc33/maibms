@@ -86,6 +86,87 @@
     return a;
   }
 
+  /* 健康摘要行：一眼看出"现在要不要管它" */
+  function healthSummary(st) {
+    if (!st.hasData) return null;
+    var d = st.device, flags = st.flags || {};
+    var notes = [];
+    (flags.alarm || []).forEach(function (t) { notes.push(t); });
+    (flags.protect || []).forEach(function (t) { notes.push('保护：' + t); });
+    if (d.chMosReason) notes.push('充电 MOS 关（' + d.chMosReason + '）');
+    if (d.disMosReason) notes.push('放电 MOS 关（' + d.disMosReason + '）');
+    var level = (flags.protect || []).length ? 'bad' : notes.length ? 'warn' : 'ok';
+    var cls = 'alert text-sm py-2.5 px-3.5 items-start ' +
+      (level === 'bad' ? 'alert-error' : level === 'warn' ? 'alert-warning' : 'alert-success');
+    var line = h('div', cls);
+    line.appendChild(h('span', null, level === 'ok'
+      ? '运行正常 · ' + d.battState
+      : (level === 'bad' ? '有保护动作 · ' : '注意 · ') + notes.slice(0, 2).join('，') + (notes.length > 2 ? ' 等 ' + notes.length + ' 项' : '')));
+    line.title = notes.join('；') || '无告警、无保护动作';
+    return line;
+  }
+
+  /* 能量流向条：方向 + 功率 + 预计时长（颜色走 Tailwind 类，CDN JIT 会动态生成） */
+  function flowStrip(st) {
+    if (!st.hasData) return null;
+    var d = st.device;
+    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var idle = !d.power;
+    var strip = h('div', 'flex items-center gap-2.5');
+    strip.appendChild(h('span', 'text-[11.5px] opacity-60 whitespace-nowrap', '电池组'));
+    var track = h('div', 'relative flex-1 h-5 rounded-full bg-base-300/60 overflow-hidden');
+    var dash = h('span', 'absolute inset-y-0 left-0 w-[200%] flow-dash ' +
+      (idle ? 'text-base-content opacity-10' : charging ? 'text-info' : 'text-success') +
+      (idle || charging ? '' : ' flow-fwd') + (charging ? ' flow-rev' : ''));
+    track.appendChild(dash);
+    var bubble = h('span', 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 ' +
+      'bg-base-100 border border-base-300 rounded-lg px-2.5 py-px text-xs font-bold tabular-nums whitespace-nowrap ' +
+      (idle ? 'opacity-70' : charging ? 'text-info' : 'text-success'), num(d.power, 0) + ' W');
+    track.appendChild(bubble);
+    strip.appendChild(track);
+    strip.appendChild(h('span', 'text-[11.5px] opacity-60 whitespace-nowrap', idle ? '待机' : charging ? '充电器' : '负载'));
+    var eta = charging ? d.remainChargeText : d.remainDischargeText;
+    var wrap = h('div');
+    wrap.appendChild(strip);
+    wrap.appendChild(h('div', 'text-center text-[11.5px] opacity-60 mt-0.5', (idle ? '静置中' : charging ? '充电中' : '放电中') +
+      (eta && eta !== '--' ? ' · ' + (charging ? '充满' : '可用') + '约 ' + eta : '')));
+    return wrap;
+  }
+
+  /* 单体分布带：电压在 min~max 上的排布，颜色=高低，圈=均衡 */
+  function lerpColor(a, b, t) {
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ',' +
+      Math.round(a[1] + (b[1] - a[1]) * t) + ',' + Math.round(a[2] + (b[2] - a[2]) * t) + ')';
+  }
+
+  function bandChart(cells) {
+    var ok = cells.filter(function (c) { return !c.missing; });
+    if (ok.length < 3) return null;
+    var vmin = Infinity, vmax = -Infinity;
+    ok.forEach(function (c) {
+      if (c.volt < vmin) vmin = c.volt;
+      if (c.volt > vmax) vmax = c.volt;
+    });
+    var span = Math.max(vmax - vmin, 0.0005);
+    var strip = h('div', 'relative h-[26px] rounded-full bg-base-300/60');
+    ok.forEach(function (c) {
+      var t = (c.volt - vmin) / span;
+      var dot = h('i', 'absolute w-[9px] h-[9px] rounded-full border border-base-100 -mt-[4.5px] -ml-[4.5px]' + (c.balancing ? ' band-bal' : ''));
+      dot.style.left = (4 + t * 92) + '%';
+      dot.style.top = '50%';
+      dot.style.background = lerpColor([47, 111, 224], [184, 118, 26], t);
+      dot.title = '#' + c.index + '  ' + num(c.volt, 3) + 'V' + (c.balancing ? ' · 均衡中' : '');
+      strip.appendChild(dot);
+    });
+    var lab = h('div', 'flex justify-between text-[10.5px] opacity-55 mb-2');
+    lab.appendChild(h('span', null, '低 ' + num(vmin, 3)));
+    lab.appendChild(h('span', null, '高 ' + num(vmax, 3)));
+    var wrap = h('div', 'mt-2');
+    wrap.appendChild(strip);
+    wrap.appendChild(lab);
+    return wrap;
+  }
+
   function stat(label, value, unit) {
     var s = h('div', 'bg-base-300/60 rounded-xl px-3 py-2');
     s.appendChild(h('div', 'text-[11px] opacity-60', label));
@@ -247,7 +328,7 @@
   /* ---------------- 总览 ---------------- */
 
   function renderDashboard(st) {
-    var wrap = h('div', 'space-y-3');
+    var wrap = document.createDocumentFragment(); // 平铺进 #content：宽屏 grid 需要卡片是直接子代
 
     if (!M.supportsWebBluetooth()) {
       var d = h('div');
@@ -277,6 +358,8 @@
     if (st.hint && !st.connected) wrap.appendChild(alert(st.hint));
     if (st.stalled) wrap.appendChild(alert('设备失联：连续多拍收不到实时数据，正在尝试恢复。', 'bad'));
 
+    var sum = healthSummary(st);
+    if (sum) wrap.appendChild(sum);
     wrap.appendChild(overviewCard(st));
     if (st.caps.perCellVoltage && st.cells.length) wrap.appendChild(cellsCard(st));
     if (st.caps.multiTemp || st.temps.length) wrap.appendChild(tempsCard(st));
@@ -353,6 +436,9 @@
     if (st.relay.active) pills.appendChild(badge('中继 ' + st.relay.brand, 'on'));
     body.appendChild(pills);
 
+    var flow = flowStrip(st);
+    if (flow) body.appendChild(flow);
+
     var g = h('div', 'grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3');
     g.appendChild(stat('总电压', reading(d, d.totalVoltage, d.voltageDecimals), 'V'));
     g.appendChild(stat('电流', reading(d, d.current, 2), 'A'));
@@ -380,6 +466,9 @@
     g.appendChild(stat('压差', d.deltaCell, 'V'));
     body.appendChild(g);
 
+    var band = bandChart(st.cells);
+    if (band) body.appendChild(band);
+
     var grid = h('div', 'cells mt-3');
     st.cells.forEach(function (c) {
       var cls = 'cell' + (c.missing ? ' missing' : '') +
@@ -401,6 +490,20 @@
       st.cells.filter(function (c) { return !c.missing; }).length + ' 串'));
     body.appendChild(legend);
 
+    var ranked = st.cells.filter(function (c) { return !c.missing; })
+      .slice().sort(function (a, b) { return a.volt - b.volt; }).slice(0, 3);
+    if (ranked.length === 3 && ranked[2].volt < ranked[0].volt + 0.001) {
+      // 电压几乎相同，没有区分度就不显示
+    } else if (ranked.length) {
+      var weak = h('div', 'flex items-baseline gap-1.5 mt-2 text-xs');
+      weak.appendChild(h('span', 'text-error font-semibold text-[11px]', '最弱 ' + ranked.length + ' 串'));
+      ranked.forEach(function (c, i) {
+        if (i) weak.appendChild(h('span', 'opacity-40', '·'));
+        weak.appendChild(h('span', 'font-semibold tabular-nums', '#' + c.index + ' ' + num(c.volt, 3) + (c.balancing ? ' ◈' : '')));
+      });
+      body.appendChild(weak);
+    }
+
     return card(body, { title: '单体电压' });
   }
 
@@ -411,6 +514,7 @@
       box.appendChild(h('div', 'text-[10.5px] opacity-60', t.name));
       var v = h('div', 'text-base font-semibold tabular-nums', num(t.value, 1));
       if (t.value >= 55) v.className += ' text-error';
+      else if (t.value >= 45) v.className += ' text-warning';
       else if (t.value <= 0) v.className += ' text-info';
       box.appendChild(v);
       body.appendChild(box);
@@ -521,7 +625,7 @@
   /* ---------------- 参数 ---------------- */
 
   function renderParams(st) {
-    var wrap = h('div', 'space-y-3');
+    var wrap = document.createDocumentFragment();
     if (st.params.reading) wrap.appendChild(alert('正在读取参数区…（200+ 项，通常几秒）'));
     if (st.params.fromCache) wrap.appendChild(alert('显示的是上次成功连接时缓存的配置（非实时）。', 'warn'));
 
@@ -631,7 +735,7 @@
   /* ---------------- 控制 ---------------- */
 
   function renderControl(st) {
-    var wrap = h('div', 'space-y-3');
+    var wrap = document.createDocumentFragment();
     if (!st.connected) {
       wrap.appendChild(card(emptyState('未连接', '连接保护板后可以下发控制命令。')));
       return wrap;
@@ -754,7 +858,7 @@
   }
 
   function renderSettingsRoot(st) {
-    var wrap = h('div', 'space-y-3');
+    var wrap = document.createDocumentFragment();
     var meta = ui.meta || {};
 
     var connBody = h('div');

@@ -270,7 +270,7 @@
   }
 
   function renderDashboard(st) {
-    var wrap = el('div');
+    var wrap = document.createDocumentFragment(); // 平铺进 main：宽屏 grid 需要卡片是直接子代
 
     if (!M.supportsWebBluetooth()) {
       wrap.appendChild(card('此浏览器无法连接保护板', '', el('div').appendChild
@@ -308,6 +308,8 @@
     if (st.hint && !st.connected) wrap.appendChild(banner(st.hint));
     if (st.stalled) wrap.appendChild(banner('设备失联：连续多拍收不到实时数据，正在尝试恢复（信号弱或设备休眠）', 'bad'));
 
+    var sum = healthSummary(st);
+    if (sum) wrap.appendChild(sum);
     wrap.appendChild(overviewCard(st));
     if (st.caps.perCellVoltage && st.cells.length) wrap.appendChild(cellsCard(st));
     if (st.caps.multiTemp || st.temps.length) wrap.appendChild(tempsCard(st));
@@ -339,6 +341,88 @@
     body.appendChild(el('p', 'hint-line',
       '网页版受浏览器限制：关掉页面就断开，无法后台监控，也不发通知。'));
     return card('连接保护板', '', body);
+  }
+
+  /* ---------- 健康摘要行：一眼看出"现在要不要管它" ---------- */
+  function healthSummary(st) {
+    if (!st.hasData) return null;
+    var d = st.device, flags = st.flags || {};
+    var notes = [];
+    (flags.alarm || []).forEach(function (t) { notes.push(t); });
+    (flags.protect || []).forEach(function (t) { notes.push('保护：' + t); });
+    if (d.chMosReason) notes.push('充电 MOS 关（' + d.chMosReason + '）');
+    if (d.disMosReason) notes.push('放电 MOS 关（' + d.disMosReason + '）');
+    var level = (flags.protect || []).length ? 'bad' : notes.length ? 'warn' : 'ok';
+    var line = el('div', 'summary ' + level);
+    line.appendChild(el('i', 'dot'));
+    var txt = level === 'ok'
+      ? '运行正常 · ' + d.battState
+      : (level === 'bad' ? '有保护动作 · ' : '注意 · ') + notes.slice(0, 2).join('，') + (notes.length > 2 ? ' 等 ' + notes.length + ' 项' : '');
+    line.appendChild(el('span', null, txt));
+    line.title = notes.join('；') || '无告警、无保护动作';
+    return line;
+  }
+
+  /* ---------- 能量流向条：方向 + 功率 + 预计时长，一眼读懂"现在在干嘛" ---------- */
+  function flowStrip(st) {
+    if (!st.hasData) return null;
+    var d = st.device;
+    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var idle = !d.power;
+    var strip = el('div', 'flow' + (idle ? ' idle' : charging ? ' rev' : ' fwd'));
+
+    strip.appendChild(el('span', 'lbl', '电池组'));
+    var track = el('div', 'track');
+    track.appendChild(el('span', 'dash'));
+    var bubble = el('span', 'bubble', num(d.power, 0).replace(/\.0$/, '') + ' W');
+    track.appendChild(bubble);
+    strip.appendChild(track);
+    strip.appendChild(el('span', 'lbl', idle ? '待机' : charging ? '充电器' : '负载'));
+
+    var eta = charging ? d.remainChargeText : d.remainDischargeText;
+    var sub = el('div', 'flow-sub');
+    sub.textContent = (idle ? '静置中' : charging ? '充电中' : '放电中') +
+      (eta && eta !== '--' ? ' · ' + (charging ? '充满' : '可用') + '约 ' + eta : '');
+    var wrap = el('div');
+    wrap.appendChild(strip);
+    wrap.appendChild(sub);
+    return wrap;
+  }
+
+  /* ---------- 单体分布带：电压在 min~max 上的排布，颜色=高低，圈=均衡 ---------- */
+  function bandChart(cells) {
+    var ok = cells.filter(function (c) { return !c.missing; });
+    if (ok.length < 3) return null;
+    var vmin = Infinity, vmax = -Infinity;
+    ok.forEach(function (c) {
+      if (c.volt < vmin) vmin = c.volt;
+      if (c.volt > vmax) vmax = c.volt;
+    });
+    var span = Math.max(vmax - vmin, 0.0005);
+    var strip = el('div', 'band');
+    ok.forEach(function (c) {
+      var t = (c.volt - vmin) / span;                    // 0=最低 1=最高
+      var col = lerpColor([47, 111, 224], [184, 118, 26], t); // 低蓝 → 高琥珀
+      var dot = el('i', 'bdot' + (c.balancing ? ' bal' : ''));
+      dot.style.left = (4 + t * 92) + '%';
+      dot.style.background = col;
+      dot.title = '#' + c.index + '  ' + num(c.volt, 3) + 'V' + (c.balancing ? ' · 均衡中' : '');
+      strip.appendChild(dot);
+    });
+    var lab = el('div', 'band-lab');
+    lab.appendChild(el('span', null, '低 ' + num(vmin, 3)));
+    lab.appendChild(el('span', null, '高 ' + num(vmax, 3)));
+    var wrap = el('div');
+    wrap.appendChild(strip);
+    wrap.appendChild(lab);
+    return wrap;
+  }
+
+  function lerpColor(a, b, t) {
+    var r = Math.round(a[0] + (b[0] - a[0]) * t),
+        g = Math.round(a[1] + (b[1] - a[1]) * t),
+        bl = Math.round(a[2] + (b[2] - a[2]) * t);
+    return 'rgb(' + r + ',' + g + ',' + bl + ')';
   }
 
   function overviewCard(st) {
@@ -395,6 +479,9 @@
     if (st.relay.active) pills.appendChild(pill('中继 ' + st.relay.brand, 'on'));
     body.appendChild(pills);
 
+    var flow = flowStrip(st);
+    if (flow) body.appendChild(flow);
+
     var metrics = el('div', 'metrics');
     metrics.appendChild(metric('总电压', reading(d, d.totalVoltage, d.voltageDecimals), 'V'));
     metrics.appendChild(metric('电流', reading(d, d.current, 2), 'A'));
@@ -446,15 +533,34 @@
 
     var body = el('div');
     body.appendChild(head);
+    var band = bandChart(st.cells);
+    if (band) body.appendChild(band);
     body.appendChild(grid);
     body.appendChild(legend);
+
+    // 最弱几串：维护时最先看的地方
+    var ranked = st.cells.filter(function (c) { return !c.missing; })
+      .slice().sort(function (a, b) { return a.volt - b.volt; }).slice(0, 3);
+    if (ranked.length >= 3 && ranked[2].volt < ranked[0].volt + 0.001) {
+      // 电压几乎相同就不显示"最弱"（没有区分度）
+    } else if (ranked.length) {
+      var weak = el('div', 'weak');
+      weak.appendChild(el('span', 'k', '最弱 ' + ranked.length + ' 串'));
+      ranked.forEach(function (c, i) {
+        if (i) weak.appendChild(el('span', 'sep', '·'));
+        weak.appendChild(el('span', 'w', '#' + c.index + ' ' + num(c.volt, 3) + (c.balancing ? ' ◈' : '')));
+      });
+      body.appendChild(weak);
+    }
     return card('单体电压', '', body);
   }
 
   function tempsCard(st) {
     var row = el('div', 'temps');
     st.temps.forEach(function (t) {
-      var cls = t.value >= 55 ? 'temp hot' : (t.value <= 0 ? 'temp cold' : 'temp');
+      var cls = t.value >= 55 ? 'temp hot'
+        : t.value >= 45 ? 'temp warm'
+        : t.value <= 0 ? 'temp cold' : 'temp';
       var box = el('div', cls);
       box.appendChild(el('div', 'k', t.name));
       box.appendChild(el('div', 'v', num(t.value, 1)));
@@ -483,8 +589,16 @@
       }
       var svg = '<svg class="trend" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none">';
       var cp = path(cur), vp = path(volt);
-      if (cp) svg += '<path d="' + cp + '" fill="none" stroke="var(--chart)" stroke-width="1.8" stroke-linejoin="round"/>';
+      svg += '<line x1="0" y1="' + (h / 2) + '" x2="' + w + '" y2="' + (h / 2) + '" stroke="var(--card-2)" stroke-dasharray="3 4"/>';
+      if (cp) {
+        svg += '<path d="' + cp + ' L' + w + ',' + h + ' L0,' + h + ' Z" fill="var(--chart)" fill-opacity=".13" stroke="none"/>';
+        svg += '<path d="' + cp + '" fill="none" stroke="var(--chart)" stroke-width="1.8" stroke-linejoin="round"/>';
+      }
       if (vp) svg += '<path d="' + vp + '" fill="none" stroke="var(--primary)" stroke-width="1.8" stroke-linejoin="round"/>';
+      if (cur.length > 1) {
+        var last = cur[cur.length - 1];
+        svg += '<circle cx="' + w + '" cy="' + ((h - 3) - (Math.max(0, Math.min(1, last)) * (h - 6))).toFixed(1) + '" r="3" fill="var(--chart)"/>';
+      }
       svg += '</svg>';
       var holder = el('div');
       holder.innerHTML = svg;
@@ -556,7 +670,7 @@
   /* ---------------- 参数 ---------------- */
 
   function renderParams(st) {
-    var wrap = el('div');
+    var wrap = document.createDocumentFragment();
 
     if (st.params.reading) wrap.appendChild(banner('正在读取参数区…（200+ 项，通常几秒）', 'info'));
     if (st.params.fromCache) wrap.appendChild(banner('显示的是上次成功连接时缓存的配置（非实时）。'));
@@ -670,7 +784,7 @@
   /* ---------------- 控制 ---------------- */
 
   function renderControl(st) {
-    var wrap = el('div');
+    var wrap = document.createDocumentFragment();
     if (!st.connected) {
       wrap.appendChild(card(null, '', emptyState('🎛', '未连接', '连接保护板后可以下发控制命令。')));
       return wrap;
@@ -797,7 +911,7 @@
   }
 
   function renderSettingsRoot(st) {
-    var wrap = el('div');
+    var wrap = document.createDocumentFragment();
     var meta = ui.meta || {};
 
     // 连接

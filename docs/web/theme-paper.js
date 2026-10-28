@@ -169,6 +169,77 @@
 
   /* ---------------- 总览 ---------------- */
 
+  /* 健康摘要行（杂志风：首行导语） */
+  function healthSummary(st) {
+    if (!st.hasData) return null;
+    var d = st.device, flags = st.flags || {};
+    var notes = [];
+    (flags.alarm || []).forEach(function (t) { notes.push(t); });
+    (flags.protect || []).forEach(function (t) { notes.push('保护：' + t); });
+    if (d.chMosReason) notes.push('充电 MOS 关（' + d.chMosReason + '）');
+    if (d.disMosReason) notes.push('放电 MOS 关（' + d.disMosReason + '）');
+    var level = (flags.protect || []).length ? 'bad' : notes.length ? 'warn' : 'ok';
+    var line = h('p', 'standfirst ' + level);
+    line.appendChild(h('i', 'dot'));
+    line.appendChild(document.createTextNode(level === 'ok'
+      ? '运行正常 · ' + d.battState
+      : (level === 'bad' ? '有保护动作 · ' : '注意 · ') + notes.slice(0, 2).join('，') + (notes.length > 2 ? ' 等 ' + notes.length + ' 项' : '')));
+    line.title = notes.join('；') || '无告警、无保护动作';
+    return line;
+  }
+
+  /* 能量流向行（文字排）：电池组 ══▶ 负载 1090 W · 放电中 · 可用约 6时59分 */
+  function flowStrip(st) {
+    if (!st.hasData) return null;
+    var d = st.device;
+    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var idle = !d.power;
+    var dir = idle ? '── 静置' : charging ? '══▶ 充电器' : '══▶ 负载';
+    var eta = charging ? d.remainChargeText : d.remainDischargeText;
+    var line = h('p', 'flowline' + (level0(idle, charging)));
+    line.appendChild(h('span', 'k', '电池组 ' + dir + ' '));
+    line.appendChild(h('strong', null, num(d.power, 0) + ' W'));
+    line.appendChild(document.createTextNode((idle ? ' · 静置中' : charging ? ' · 充电中' : ' · 放电中') +
+      (eta && eta !== '--' ? ' · ' + (charging ? '充满' : '可用') + '约 ' + eta : '')));
+    return line;
+  }
+  function level0(idle, charging) {
+    return idle ? ' idle' : charging ? ' rev' : ' fwd';
+  }
+
+  /* 单体分布带：电压在 min~max 上的排布，颜色=高低，圈=均衡 */
+  function lerpColor(a, b, t) {
+    return 'rgb(' + Math.round(a[0] + (b[0] - a[0]) * t) + ',' +
+      Math.round(a[1] + (b[1] - a[1]) * t) + ',' + Math.round(a[2] + (b[2] - a[2]) * t) + ')';
+  }
+
+  function bandChart(cells) {
+    var ok = cells.filter(function (c) { return !c.missing; });
+    if (ok.length < 3) return null;
+    var vmin = Infinity, vmax = -Infinity;
+    ok.forEach(function (c) {
+      if (c.volt < vmin) vmin = c.volt;
+      if (c.volt > vmax) vmax = c.volt;
+    });
+    var span = Math.max(vmax - vmin, 0.0005);
+    var strip = h('div', 'band');
+    ok.forEach(function (c) {
+      var t = (c.volt - vmin) / span;
+      var dot = h('i', 'bdot' + (c.balancing ? ' bal' : ''));
+      dot.style.left = (4 + t * 92) + '%';
+      dot.style.background = lerpColor([47, 111, 224], [184, 118, 26], t);
+      dot.title = '#' + c.index + '  ' + num(c.volt, 3) + 'V' + (c.balancing ? ' · 均衡中' : '');
+      strip.appendChild(dot);
+    });
+    var lab = h('div', 'band-lab');
+    lab.appendChild(h('span', null, '低 ' + num(vmin, 3)));
+    lab.appendChild(h('span', null, '高 ' + num(vmax, 3)));
+    var wrap = h('div');
+    wrap.appendChild(strip);
+    wrap.appendChild(lab);
+    return wrap;
+  }
+
   function section(title, count, content) {
     var s = h('section');
     var head = h('h2');
@@ -243,6 +314,12 @@
     if (st.stalled) main.appendChild(h('p', 'muted', '设备失联：连续多拍收不到实时数据，正在尝试恢复。'));
 
     // 图注式指标
+    var sum = healthSummary(st);
+    if (sum) main.appendChild(sum);
+
+    var flow = flowStrip(st);
+    if (flow) main.appendChild(flow);
+
     var figs = h('div', 'figures');
     figs.appendChild(figItem('Total Voltage', reading(d, d.totalVoltage, d.voltageDecimals), 'V'));
     figs.appendChild(figItem('Current', reading(d, d.current, 2), 'A'));
@@ -284,17 +361,33 @@
         grid.appendChild(r);
       });
       var cellsBody = h('div');
+      var band = bandChart(st.cells);
+      if (band) cellsBody.appendChild(band);
       cellsBody.appendChild(grid);
       cellsBody.appendChild(h('p', 'muted',
         '加粗为最高（#' + cellIdxOf(st.cells, 'max') + '），' +
         '灰为最低（#' + cellIdxOf(st.cells, 'min') + '），◈ 表示均衡中，-- 为未接。'));
+      var ranked = st.cells.filter(function (c) { return !c.missing; })
+        .slice().sort(function (a, b) { return a.volt - b.volt; }).slice(0, 3);
+      if (ranked.length === 3 && ranked[2].volt < ranked[0].volt + 0.001) {
+        // 电压几乎相同，没有区分度就不显示
+      } else if (ranked.length) {
+        var weak = h('p', 'weak');
+        weak.appendChild(h('span', 'k', '最弱 ' + ranked.length + ' 串'));
+        ranked.forEach(function (c, i) {
+          if (i) weak.appendChild(h('span', 'sep', '·'));
+          weak.appendChild(h('span', 'w', '#' + c.index + ' ' + num(c.volt, 3) + (c.balancing ? ' ◈' : '')));
+        });
+        cellsBody.appendChild(weak);
+      }
       main.appendChild(section('单体电压', st.cells.filter(function (c) { return !c.missing; }).length + ' 串', cellsBody));
     }
 
     if ((st.caps.multiTemp || st.temps.length) && st.temps.length) {
       var tBody = h('div', 'rows');
       st.temps.forEach(function (t) {
-        tBody.appendChild(row(t.name, '', num(t.value, 1), '°C', t.value >= 55 ? 'bad' : '', null));
+        var tCls = t.value >= 55 ? 'bad' : t.value >= 45 ? 'warn' : '';
+        tBody.appendChild(row(t.name, '', num(t.value, 1), '°C', tCls, null));
       });
       main.appendChild(section('温度', st.temps.length + ' 路', tBody));
     }

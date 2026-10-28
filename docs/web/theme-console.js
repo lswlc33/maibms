@@ -84,11 +84,30 @@
     var cursor = h('span', 'hud-item');
     cursor.appendChild(h('span', 'cursor'));
     line.appendChild(cursor);
-    hud.appendChild(line);
+    var status = h('div', 'hud-status');
+    status.id = 'hudStatus';
+    hud.appendChild(status);
   }
 
   function renderHud(st) {
     ensureHud();
+    var status = document.getElementById('hudStatus');
+    if (status) {
+      if (st.hasData) {
+        var d0 = st.device, flags0 = st.flags || {}, notes0 = [];
+        (flags0.alarm || []).forEach(function (t) { notes0.push(t); });
+        (flags0.protect || []).forEach(function (t) { notes0.push('保护:' + t); });
+        if (d0.chMosReason) notes0.push('充电MOS关(' + d0.chMosReason + ')');
+        if (d0.disMosReason) notes0.push('放电MOS关(' + d0.disMosReason + ')');
+        var level0 = (flags0.protect || []).length ? 'bad' : notes0.length ? 'warn' : 'ok';
+        status.textContent = level0 === 'ok' ? '[✓] 运行正常'
+          : '[⚠] ' + notes0.slice(0, 2).join('，') + (notes0.length > 2 ? ' 等' + notes0.length + '项' : '');
+        status.className = 'hud-status ' + level0;
+      } else {
+        status.textContent = '[·] 等待数据';
+        status.className = 'hud-status';
+      }
+    }
     var d = st.device;
     var byK = {};
     var items = document.querySelectorAll('#hud .hud-item .v');
@@ -203,6 +222,37 @@
     r.appendChild(vEl);
     return r;
   }
+  /* 流向文本：▶ 放电 / ◀ 充电 / — 静置 + 预计时长 */
+  function flowText(st) {
+    if (!st.hasData) return '--';
+    var d = st.device;
+    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var idle = !d.power;
+    var dir = idle ? '— 静置' : charging ? '◀ 充电器' : '▶ 负载';
+    var eta = charging ? d.remainChargeText : d.remainDischargeText;
+    return dir + ' · ' + d.power + ' W' +
+      (!idle && eta && eta !== '--' ? ' · ' + (charging ? '充满' : '可用') + '约 ' + eta : '');
+  }
+
+  /* 盲文点阵迷你趋势：每字符 2 列 × 4 行，40 拍 → 20 字符 */
+  function brailleSeries(vals) {
+    if (!vals || vals.length < 2) return '';
+    var L = [0x01, 0x02, 0x04, 0x10], R = [0x08, 0x20, 0x40, 0x80];
+    var out = '';
+    for (var i = 0; i < vals.length; i += 2) {
+      var bits = 0;
+      for (var k = 0; k < 2; k++) {
+        var v = vals[i + k];
+        if (v === undefined) continue;
+        var cl = Math.max(0, Math.min(1, v));
+        var row = Math.min(3, Math.floor((1 - cl) * 4));
+        bits |= (k === 0 ? L : R)[row];
+      }
+      out += String.fromCharCode(0x2800 + bits);
+    }
+    return out;
+  }
+
 
   function sysmsg(text, bad) {
     return h('div', 'sysmsg' + (bad ? ' bad' : ''), text);
@@ -262,6 +312,7 @@
     live.appendChild(kvRow('总电压', reading(d, d.totalVoltage, d.voltageDecimals) + ' V'));
     live.appendChild(kvRow('电流', reading(d, d.current, 2) + ' A'));
     live.appendChild(kvRow('功率', d.hasData ? d.power + ' W' : '--'));
+    live.appendChild(kvRow('流向', flowText(st)));
     live.appendChild(kvRow('压差', d.hasData ? d.deltaCell + ' V' : '--'));
     live.appendChild(kvRow('充电剩余', d.remainChargeText));
     live.appendChild(kvRow('放电剩余', d.remainDischargeText));
@@ -313,6 +364,22 @@
         t.appendChild(kvRow(x.name, num(x.value, 1) + ' °C', x.value >= 55 ? 'warn' : ''));
       });
       wrap.appendChild(panel('温度', t));
+    }
+
+    // 趋势：盲文点阵（每个字符 2×4 点，一行装下 40 拍）
+    var tr = st.trend || {};
+    var cur = tr.current || [], volt = tr.volt || [];
+    var nPts = Math.max(cur.length, volt.length);
+    if (nPts > 1) {
+      var tb = h('div');
+      var s1 = h('div', 'spark', brailleSeries(cur));
+      s1.title = '电流（最近 ' + cur.length + ' 拍，归一化）';
+      tb.appendChild(s1);
+      var s2 = h('div', 'spark dim', brailleSeries(volt));
+      s2.title = '电压（最近 ' + volt.length + ' 拍，归一化）';
+      tb.appendChild(s2);
+      tb.appendChild(h('div', 'hint-line', '上 电流 / 下 电压 · 最近 ' + nPts + ' 拍'));
+      wrap.appendChild(panel('趋势', tb));
     }
 
     if (st.caps.protectAlarm) {
