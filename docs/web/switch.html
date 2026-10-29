@@ -12,12 +12,12 @@
   卡片列表来自 window.Maibms.themes()，与各主题页的"我是谁"共用一个清单来源；
   数据层加载失败时退化成内联的静态清单（见脚本末尾的兜底），保证这一页永远能用。
 -->
-<link rel="stylesheet" href="switch.css?v=c6b7adeeea">
+<link rel="stylesheet" href="switch.css?v=1b3af414b9">
 </head>
 <body>
 <div class="wrap">
   <header>
-    <a class="back" href="index.html?v=c6b7adeeea" id="backLink">
+    <a class="back" href="index.html?v=1b3af414b9" id="backLink">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
       <span>返回</span>
@@ -38,18 +38,18 @@
   </div>
 
   <footer>
-    <a href="../index.html?v=c6b7adeeea">官网首页</a>
+    <a href="../index.html?v=1b3af414b9">官网首页</a>
     <span>·</span>
     <a href="https://github.com/lswlc33/maibms" target="_blank" rel="noopener">开源仓库</a>
   </footer>
 </div>
 
-<script src="maibms-host.js?v=c6b7adeeea"></script>
-<script src="../maibms-data.js?v=c6b7adeeea"></script>
+<script src="maibms-host.js?v=1b3af414b9"></script>
+<script src="../maibms-data.js?v=1b3af414b9"></script>
 <script>
 /* 启动数据层：bundle 以 UMD 输出，main() 不会自动跑，必须显式调用（幂等） */
 if (window.MaibmsBoot) window.MaibmsBoot();
 </script>
-<script src="theme-switch.js?v=c6b7adeeea"></script>
+<script src="theme-switch.js?v=1b3af414b9"></script>
 </body>
 </html>
