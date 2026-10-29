@@ -5,6 +5,8 @@ import io.github.lswlc33.maibms.data.LinkStats
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -108,6 +110,25 @@ class WebBleTransport : BmsTransport {
     private var writeChar: WebBluetoothGattCharacteristic? = null
     private var notifyChar: WebBluetoothGattCharacteristic? = null
     private var notifyListener: ((dynamic) -> Unit)? = null
+
+    /** GATT 掉线回调（与 notifyListener 一样随连接生命周期挂/摘） */
+    private var disconnectListener: ((dynamic) -> Unit)? = null
+
+    /**
+     * 物理 GATT 连接串行化。
+     *
+     * Chrome 的 `gatt.connect()` 返回的 Promise 不会因为协程取消而撤销：上一个重连循环
+     * 被取消后，它的 connect 仍会稍后 resolve，随后把 server 赋给新会话（或把旧会话的
+     * server 覆盖成已断开的对象）。所有 connect/disconnect 都在这把锁里执行，
+     * 并且每次 await 之后重新校验"这次操作是否还是当前想要的"。
+     */
+    private val gattMutex = Mutex()
+
+    /** 连接代次：每次 connect/disconnect +1。await 之后代次变了就说明本次操作已过期。 */
+    private var generation = 0L
+
+    /** 正在进行、尚未 resolve 的 gatt.connect() Promise（它不响应协程取消，需单独收尾） */
+    private var pendingConnect: Promise<WebBluetoothGattServer>? = null
 
     /** 就绪后的掉线信号 */
     private var dropSignal: CompletableDeferred<Unit>? = null
@@ -215,6 +236,7 @@ class WebBleTransport : BmsTransport {
         }
         manualStop = false
         desiredId = dev.id
+        generation++
         _currentFamily.value = targetFamily
         _linkState.value = LinkState.Connecting
         _connectHint.value = "正在连接 ${dev.name?.trim() ?: "设备"}…"
@@ -236,13 +258,48 @@ class WebBleTransport : BmsTransport {
             val connectedAt = io.github.lswlc33.maibms.data.epochMillisNow()
             var livedMs = 0L
             try {
-                val srv = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { dev.gatt?.connect()?.await() }
-                    ?: throw IllegalStateException("连接超时")
+                connectStage = Stage.Connect
+                // 代次快照：本轮 await 期间若用户换了设备/主动断开，这里出来的结果必须丢弃
+                val myGen = generation
+                val srv = gattMutex.withLock {
+                    // 锁内再查一次：排队等锁期间可能已经被新的 connect 取代
+                    if (myGen != generation || manualStop || desiredId != dev.id) {
+                        throw ConnectSuperseded()
+                    }
+                    // Chrome 的 gatt.connect() Promise **不响应协程取消**：若外层 withTimeoutOrNull
+                    // 只是"不再等"，Promise 仍会在稍后 resolve 并留下一条已建立的物理链路。
+                    // 所以这里拿到 Promise 后先登记它，再由收尾逻辑（不可取消地）等它结算并断开。
+                    val pending = dev.gatt?.connect() ?: throw IllegalStateException("设备没有 GATT 服务")
+                    pendingConnect = pending
+                    val got = try {
+                        withTimeoutOrNull(CONNECT_TIMEOUT_MS) { pending.await<WebBluetoothGattServer>() }
+                    } finally {
+                        pendingConnect = null
+                    }
+                    // 已过期（换设备/主动断开）：立刻断开这条迟到的链路
+                    if (got != null && (myGen != generation || manualStop || desiredId != dev.id)) {
+                        runCatching { got.disconnect() }
+                        throw ConnectSuperseded()
+                    }
+                    got ?: throw IllegalStateException("连接超时")
+                }
                 server = srv
                 _currentFamily.value = targetFamily
 
+                // 掉线事件：Chrome 的 gattserverdisconnected 是唯一可靠的中断来源。
+                // 以前没挂它，物理链路断了重连循环还在 dropped.await() 上干等，
+                // 表现为"连接中/已连接"但数据永久停流（必须手动断开再连）。
+                val onDisconnected: (dynamic) -> Unit = {
+                    logW("GATT 掉线事件（gattserverdisconnected）")
+                    dropSignal?.complete(Unit)
+                }
+                disconnectListener = onDisconnected
+                dev.addEventListener("gattserverdisconnected", onDisconnected)
+
+                connectStage = Stage.Service
                 val service = srv.getPrimaryService(SERVICE).await<WebBluetoothGattService>()
 
+                connectStage = Stage.Characteristics
                 val candidates = buildCandidates(service)
                 _availableChannels.value = candidates.map { it.channel }.ifEmpty { listOf(BleChannel.Default) }
                 if (candidates.isEmpty()) {
@@ -255,6 +312,7 @@ class WebBleTransport : BmsTransport {
                 val ordered = listOfNotNull(candidates.firstOrNull { it.channel == preferred }) +
                     candidates.filter { it.channel != preferred }
 
+                connectStage = Stage.Subscribe
                 val picked = probeChannels(ordered)
                     ?: throw IllegalStateException("通道无应答（设备可能被其它主机占用或信号过弱）")
 
@@ -272,6 +330,9 @@ class WebBleTransport : BmsTransport {
                 dropped.await()
                 livedMs = io.github.lswlc33.maibms.data.epochMillisNow() - connectedAt
                 logW("链路断开（存活 ${livedMs}ms）")
+            } catch (e: ConnectSuperseded) {
+                logI("本次连接已被新的连接/断开取代，丢弃结果")
+                livedMs = -1L
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -282,6 +343,7 @@ class WebBleTransport : BmsTransport {
                 cleanupLink()
             }
 
+            if (livedMs < 0) break   // 已被取代：新循环接手，这里必须退出
             _linkState.value = LinkState.Disconnected
             if (manualStop || !currentCoroutineContext().isActive) break
             // 短命连接按失败计：弱信号下别疯狂重连
@@ -299,6 +361,9 @@ class WebBleTransport : BmsTransport {
             _linkState.value = LinkState.Disconnected
         }
     }
+
+    /** 本轮连接已被后来的 connect/disconnect 取代（不是错误，静默退出） */
+    private class ConnectSuperseded : Exception("连接已被取代")
 
     private fun backoffMs(attempt: Int): Long = (1_000L shl minOf(attempt, 3)).coerceAtMost(8_000L)
 
@@ -369,8 +434,16 @@ class WebBleTransport : BmsTransport {
     /**
      * 逐条探测候选通道：订阅通知 → 发实时帧 → 等 0x11/0x12 应答。
      * 第一条有应答的即为当前通道；全部失败返回 null。
+     *
+     * **电量计不探测**：陆行/蓝宝电量计走 Modbus/私有报文，从不回应保护板的
+     * `7E A1 01` 实时帧。以前这里对电量计也发探测帧并等 8s，必然超时，
+     * 用户看到的就是"通道无应答（设备可能被其它主机占用或信号过弱）"——
+     * 而 App 能连（Android 侧对电量计是"订阅成功即就绪"）。
+     * 现在与 Android 一致：电量计只要通知订阅成功就算就绪，
+     * 真正的握手交给 Repository 的电量计轮询帧（见 BmsRepository.pollLoop）。
      */
     private suspend fun probeChannels(ordered: List<Candidate>): Candidate? {
+        val isMeter = targetFamily.isMeter
         for ((index, c) in ordered.withIndex()) {
             _connectHint.value = "通道探测：${c.channel.label}…"
             logI("通道探测 ${index + 1}/${ordered.size}：${c.channel.id}")
@@ -386,8 +459,26 @@ class WebBleTransport : BmsTransport {
             }
             try {
                 c.notify.addEventListener("characteristicvaluechanged", listener)
-                c.notify.startNotifications().await<WebBluetoothGattCharacteristic>()
+                // 订阅失败是**阶段性的硬错误**（权限/配对/被其它主机占用），不能吞掉去试下一条：
+                // 吞掉后最终只剩"通道无应答"，把"订阅被拒"误报成"设备没应答"，排查方向完全错。
+                try {
+                    c.notify.startNotifications().await<WebBluetoothGattCharacteristic>()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    connectStage = Stage.Subscribe
+                    logE("通知订阅失败（${c.channel.id}）：${e.message}")
+                    throw e
+                }
                 delay(PROBE_SETTLE_MS)
+                if (isMeter) {
+                    // 电量计：订阅成功即就绪（与 AndroidBleTransport.afterSubscribed 一致）。
+                    // 不发 0x01 探测帧——它不会回，白等 8 秒还会被误报成"设备被占用"。
+                    logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
+                    notifyListener = listener
+                    return c
+                }
+                connectStage = Stage.Probe
                 writeChunks(c.write, io.github.lswlc33.maibms.protocol.Frame.readRealtime())
                 val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
                 if (ok) {
@@ -395,7 +486,10 @@ class WebBleTransport : BmsTransport {
                     return c
                 }
                 logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
+                if (connectStage == Stage.Subscribe) throw e   // 订阅失败：上抛以保留真实阶段
                 logW("通道 ${c.channel.id} 探测异常：${e.message}")
             } finally {
                 probeSignal = null
@@ -425,14 +519,15 @@ class WebBleTransport : BmsTransport {
         notifyListener = null
         notifyChar = null
         writeChar = null
-        probeChannelsActive = false
+        val dl = disconnectListener
+        val d = authorized
+        if (dl != null && d != null) runCatching { d.removeEventListener("gattserverdisconnected", dl) }
+        disconnectListener = null
         val srv = server
         server = null
         runCatching { srv?.disconnect() }
         _activeChannel.value = null
     }
-
-    private var probeChannelsActive = false
 
     // ---------------- 写入 ----------------
 
@@ -502,9 +597,21 @@ class WebBleTransport : BmsTransport {
     override suspend fun disconnect() {
         manualStop = true
         desiredId = null
+        // 代次推进：正在 await 的 connect Promise resolve 后会看到代次变了 → 主动断开自己
+        generation++
         loopJob?.cancel()
         loopJob = null
-        cleanupLink()
+        // 不可取消地等那条迟到的 connect Promise 结算并断开：它不认协程取消，
+        // 如果这里直接返回，它会在稍后 resolve 时把链路重新挂起来（"断开后又自己连上"）。
+        withContext(NonCancellable) {
+            val pending = pendingConnect
+            if (pending != null) {
+                val late = runCatching { pending.await<WebBluetoothGattServer>() }.getOrNull()
+                runCatching { late?.disconnect() }
+                pendingConnect = null
+            }
+            gattMutex.withLock { cleanupLink() }
+        }
         dropSignal?.complete(Unit)
         _linkState.value = LinkState.Disconnected
         _connectHint.value = null
@@ -515,6 +622,7 @@ class WebBleTransport : BmsTransport {
     fun shutdown() {
         manualStop = true
         desiredId = null
+        generation++
         loopJob?.cancel()
         cleanupLink()
         scope.cancel()
@@ -556,18 +664,55 @@ class WebBleTransport : BmsTransport {
         else -> e.message ?: "无法打开设备选择器"
     }
 
+    /**
+     * 把异常翻译成人话，并且**按失败阶段归因**。
+     *
+     * 同一个 NotFoundError 在 GATT 连接、服务发现、特征发现、通知订阅四个阶段含义完全不同，
+     * 以前一律报"设备上没有 FFE0 服务"——真正的失败点（连不上/没有可写特征/订阅被拒）
+     * 全被这句误导性的提示盖住，用户完全没法据此排查。
+     */
     private fun describeConnectError(e: Throwable): String {
         val msg = e.message.orEmpty()
         val name = jsErrorName(e)
+        val stage = connectStage
+        // 协议层自己抛的中文提示直接透出（它们已经是人话）
+        if (msg.startsWith("通道无应答") || msg.startsWith("设备没有可用") ||
+            msg.startsWith("连接超时") || msg.startsWith("电量计通道")
+        ) return msg
         return when {
-            name == "NotFoundError" -> "设备上没有 FFE0 服务（不是已知的保护板/电量计？）"
-            name == "NetworkError" -> "连接失败：设备可能正被其它手机/小程序占用"
-            name == "SecurityError" -> "权限被拒绝，请重新点「选择设备」"
-            msg.contains("timeout", ignoreCase = true) || msg.contains("超时") -> "连接超时，正在重试…"
-            msg.isNotBlank() -> "连接失败：$msg"
-            else -> "连接失败，正在重试…"
+            name == "SecurityError" ->
+                if (stage == Stage.Subscribe) "通知订阅被拒绝（需要重新点「选择设备」授权）"
+                else "权限被拒绝，请重新点「选择设备」"
+            name == "NetworkError" ->
+                if (stage == Stage.Connect) "建立连接失败：设备可能正被其它手机/小程序占用，或距离过远"
+                else "通信中断（${stage.label}阶段）：设备可能正被其它主机占用"
+            name == "NotSupportedError" ->
+                "设备不支持所需的安全配对，请重新在系统蓝牙里配对"
+            name == "NotFoundError" -> when (stage) {
+                Stage.Connect -> "GATT 连接失败：找不到该设备（请确认设备已开机并在附近）"
+                Stage.Service -> "设备上没有 FFE0 服务（不是已知的保护板/电量计？）"
+                Stage.Characteristics -> "FFE0 下没有可用的通信特征（固件不兼容？）"
+                Stage.Subscribe -> "通知订阅失败（设备拒绝了订阅，可能被其它主机连着）"
+                Stage.Probe -> "通道无应答（设备可能被其它主机占用或信号过弱）"
+            }
+            msg.contains("timeout", ignoreCase = true) || msg.contains("超时") ->
+                "连接超时（${stage.label}阶段），正在重试…"
+            stage == Stage.Connect && msg.isNotBlank() -> "建立连接失败：$msg"
+            msg.isNotBlank() -> "${stage.label}失败：$msg"
+            else -> "${stage.label}失败，正在重试…"
         }
     }
+
+    /** 当前连接进行到哪一步——错误提示据此归因 */
+    private enum class Stage(val label: String) {
+        Connect("建立连接"),
+        Service("发现服务"),
+        Characteristics("发现特征"),
+        Subscribe("订阅通知"),
+        Probe("通道探测"),
+    }
+
+    private var connectStage = Stage.Connect
 }
 
 /** 供界面判断"当前环境能不能用 Web Bluetooth" */

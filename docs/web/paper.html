@@ -16,7 +16,11 @@
    · 导航是纯文字链接（当前项下划线），没有底栏；
    · 用 Pico CSS（classless，样式直接作用于语义 HTML）打底，自定义样式只做字号与分隔。
 -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css">
+<!-- 非阻塞加载：Pico 挂起时若用普通 <link> 会拖住整页解析（实测白屏），
+     media="print" 让它在首屏不生效，加载完成后由 onload 切回 all。
+     加载失败则保持 media="print"——此时 <style> 里的兜底变量与基础排版接管。 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.classless.min.css"
+      media="print" onload="this.media='all'" onerror="this.disabled=true">
 <style>
   /* Pico classless 打底；下面只改"杂志化"的部分 */
 
@@ -287,8 +291,8 @@
 <header class="top" id="top"></header>
 <main id="content"></main>
 
-<script src="maibms-host.js?v=46e7884350"></script>
-<script src="../maibms-data.js?v=46e7884350"></script>
-<script src="theme-paper.js?v=46e7884350"></script>
+<script src="maibms-host.js?v=2dfd57677c"></script>
+<script src="../maibms-data.js?v=2dfd57677c"></script>
+<script src="theme-paper.js?v=2dfd57677c"></script>
 </body>
 </html>

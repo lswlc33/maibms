@@ -364,6 +364,23 @@ cd docs && python -m http.server 8099
 没有保护板也想看界面？地址后面加 `?preview=1`（如 `http://127.0.0.1:8099/web/?preview=1`），
 会载入一份内置示例数据，把总览/单体/温度/趋势/参数全画出来。它不写任何持久化状态，刷新即回真实态。
 
+### 连接链路回归测试
+
+蓝牙这部分以前只能靠真机试，bug 藏得很深（连接、订阅、分片、掉线都是异步的）。现在有一个
+**纯 Node 的黑盒回归脚本**：把真实的 `docs/maibms-data.js` 放进 VM 里跑，配一套假 GATT
+（严格校验写特征 UUID、BufferSource 类型、20 字节分片、通知分片与 DataView 偏移），
+用真实 CRC 构造保护板/电量计应答。
+
+```bash
+node webApp/tests/verify-connect.mjs                      # 全部用例
+node webApp/tests/verify-connect.mjs --case LuXing        # 只跑陆行电量计
+node webApp/tests/verify-connect.mjs --bundle path/to/maibms-data.js
+```
+
+覆盖：ANT 探测与分片实时帧、陆行/蓝宝电量计（订阅即就绪 → 轮询帧 → 解码出真实读数）、
+GATT 掉线后自动恢复、手动断开后不再重连、并发 connect 串行化、按阶段归因的错误提示。
+**改完传输层务必跑一遍**——它测的是产物，不是源码。
+
 ### 实现要点
 
 Kotlin 侧**只做数据层**，通过 `window.Maibms` 暴露三类东西（`webApp/src/jsMain/.../Bridge.kt`）：

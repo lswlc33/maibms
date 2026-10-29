@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - 'webApp/src/**'
+      - 'webApp/tests/**'
       - 'webApp/build.gradle.kts'
       - 'composeApp/src/commonMain/**'   # 引擎源码被 webApp 直接复用，改协议要重新出包
       - '.github/workflows/web.yml'
@@ -59,6 +60,11 @@ jobs:
           test -f docs/maibms-data.js || { echo "::error::docs/maibms-data.js 未生成"; exit 1; }
           ls -la docs/maibms-data.js
           ls -la docs/web/
+
+      # 传输层是纯异步的（连接/订阅/分片/掉线），只靠人工真机试极容易漏。
+      # 这个脚本把**刚构建出的产物**放进 Node VM + 假 GATT 里跑完整链路。
+      - name: 连接链路回归测试
+        run: node webApp/tests/verify-connect.mjs
 
       - name: 提交产物（无变化则跳过）
         run: |

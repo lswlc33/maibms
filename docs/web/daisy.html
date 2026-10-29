@@ -17,7 +17,8 @@
   CDN 两个都用 jsDelivr（国内可达性明显好于 unpkg，实测过）。
   daisyUI 已经包含 Tailwind 的组件层，所以先加载 Tailwind 运行时再叠 daisyUI 样式。
 -->
-<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css"
+      media="print" onload="this.media='all'" onerror="this.disabled=true" />
 <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 <script>
   // Tailwind 运行时配置：启用 daisyUI 的语义色，并把字体换成中文优先
@@ -134,12 +135,12 @@
 
 <div class="toast toast-end toast-bottom z-50" id="toastBox"></div>
 
-<script src="maibms-host.js?v=46e7884350"></script>
-<script src="../maibms-data.js?v=46e7884350"></script>
+<script src="maibms-host.js?v=2dfd57677c"></script>
+<script src="../maibms-data.js?v=2dfd57677c"></script>
 <script>
   /* 启动数据层：bundle 以 IIFE 输出，main() 会自动跑；这里再显式调一次兜底（幂等） */
   if (window.MaibmsBoot) window.MaibmsBoot();
 </script>
-<script src="theme-daisy.js?v=46e7884350"></script>
+<script src="theme-daisy.js?v=2dfd57677c"></script>
 </body>
 </html>
