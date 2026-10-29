@@ -38,7 +38,7 @@
     color: var(--fg);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Courier New", "Cascadia Mono", monospace;
     font-size: 13px;
-    line-height: 1.55;
+    line-height: 1.42;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior-y: contain;
     min-height: 100vh;
@@ -108,10 +108,10 @@
   .panel-body {
     border: 1px solid var(--line);
     background: var(--panel);
-    padding: 10px 12px;
+    padding: 7px 10px;
   }
 
-  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 18px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 1px 14px; }
   .kv .k { color: var(--fg-faint); }
   .kv .v { text-align: right; font-weight: 600; }
   .kv .v.warn { color: var(--amber); }
@@ -121,8 +121,8 @@
   .big small { font-size: 13px; font-weight: 400; color: var(--fg-dim); margin-left: 4px; }
 
   .cells {
-    display: grid; gap: 3px;
-    grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
+    display: grid; gap: 2px;
+    grid-template-columns: repeat(auto-fill, minmax(68px, 1fr));
   }
   .cell {
     border: 1px solid var(--line);
@@ -222,8 +222,8 @@
 </div>
 <div id="toastHost"></div>
 
-<script src="maibms-host.js?v=f95f9282d4"></script>
-<script src="../maibms-data.js?v=f95f9282d4"></script>
-<script src="theme-console.js?v=f95f9282d4"></script>
+<script src="maibms-host.js?v=c6b7adeeea"></script>
+<script src="../maibms-data.js?v=c6b7adeeea"></script>
+<script src="theme-console.js?v=c6b7adeeea"></script>
 </body>
 </html>

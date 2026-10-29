@@ -82,7 +82,7 @@ html, body {
 .app {
   max-width: 720px;
   margin: 0 auto;
-  padding: 0 12px calc(84px + var(--safe-b));
+  padding: 0 10px calc(80px + var(--safe-b));
 }
 
 /* 顶栏：吸顶，带一点模糊 */
@@ -112,8 +112,8 @@ html, body {
 .card {
   background: var(--card);
   border-radius: var(--radius);
-  padding: 14px;
-  margin-bottom: 10px;
+  padding: 11px 12px;
+  margin-bottom: 8px;
   box-shadow: var(--shadow);
 }
 .card-head {
@@ -139,9 +139,9 @@ html, body {
 .hero .info .cap { font-size: 12px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
 
 /* ---------- 指标网格 ---------- */
-.metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 12px; }
+.metrics { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin-top: 9px; }
 .metric {
-  background: var(--card-2); border-radius: 14px; padding: 9px 11px;
+  background: var(--card-2); border-radius: 12px; padding: 7px 10px;
 }
 .metric .k { font-size: 10.5px; color: var(--muted); }
 .metric .v {
@@ -162,13 +162,13 @@ html, body {
 
 /* ---------- 单体电压网格 ---------- */
 .cells {
-  display: grid; gap: 5px;
-  grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
+  display: grid; gap: 4px;
+  grid-template-columns: repeat(auto-fill, minmax(54px, 1fr));
 }
 .cell {
   position: relative;
-  background: var(--card-2); border-radius: 10px;
-  padding: 6px 4px; text-align: center;
+  background: var(--card-2); border-radius: 9px;
+  padding: 4px 3px; text-align: center;
   font-variant-numeric: tabular-nums;
   border: 1.5px solid transparent;
 }
@@ -219,7 +219,7 @@ html, body {
 .list { display: flex; flex-direction: column; }
 .row {
   display: flex; align-items: center; gap: 10px;
-  padding: 9px 2px; border-bottom: 1px solid var(--line);
+  padding: 7px 2px; border-bottom: 1px solid var(--line);
 }
 .row:last-child { border-bottom: none; }
 .row .main { flex: 1; min-width: 0; }
