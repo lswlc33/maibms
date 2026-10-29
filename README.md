@@ -340,15 +340,12 @@ Mach-O 数量与体积核检 → 封 ipa；同样的逻辑写两份迟早会漂�
 docs/maibms-data.js     ← Kotlin/JS 产物：BLE + 协议 + 状态桥（唯一需要构建的文件）
 docs/web/index.html     ← 默认主题（移动卡片流 + 底部标签）
 docs/web/mdui.html      ← Material 主题（mdui 2 组件库，底部导航）
-docs/web/daisy.html     ← Daisy 主题（Tailwind + daisyUI，卡片网格）
-docs/web/admin.html     ← 控制台主题（Bootstrap 侧栏仪表盘，宽屏多列 bento）
 docs/web/console.html   ← 终端主题（等宽 HUD + 字符进度条 + 键盘快捷键）
-docs/web/paper.html     ← 杂志主题（排版优先，特大数字，无卡片）
 docs/web/switch.html    ← 主题切换页
 docs/web/maibms-host.js ← Kotlin 与 JS 之间 5 个动态属性函数 + iOS 设备拦截（见下方「为什么需要它」）
 ```
 
-**六套主题 = 三种导航布局（底部标签 / 底部导航 / 侧栏 / 顶部文字链接）× 多种视觉语言**，
+**三套主题、三种风格**（卡片流 / Material You / 终端 HUD），
 全部吃同一份 `window.Maibms` 数据，加一套新主题不用重编 Kotlin。
 终端主题还支持键盘快捷键（1~4 切面板、C 连接、X 断开）。
 
@@ -394,20 +391,18 @@ Kotlin 侧**只做数据层**，通过 `window.Maibms` 暴露三类东西（`web
 刻意**不做细粒度 diff**：轮询 600~900ms 一次，整份重画对浏览器毫无压力；
 而细粒度更新会在每套主题里引入"某处忘了刷新"的 bug——这是主题系统最容易翻车的地方。
 
-六套主题的取舍（后三套是本轮新增的**布局风格**实验）：
+三套主题的取舍：
 
 - **默认**：无边框扁平卡片，手写 CSS。视觉与 Android/iOS 版对齐，无外部依赖，离线可用。
-- **Material**：mdui 2 组件库（Web Component）。验证"换成组件库不影响功能"。
+- **Material**：mdui 2 组件库（Web Component）。
   图标用**内联 SVG**（`ICON_PATHS` 表）而非 Material Icons 字体——那个字体只能从
   `fonts.googleapis.com`（国内不可达）或镜像（Pages 实测也挂）拿，赌 CDN 不如零依赖。
   若回退字体方案：变体后缀是**双横线**（`name--rounded`），Filled 不带后缀。
-- **Daisy**：Tailwind CSS + daisyUI 4。验证"换成原子化 CSS 框架也不影响功能"。
-  注意 Tailwind 自带 `.ring` 工具类，自定义类名要避开（这里把 SOC 环改成了 `.soc-ring`）。
-- **控制台（admin）**：Bootstrap 5 侧栏仪表盘，宽屏 12 列 bento。注意 Bootstrap 5.1+
-  自带 `.grid`/`.col-*` 组件类，自定义网格要换前缀（这里用 `.mw-grid`），
-  且列模板要 `minmax(0, 1fr)` 防内容撑爆。
-- **终端（console）**：等宽字体 HUD，字符进度条 + 键盘快捷键，深色常驻。
-- **杂志（paper）**：Pico classless，排版优先——特大 SOC 数字、图注式指标、细线键值行，无卡片。
+- **终端（console）**：等宽字体 HUD，字符进度条 + 键盘快捷键，深色常驻、零 CDN 依赖。
+
+> 曾经有过 Daisy（Tailwind）/控制台（Bootstrap）/杂志（Pico）三套主题，
+> 为收敛维护面已移除。想加回新主题：写 `theme-xxx.html/js` 吃同一份
+> `window.Maibms`，在 `Bridge.themes()` 与 `theme-switch.js` 的 FALLBACK 里各登记一行即可。
 
 #### 为什么需要 `maibms-host.js`
 

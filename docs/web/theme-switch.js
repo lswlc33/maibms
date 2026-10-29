@@ -23,20 +23,8 @@
       desc: 'mdui 2 组件库 · Material You 动态取色'
     },
     {
-      id: 'daisy', name: 'Daisy', href: 'daisy.html', accent: '#1dcdbc',
-      desc: 'Tailwind CSS + daisyUI · 现代卡片、徽标与统计块'
-    },
-    {
-      id: 'admin', name: '控制台', href: 'admin.html', accent: '#0d6efd',
-      desc: 'Bootstrap 侧栏仪表盘 · 宽屏并排布局，信息密度最高'
-    },
-    {
       id: 'console', name: '终端', href: 'console.html', accent: '#7ee787',
       desc: '等宽字体 HUD · 字符进度条、键盘快捷键（1-4 / C / X）'
-    },
-    {
-      id: 'paper', name: '杂志', href: 'paper.html', accent: '#c9a227',
-      desc: '排版优先 · 特大数字与细分隔线，无卡片无盒子'
     }
   ];
 

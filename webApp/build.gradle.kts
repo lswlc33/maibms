@@ -142,7 +142,7 @@ val syncWebToDocs by tasks.registering(Copy::class) {
         require(data.exists()) { "同步失败：docs/maibms-data.js 不存在" }
         val webDir = docs.resolve("web")
         // 主题页是手工维护的静态文件，构建不生成它们——但要在同步时确认它们仍在
-        listOf("index.html", "mdui.html", "daisy.html", "admin.html", "console.html", "paper.html", "switch.html").forEach { name ->
+        listOf("index.html", "mdui.html", "console.html", "switch.html").forEach { name ->
             require(webDir.resolve(name).exists()) { "缺少主题页 docs/web/$name" }
         }
         // 给主题页引用的本站资源打上**内容哈希**版本号：
@@ -173,7 +173,7 @@ val syncWebToDocs by tasks.registering(Copy::class) {
             }
         }
         val stamp = digest.digest().joinToString("") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }.take(10)
-        listOf("index.html", "mdui.html", "daisy.html", "admin.html", "console.html", "paper.html", "switch.html").forEach { name ->
+        listOf("index.html", "mdui.html", "console.html", "switch.html").forEach { name ->
             val f = webDir.resolve(name)
             var text = f.readText()
             // 先剥旧版本号再加新的（幂等）；只处理本站相对路径，外链 CDN 与静态图片不动

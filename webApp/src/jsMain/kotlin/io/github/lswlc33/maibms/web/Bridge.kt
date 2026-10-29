@@ -464,10 +464,7 @@ object Bridge {
     internal fun themes(): List<ThemeInfo> = listOf(
         ThemeInfo("default", "默认", "无边框扁平卡片 · 深色/浅色跟随系统", "index.html", "#4caf50"),
         ThemeInfo("mdui", "Material", "mdui 2 组件库 · Material You 动态取色", "mdui.html", "#6750a4"),
-        ThemeInfo("daisy", "Daisy", "Tailwind + daisyUI · 现代卡片与徽标", "daisy.html", "#1dcdbc"),
-        ThemeInfo("admin", "控制台", "Bootstrap 侧栏仪表盘 · 宽屏并排布局", "admin.html", "#0d6efd"),
         ThemeInfo("console", "终端", "等宽字体 HUD · 键盘快捷键", "console.html", "#7ee787"),
-        ThemeInfo("paper", "杂志", "排版优先 · 特大数字与细分隔线", "paper.html", "#c9a227"),
     )
 
     private fun deviceDto(st: BmsStatus, caps: DeviceCapabilities) = ThemeDevice(
