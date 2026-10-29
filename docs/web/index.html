@@ -16,7 +16,7 @@
     · Maibms.connect() 等 —— 动作
   换主题就是换这套 HTML/CSS/JS；协议与 BLE 只有一份。
 -->
-<link rel="stylesheet" href="theme-default.css?v=2dfd57677c">
+<link rel="stylesheet" href="theme-default.css?v=5829f08faa">
 </head>
 <body>
 <div id="app">
@@ -31,13 +31,13 @@
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <!-- 数据层：BLE + 协议 + 状态（Kotlin/JS 编译产物） -->
-<script src="maibms-host.js?v=2dfd57677c"></script>
-<script src="../maibms-data.js?v=2dfd57677c"></script>
+<script src="maibms-host.js?v=5829f08faa"></script>
+<script src="../maibms-data.js?v=5829f08faa"></script>
 <script>
 /* 启动数据层：bundle 以 UMD 输出，main() 不会自动跑，必须显式调用（幂等） */
 if (window.MaibmsBoot) window.MaibmsBoot();
 </script>
 <!-- 主题逻辑 -->
-<script src="theme-default.js?v=2dfd57677c"></script>
+<script src="theme-default.js?v=5829f08faa"></script>
 </body>
 </html>
