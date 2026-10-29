@@ -302,8 +302,15 @@
     }
 
     if (!st.connected && st.hasData) {
-      wrap.appendChild(banner('界面预览：以下是示例数据，不是真机读数。点这里连接真实设备。', 'info',
-        ['连接设备', function () { M.connect(); }]));
+      // 断开≠预览：真机断开后 hasData 保留的是最后读数（docs/15.4），
+      // 只有 ?preview=1 才是示例数据。用 previewActive 区分，文案不能混用。
+      if (st.previewActive) {
+        wrap.appendChild(banner('界面预览：以下是示例数据，不是真机读数。点这里连接真实设备。', 'info',
+          ['连接设备', function () { M.connect(); }]));
+      } else {
+        wrap.appendChild(banner('已断开：显示断开前的最后读数。', 'warn',
+          ['重新连接', function () { M.connect(); }]));
+      }
     }
     if (st.hint && !st.connected) wrap.appendChild(banner(st.hint));
     if (st.stalled) wrap.appendChild(banner('设备失联：连续多拍收不到实时数据，正在尝试恢复（信号弱或设备休眠）', 'bad'));
@@ -642,7 +649,8 @@
   function controlShortcuts(st) {
     var caps = st.caps;
     if (!caps.controlCharge && !caps.controlDischarge && !caps.controlBalance) return null;
-    var canWrite = st.permission > 0;
+    // docs/09 §9.1：3 级及以上才可写（1~2 级只读），与 Perm.WRITE_MIN_LEVEL 一致
+    var canWrite = st.permission >= 3;
     var row = el('div', 'btn-row');
 
     function btn(label, cmd) {
@@ -663,7 +671,9 @@
 
     var body = el('div');
     body.appendChild(row);
-    if (!canWrite) body.appendChild(el('p', 'hint-line', '当前为只读（0 级）。到「设置 → 权限」输入密码后可控制。'));
+    if (!canWrite) body.appendChild(el('p', 'hint-line', st.permission > 0
+      ? '当前 ' + st.permission + ' 级为只读档：控制命令需要 3 级及以上。'
+      : '当前为只读（0 级）。到「设置 → 权限」输入密码后可控制。'));
     return card('快捷控制', canWrite ? '' : '需输入密码', body);
   }
 
@@ -685,7 +695,9 @@
 
     var canWrite = live && st.permission > 0;
     if (!live) wrap.appendChild(banner('离线查看（未连接设备）：显示缓存或快照里的参数，不能修改。', 'info'));
-    else if (!canWrite) wrap.appendChild(banner('当前为只读（0 级）：只能查看。到「设置 → 权限」输入密码后可修改并保存。'));
+    else if (!canWrite) wrap.appendChild(banner(st.permission > 0
+      ? '当前 ' + st.permission + ' 级为只读档：写参数需要 3 级及以上，目前只能查看。'
+      : '当前为只读（0 级）：只能查看。到「设置 → 权限」输入密码后可修改并保存。'));
 
     groups.forEach(function (g, gi) {
       var list = el('div', 'list');
@@ -789,8 +801,10 @@
       wrap.appendChild(card(null, '', emptyState('🎛', '未连接', '连接保护板后可以下发控制命令。')));
       return wrap;
     }
-    var canWrite = st.permission > 0;
-    if (!canWrite) wrap.appendChild(banner('当前为只读（0 级），控制命令不可用。到「设置 → 权限」输入密码。'));
+    var canWrite = st.permission >= 3;
+    if (!canWrite) wrap.appendChild(banner(st.permission > 0
+      ? '当前 ' + st.permission + ' 级为只读档：写参数与控制命令需要 3 级及以上。到「设置 → 权限」输入对应密码。'
+      : '当前 0 级（未升权），控制命令不可用。到「设置 → 权限」输入密码。'));
 
     var meta = ui.meta || {};
     var cmds = meta.commands || [];
@@ -964,7 +978,8 @@
     wrap.appendChild(card('轮询频率', '弱信号建议选更稳', pollBody));
 
     wrap.appendChild(settingsRow('权限',
-      st.connected ? (st.permission > 0 ? st.permission + ' 级（可写）' : '只读（0 级）') : '未连接',
+      st.connected ? (st.permission >= 3 ? st.permission + ' 级（可写）'
+        : st.permission > 0 ? st.permission + ' 级（只读档）' : '只读（0 级）') : '未连接',
       function () { ui.settingsPage = 'auth'; renderAll(); }));
 
     if (st.channels.length) {
@@ -1000,7 +1015,7 @@
     if (!st.connected) wrap.appendChild(banner('未连接：可以先保存密码，连上后会自动升权。'));
 
     var list = el('div', 'list');
-    for (var lv = 1; lv <= 5; lv++) {
+    for (var lv = 1; lv <= 9; lv++) { // 9 级=管理员（引擎有 12B 点分十进制槽），App 同款入口
       (function (level) {
         var has = st.passwords.indexOf(level) >= 0;
         var isCurrent = st.connected && st.permission === level;
@@ -1028,10 +1043,9 @@
 
     // 自动升权目标
     var targetBody = el('div');
-    var meta = ui.meta || {};
-    targetBody.appendChild(seg([0, 1, 2, 3, 4, 5].map(function (v) {
+    targetBody.appendChild(seg([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (v) {
       return { value: v, label: v === 0 ? '自动' : v + ' 级' };
-    }), meta.settings.autoUpgradeTarget, function (v) {
+    }), (st.settings || {}).autoUpgradeTarget, function (v) {
       M.setAutoUpgradeTarget(v); renderAll();
     }));
     targetBody.appendChild(el('p', 'hint-line',
@@ -1070,7 +1084,8 @@
         if (st.connected) {
           toast('正在校验 ' + level + ' 级…');
           var r = await M.auth(level, pw);
-          toast(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）' : '密码不正确');
+          toast(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）'
+            : '密码校验未通过：可能是密码不对，也可能是设备无应答（弱信号时 0x43 应答可超 2 秒）。可稍后重试；若多次失败请核对密码。');
         } else {
           M.savePassword(level, pw);
           toast(level + ' 级密码已保存（连上后自动校验）');
@@ -1136,7 +1151,9 @@
       var row = el('div', 'row' + (isCurrent ? '' : ' tap'));
       var main = el('div', 'main');
       main.appendChild(el('div', 'title', ch.label + (isCurrent ? ' · 当前' : '')));
-      main.appendChild(el('div', 'desc', ch.warn || (ch.tag + ' · 可用于固件升级')));
+      // docs/02 §2.2：备用 A/B 不支持固件升级且占用屏/充电器——只有默认通道（ffe1）可升级；
+      // 不能靠 warn 字段兜底（未来新增通道 warn 为空会被误标为可升级）
+      main.appendChild(el('div', 'desc', ch.warn || (ch.id === 'ffe1' ? ch.tag + ' · 支持固件升级' : ch.tag + ' · 备用通道（不支持固件升级）')));
       row.appendChild(main);
       if (!isCurrent) {
         var b = el('button', 'btn sm', '切换');
@@ -1165,14 +1182,13 @@
     fmain.appendChild(el('div', 'title', '帧级日志（收发报文）'));
     fmain.appendChild(el('div', 'desc', '记录每一条 TX/RX 十六进制（密码帧已遮蔽）'));
     frow.appendChild(fmain);
-    var meta = ui.meta || {};
     var sw = el('div', 'switch' + (st.settings.logFrameOn ? ' on' : ''));
     sw.appendChild(el('div', 'track'));
     frow.appendChild(sw);
     frow.addEventListener('click', function () {
-      // 帧开关落在 Kotlin 侧的 BmsLog 上；这里通过重新载入 meta 不现实，直接调数据层没暴露的开关：
-      // 走 Maibms.setPollInterval 同款思路——见 BridgeApi 里没有暴露，因此用 localStorage + 重载页
-      toast('帧级日志开关请在 Android 版使用；网页端日志量小，默认全部记录');
+      // 真开关：桥的 setLogFrameOn 落到 AppStore.logFrameOn → BmsLog.frameLogOn，随 state 推回
+      M.setLogFrameOn(!st.settings.logFrameOn);
+      toast(st.settings.logFrameOn ? '帧级日志已关闭' : '帧级日志已开启（记录每条 TX/RX）');
     });
     settings.appendChild(frow);
     wrap.appendChild(card('日志设置', '', settings));
@@ -1305,7 +1321,7 @@
       // 页面表现为"半截内容 + 无提示"。显示出来才有的查。
       var msg = String(e && e.stack || e);
       var c = document.getElementById('content') || document.body;
-      var box = c.querySelector('.render-error') || c.appendChild(h('div', 'render-error'));
+      var box = c.querySelector('.render-error') || c.appendChild(el('div', 'render-error'));
       box.textContent = '渲染出错：' + msg;
       box.style.cssText = 'color:var(--bs-danger-text-emphasis, #ff7b72);padding:12px;font-size:12px;white-space:pre-wrap';
     }

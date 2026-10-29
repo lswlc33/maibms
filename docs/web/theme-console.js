@@ -298,7 +298,9 @@
     }
 
     if (!st.connected && st.hasData) {
-      wrap.appendChild(sysmsg('界面预览：以下是内置示例数据，不是真机读数。'));
+      // 断开≠预览（docs/15.4）：previewActive 才是示例数据
+      wrap.appendChild(sysmsg(st.previewActive ? '界面预览：以下是内置示例数据，不是真机读数。'
+        : '已断开：显示断开前的最后读数。'));
     }
     if (st.hint && !st.connected) wrap.appendChild(sysmsg(st.hint));
     if (st.stalled) wrap.appendChild(sysmsg('失联：连续多拍未收到实时帧，正在恢复…', true));
@@ -535,7 +537,7 @@
       wrap.appendChild(empty('未连接。连接保护板后可下发控制命令。'));
       return wrap;
     }
-    var canWrite = st.permission > 0;
+    var canWrite = st.permission >= 3; // docs/09 §9.1：3 级及以上才可写
     if (!canWrite) wrap.appendChild(sysmsg('当前为只读（0 级），控制命令不可用。', true));
 
     var meta = ui.meta || {};
@@ -706,7 +708,7 @@
     if (!st.connected) wrap.appendChild(sysmsg('未连接：可以先保存密码，连上后会自动升权。'));
 
     var list = h('div', 'kv');
-    for (var lv = 1; lv <= 5; lv++) {
+    for (var lv = 1; lv <= 9; lv++) { // 9 级=管理员，App 同款入口
       (function (level) {
         var has = st.passwords.indexOf(level) >= 0;
         var isCurrent = st.connected && st.permission === level;
@@ -731,7 +733,7 @@
     wrap.appendChild(panel('密码', list));
 
     var target = h('div', 'kv');
-    [0, 1, 2, 3, 4, 5].forEach(function (v) {
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (v) {
       var row = h('div');
       row.style.display = 'contents';
       row.appendChild(h('span', 'k', v === 0 ? '自动（最高已存）' : v + ' 级'));
@@ -769,7 +771,8 @@
         if (st.connected) {
           toast('正在校验 ' + level + ' 级…');
           var r = await M.auth(level, pw);
-          toast(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）' : '密码不正确');
+          toast(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）'
+            : '密码校验未通过：密码不对或设备无应答（弱信号 0x43 应答可超 2 秒），可重试。');
         } else {
           M.savePassword(level, pw);
           toast(level + ' 级密码已保存（连上后自动校验）');
@@ -829,7 +832,7 @@
       var row = h('div');
       row.style.display = 'contents';
       row.appendChild(h('span', 'k', ch.label + (isCurrent ? ' · 当前' : '') + ' — ' +
-        (ch.warn || ch.tag + ' · 可用于固件升级')));
+        (ch.warn || (ch.id === 'ffe1' ? ch.tag + ' · 支持固件升级' : ch.tag + ' · 备用通道（不支持固件升级）'))));
       var v = h('span', 'v', '');
       if (!isCurrent) {
         var b = h('button', 'cmd', '[ 切换 ]');

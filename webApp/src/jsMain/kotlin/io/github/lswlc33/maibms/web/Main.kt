@@ -81,7 +81,10 @@ fun startDataLayer() {
     if (wantsPreview()) {
         runCatching {
             val snap = io.github.lswlc33.maibms.data.UiPreview.snapshot()
-            io.github.lswlc33.maibms.data.MockBms.restoreSnapshot(snap)
+            // 必须走 enterPreview 而不是只 restoreSnapshot：后者只灌数据不置
+            // previewActive，主题就没法区分"预览的示例数据"与"断开前最后读数"
+            // （docs/15.4 两种状态文案必须不同——曾被混成一句"示例数据"）
+            uiScope.launch { io.github.lswlc33.maibms.data.Bms.repository.enterPreview(snap) }
             BmsLog.i("WEB", "已载入界面预览快照（?preview=1）：${snap.deviceName}")
         }.onFailure { BmsLog.w("WEB", "预览快照载入失败：$it") }
     }

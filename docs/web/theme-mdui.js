@@ -411,7 +411,9 @@
     }
 
     if (!st.connected && st.hasData) {
-      var preview = note('界面预览：以下是示例数据，不是真机读数。', 'warn');
+      // 断开≠预览（docs/15.4）：previewActive 才是示例数据，否则是断开前最后读数
+      var preview = note(st.previewActive ? '界面预览：以下是示例数据，不是真机读数。'
+        : '已断开：显示断开前的最后读数。', st.previewActive ? 'warn' : 'info');
       wrap.appendChild(preview);
     }
     if (st.hint && !st.connected) wrap.appendChild(note(st.hint));
@@ -664,7 +666,7 @@
   function controlShortcuts(st) {
     var caps = st.caps;
     if (!caps.controlCharge && !caps.controlDischarge && !caps.controlBalance) return null;
-    var canWrite = st.permission > 0;
+    var canWrite = st.permission >= 3; // docs/09 §9.1：3 级及以上才可写
     var row = h('div', 'btn-row');
 
     function mk(label, cmd) {
@@ -820,7 +822,7 @@
       return wrap;
     }
 
-    var canWrite = st.permission > 0;
+    var canWrite = st.permission >= 3; // docs/09 §9.1：3 级及以上才可写
     if (!canWrite) wrap.appendChild(note('当前为只读（0 级），控制命令不可用。到「设置 → 权限」输入密码。', 'warn'));
 
     var meta = ui.meta || {};
@@ -1047,7 +1049,7 @@
     if (!st.connected) wrap.appendChild(note('未连接：可以先保存密码，连上后会自动升权。'));
 
     var list = h('div');
-    for (var lv = 1; lv <= 5; lv++) {
+    for (var lv = 1; lv <= 9; lv++) { // 9 级=管理员，App 同款入口
       (function (level) {
         var has = st.passwords.indexOf(level) >= 0;
         var isCurrent = st.connected && st.permission === level;
@@ -1079,8 +1081,8 @@
     var meta = ui.meta || {};
     var group = h('mdui-segmented-button-group');
     group.setAttribute('selects', 'single');
-    group.setAttribute('value', String(meta.settings.autoUpgradeTarget));
-    [0, 1, 2, 3, 4, 5].forEach(function (v) {
+    group.setAttribute('value', String((st.settings || {}).autoUpgradeTarget));
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (v) {
       var b = h('mdui-segmented-button', null, v === 0 ? '自动' : v + ' 级');
       b.setAttribute('value', String(v));
       group.appendChild(b);
@@ -1127,7 +1129,8 @@
         if (st.connected) {
           snack('正在校验 ' + level + ' 级…');
           var r = await M.auth(level, pw);
-          snack(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）' : '密码不正确');
+          snack(r.ok ? level + ' 级校验通过（当前 ' + r.level + ' 级）'
+          : '密码校验未通过：密码不对或设备无应答，可重试。');
         } else {
           M.savePassword(level, pw);
           snack(level + ' 级密码已保存（连上后自动校验）');
@@ -1147,8 +1150,8 @@
   function renderDevices(st) {
     var wrap = h('div', 'stack');
     wrap.appendChild(backBar('历史设备'));
-    var meta = ui.meta || {};
-    var devices = meta.devices || [];
+    // devices 随 state 每拍推（Bridge 修过数据过期问题）；meta.devices 是加载时的静态快照
+    var devices = st.devices || [];
     if (!devices.length) {
       wrap.appendChild(card(emptyState('phone_iphone', '还没有历史设备', '连接一次后会自动记在这里。'),
         { variant: 'outlined' }));
@@ -1203,7 +1206,7 @@
       var row = h('div', 'param-row');
       var main = h('div', 'main');
       main.appendChild(h('div', 'title', ch.label + (isCurrent ? ' · 当前' : '')));
-      main.appendChild(h('div', 'desc', ch.warn || (ch.tag + ' · 可用于固件升级')));
+      main.appendChild(h('div', 'desc', ch.warn || (ch.id === 'ffe1' ? ch.tag + ' · 支持固件升级' : ch.tag + ' · 备用通道（不支持固件升级）')));
       row.appendChild(main);
       if (!isCurrent) {
         row.appendChild(button('切换', {

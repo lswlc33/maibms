@@ -65,6 +65,13 @@ internal fun installActions(api: dynamic) {
         Bms.repository.setAutoUpgradeTarget(lv)
         Bridge.pushState()
     })
+    jsPut(api, "setLogFrameOn", { on: Boolean ->
+        AppStore.logFrameOn = on
+        // AppStore 只是 KV 落盘；真正控制 BmsLog 记录的是这个 StateFlow（启动时才同步一次），
+        // 不在这里同步写的话开关就是"看起来翻了、实际不生效"
+        BmsLog.frameLogOn.value = on
+        Bridge.pushState()
+    })
 
     // ---- 权限 ----
     jsPut(api, "auth", { level: Int, pw: String -> authAction(level, pw) })
@@ -154,10 +161,12 @@ private fun writeParamAction(addr: Int, raw: Int): dynamic = uiScope.promise {
 private fun saveAllParamsAction(): dynamic = uiScope.promise {
     val code = runCatching { Bms.repository.saveAllParams() }.getOrElse { -1 }
     Bridge.pushState()
+    // 保存参数走 0x61 控制码表（docs/07 §7.3）：1 成功、0 "无提示"是"无结论"不是成功
+    // （以前把 0 也标 ok，界面会播报"已保存"——与 controlAction 的口径对齐，只认 1）
     ThemeResult(
-        ok = code == 1 || ResultCodes.writeOk(code),
+        ok = code == 1,
         code = code,
-        text = ResultCodes.writeResult(code),
+        text = ResultCodes.controlResult(code),
     ).toJs(ThemeResult.serializer())
 }
 

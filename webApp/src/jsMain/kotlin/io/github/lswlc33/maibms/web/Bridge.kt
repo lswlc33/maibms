@@ -419,6 +419,12 @@ object Bridge {
         }
     }
 
+    // 网页命令清单的取舍（有意为之，不是遗漏）：
+    //   · 不给 BT_CLOSE——docs/15.4：蓝牙关闭后网页无法再连（App 有 UI 引导，网页没有退路）；
+    //   · 不给 FORCE_CHARGE——需要强充的场景都伴随大电流，手机网页侧缺"二次确认+现场观察"的
+    //     操作环境，交给 App/蓝牙屏；同一理由不给 BT_OPEN（会改变配对归属）；
+    //   · 清零类只保留运行时间/保护计数——容量清零（32/33）与时间清零（34/35）影响库仑计
+    //     统计口径，误触代价高，留给 App；预设类已有三元/铁锂两个常用项。
     private fun commands(): List<ThemeMetaCommand> = listOf(
         ControlCmd.DISCHARGE_OFF, ControlCmd.DISCHARGE_ON,
         ControlCmd.CHARGE_OFF, ControlCmd.CHARGE_ON,
