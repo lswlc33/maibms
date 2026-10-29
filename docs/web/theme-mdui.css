@@ -12,8 +12,10 @@
 html, body {
   margin: 0;
   padding: 0;
-  background: rgb(var(--mdui-color-background));
-  color: rgb(var(--mdui-color-on-background));
+  /* 兜底：mdui.css 加载失败时 --mdui-color-* 全不存在，rgb(var(...)) 整条声明失效
+     → 背景退成透明/白色。用带默认值的写法，深色底仍成立。 */
+  background: rgb(var(--mdui-color-background, 20 18 24));
+  color: rgb(var(--mdui-color-on-background, 230 224 233));
   font-family: var(--mdui-typescale-body-large-font, system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif);
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: contain;

@@ -20,6 +20,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.await
 import kotlin.js.Promise
+import org.khronos.webgl.ArrayBuffer
+import org.khronos.webgl.Uint8Array
+import kotlin.js.unsafeCast
 
 /**
  * 网页端 BLE 传输：**Web Bluetooth**（安卓 Chrome 免 flag 可用）。
@@ -155,6 +158,13 @@ class WebBleTransport : BmsTransport {
         val name = device.name?.trim().orEmpty()
         val family = DeviceFamily.matchName(name)
         logI("已选择设备：${name.ifBlank { "(无名)" }}（${device.id}）→ ${family?.label ?: "未知家族"}")
+        // 选择器现在列出全部设备（见 requestOptions 的说明），用户可能选到无关设备：
+        // 给一句人话提示，但**不阻断**——协议探测失败会给出"通道无应答"，
+        // 而某些板子的广播名确实不标准（官方也允许手选）。
+        if (family == null) {
+            _connectHint.value = "「${name.ifBlank { "未命名设备" }}」不在已知型号列表里，" +
+                "可能是无关设备；仍会尝试连接，失败请换一台。"
+        }
         // Web Bluetooth 不给 RSSI；address 用 Chrome 的设备标识（上层只当档案键用）
         onFound(
             ScanDevice(
@@ -165,7 +175,7 @@ class WebBleTransport : BmsTransport {
             )
         )
         // 选择器已确定唯一目标，扫描到此为止（没有"持续扫描"这回事）
-        _connectHint.value = "已选择：${name.ifBlank { "未命名设备" }}"
+        if (family != null) _connectHint.value = "已选择：${name.ifBlank { "未命名设备" }}"
     }
 
     private fun requestOptions(all: Boolean): dynamic {
@@ -173,20 +183,15 @@ class WebBleTransport : BmsTransport {
         // 解析进去，SERVICE 会变成裸 JS 标识符 → requestDevice 时抛
         // "SERVICE is not defined"，设备选择器根本弹不出来（实测）。
         // 这里用运行时字符串模板 + JSON.parse，SERVICE 以真字符串插进去。
-        val options = if (all) {
-            """{"acceptAllDevices":true,"optionalServices":["$SERVICE"]}"""
-        } else {
-            // 按广播名前缀过滤：与 DeviceFamily.namePrefixes 对齐（蓝宝 blue/lb、陆行 EM2APP、蚂蚁 ANT）。
-            // 名字匹配是 Chrome 主动扫描做的，选择器里只会出现这几类设备。
-            """{"filters":[
-                {"namePrefix":"ANT"},
-                {"namePrefix":"BlueBabe"},
-                {"namePrefix":"blue"},
-                {"namePrefix":"lb"},
-                {"namePrefix":"EM2APP"}
-            ],"optionalServices":["$SERVICE"]}"""
-        }
-        return JSON.parse(options)
+        //
+        // 过滤策略：**默认不按 namePrefix 过滤**，与 Android 侧对齐。
+        // Chrome 的 namePrefix 匹配区分大小写，而引擎的 DeviceFamily 是大小写不敏感、
+        // 且蓝宝电量计的前缀同时有 "BlueBabe"/"blue"/"lb" 三种写法——用 namePrefix 会
+        // 把名字是 "blue-xxx" / "lb123" 的电量计直接挡在选择器之外（用户根本选不到）。
+        // Android 是"先扫全部、再按 DeviceFamily.isTarget 判定"，这里照做：
+        // 选择器里给出全部设备，家族判定交给 matchName（不区分大小写，规则只有一处）。
+        // [all] 参数保留：历史调用点用它表达"更宽的范围"，现在两者等价。
+        return JSON.parse("""{"acceptAllDevices":true,"optionalServices":["$SERVICE"]}""")
     }
 
     override fun stopScan() {
@@ -340,9 +345,26 @@ class WebBleTransport : BmsTransport {
         if (propBool(c, "indicate")) add("指示")
     }.joinToString("/").ifEmpty { "无" }
 
-    /** 读 BluetoothCharacteristicProperties 上的布尔位（dynamic 字段访问，任一为 true 即真） */
-    private fun propBool(c: WebBluetoothGattCharacteristic, vararg names: String): Boolean =
-        names.any { js("!!(c.properties && c.properties[n])").unsafeCast<Boolean>() }
+    /**
+     * 读 BluetoothCharacteristicProperties 上的布尔位（任一为 true 即真）。
+     *
+     * **不要改回 `js("c.properties[...]")` 之类的写法**：`js()` 里的标识符是原文输出，
+     * Kotlin 的局部变量名在产物里不存在 → 判定恒为 false → 所有设备都被当成
+     * "没有可用通道"连不上。用 external 类型属性访问，编译期就绑定到真实成员。
+     */
+    private fun propBool(c: WebBluetoothGattCharacteristic, vararg names: String): Boolean {
+        val p = c.properties
+        return names.any { name ->
+            when (name) {
+                "read" -> p.read == true
+                "write" -> p.write == true
+                "writeWithoutResponse" -> p.writeWithoutResponse == true
+                "notify" -> p.notify == true
+                "indicate" -> p.indicate == true
+                else -> false
+            }
+        }
+    }
 
     /**
      * 逐条探测候选通道：订阅通知 → 发实时帧 → 等 0x11/0x12 应答。
@@ -500,17 +522,21 @@ class WebBleTransport : BmsTransport {
 
     // ---------------- JS 互操作小工具 ----------------
 
-    private fun toUint8Array(b: ByteArray): dynamic {
-        val arr = js("new Uint8Array(b.length)")
-        for (i in b.indices) arr[i] = b[i].toInt() and 0xFF
-        return arr
+    /** ByteArray → Uint8Array（writeValue* 只接受 BufferSource）。
+     *  用 org.khronos.webgl 的 Uint8Array，不写 js() 字面量（见 propBool 的注释）。 */
+    private fun toUint8Array(b: ByteArray): Uint8Array {
+        // khronos 的 Uint8Array 声明没有 (length) 构造，下标赋值的 set 重载也不收 Byte；
+        // 用 Array<Byte> 构造（该声明确实提供的路径）
+        val boxed = Array(b.size) { i -> b[i] }
+        return Uint8Array(boxed)
     }
 
     private fun notificationBytes(event: dynamic): ByteArray? {
-        val dv = event?.target?.value ?: return null
-        val n = (dv.byteLength as? Number)?.toInt() ?: return null
+        val ev = event.unsafeCast<BluetoothCharacteristicValueChangedEvent?>()
+        val dv = ev?.target?.value.unsafeCast<WebDataView?>() ?: return null
+        val n = dv.byteLength
         if (n <= 0) return null
-        return ByteArray(n) { i -> (dv.getUint8(i) as Number).toInt().toByte() }
+        return ByteArray(n) { i -> dv.getUint8(i).toByte() }
     }
 
     private fun isCancellation(e: Throwable): Boolean {
@@ -518,8 +544,11 @@ class WebBleTransport : BmsTransport {
         return name == "NotFoundError"
     }
 
-    private fun jsErrorName(e: Throwable): String? =
-        runCatching { js("(e && e.name) || ''").unsafeCast<String>() }.getOrNull()
+    /** JS 异常的 name（SecurityError/NotFoundError…）。走 asDynamic 属性访问，不用 js() 字面量。 */
+    private fun jsErrorName(e: Throwable): String? = runCatching {
+        val nm = e.asDynamic().name
+        if (nm == null || nm == undefined) null else nm.unsafeCast<String>()
+    }.getOrNull()
 
     private fun describeScanError(e: Throwable): String = when (jsErrorName(e)) {
         "SecurityError" -> "浏览器要求在你的点击后立刻选择设备（或页面不是 https/localhost）"

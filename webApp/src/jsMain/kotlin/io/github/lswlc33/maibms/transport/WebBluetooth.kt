@@ -35,12 +35,34 @@ external class WebBluetoothGattService {
     fun getCharacteristics(): Promise<Array<WebBluetoothGattCharacteristic>>
 }
 
+/**
+ * BluetoothCharacteristicProperties（Web Bluetooth 规范里的成员）。
+ *
+ * **必须用 external 类型访问，不能写 `js("c.properties.write")`**：
+ * `js()` 是编译期原样输出的 JS 字面量，里面的标识符不会被 Kotlin 解析——
+ * 写 `c` / `n` 这类 Kotlin 侧变量名，编译后它们根本不存在（或被压缩成别的名字），
+ * 结果恒为 undefined。曾因此让"特征是否可写/可通知"判定全部为 false，
+ * 表现为任何设备都连不上（"设备没有可用的通信通道"）。
+ */
+@JsName("BluetoothCharacteristicProperties")
+external class WebBluetoothCharacteristicProperties {
+    val read: Boolean?
+    val write: Boolean?
+    val writeWithoutResponse: Boolean?
+    val notify: Boolean?
+    val indicate: Boolean?
+    val broadcast: Boolean?
+    val authenticatedSignedWrites: Boolean?
+    val reliableWrite: Boolean?
+    val writableAuxiliaries: Boolean?
+}
+
 @JsName("BluetoothRemoteGATTCharacteristic")
 external class WebBluetoothGattCharacteristic {
     val uuid: String
 
     /** BluetoothCharacteristicProperties（notify / indicate / write / writeWithoutResponse / read） */
-    val properties: dynamic
+    val properties: WebBluetoothCharacteristicProperties
 
     /** 最近一次通知值（DataView）；仅在上一次读之后有新值时可用 */
     val value: dynamic
@@ -52,6 +74,19 @@ external class WebBluetoothGattCharacteristic {
 
     fun addEventListener(type: String, listener: (dynamic) -> Unit)
     fun removeEventListener(type: String, listener: (dynamic) -> Unit)
+}
+
+/** 通知事件：`event.target.value` 是 DataView */
+@JsName("BluetoothCharacteristicValueChangedEvent")
+external class BluetoothCharacteristicValueChangedEvent {
+    val target: WebBluetoothGattCharacteristic
+}
+
+/** DataView 的最小声明（只用到取字节长度与按索引读字节） */
+@JsName("DataView")
+external class WebDataView {
+    val byteLength: Int
+    fun getUint8(byteOffset: Int): Int
 }
 
 @JsName("Bluetooth")

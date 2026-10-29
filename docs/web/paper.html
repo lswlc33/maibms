@@ -20,6 +20,55 @@
 <style>
   /* Pico classless 打底；下面只改"杂志化"的部分 */
 
+  /* CDN 兜底：Pico 若加载失败（国内网络/离线），页面会退化成无样式裸 HTML
+     （实测：白底、无间距、按钮连成一片）。这里先把 Pico 用到的**变量与最小基础样式**
+     就地定义成杂志风的默认值；Pico 正常加载时它的 :root 变量会覆盖这里。
+     变量名必须与 Pico 一致（--pico-*）。 */
+  :root {
+    --pico-background-color: #14171c;
+    --pico-color: #e6e8eb;
+    --pico-muted-color: #9aa0a8;
+    --pico-muted-border-color: #262b33;
+    --pico-primary: #5b9bd5;
+    --pico-secondary-background: #1d222a;
+    --pico-block-spacing-vertical: 1rem;
+    --pico-block-spacing-horizontal: 1rem;
+    --pico-font-family: system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --pico-background-color: #fbfbfc;
+      --pico-color: #1b1f24;
+      --pico-muted-color: #6b7280;
+      --pico-muted-border-color: #e3e6ea;
+      --pico-secondary-background: #f0f2f5;
+      --pico-primary: #2c6fb5;
+    }
+  }
+  body {
+    margin: 0;
+    background: var(--pico-background-color);
+    color: var(--pico-color);
+    font-family: var(--pico-font-family);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  /* 只兜最容易被"裸 HTML"破坏的几处：容器宽度、按钮/输入、边距 */
+  body > header, body > main {
+    max-width: 700px; margin: 0 auto;
+    padding: 0 var(--pico-block-spacing-horizontal);
+  }
+  h1, h2, h3 { line-height: 1.25; }
+  button, input, select {
+    font: inherit; font-size: 13.5px;
+    color: inherit; background: var(--pico-secondary-background);
+    border: 1px solid var(--pico-muted-border-color);
+    border-radius: 4px; padding: 6px 12px;
+  }
+  button { cursor: pointer; margin: 2px 6px 2px 0; }
+  a { color: var(--pico-primary); }
+  p { margin: .6em 0; }
+
   html { scroll-behavior: smooth; }
   body {
     padding-top: 8px;
@@ -238,8 +287,8 @@
 <header class="top" id="top"></header>
 <main id="content"></main>
 
-<script src="maibms-host.js?v=968162e76b"></script>
-<script src="../maibms-data.js?v=968162e76b"></script>
-<script src="theme-paper.js?v=968162e76b"></script>
+<script src="maibms-host.js?v=5d8c9c236e"></script>
+<script src="../maibms-data.js?v=5d8c9c236e"></script>
+<script src="theme-paper.js?v=5d8c9c236e"></script>
 </body>
 </html>

@@ -11,6 +11,21 @@
 <!-- mdui 2：Material You 组件库。CDN 引入，不需要构建。
      离线/内网环境下会加载失败，页面会降级成"提示+原始 HTML"（见 theme-mdui.js 的兜底）。 -->
 <link rel="stylesheet" href="https://unpkg.com/mdui@2/mdui.css">
+<!-- CDN 兜底（内联，放 CDN 之后）：mdui.css 加载失败时组件是未定义标签，
+     文字会挤成一团。给最基本的布局骨架；mdui 正常加载时这些规则被组件样式覆盖。
+     注意 host 元素的 display 必须显式给（自定义元素默认 inline）。 -->
+<style>
+  mdui-top-app-bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+  mdui-navigation-bar { display: flex; justify-content: space-around; padding: 8px 0; }
+  mdui-navigation-bar-item { display: flex; flex-direction: column; align-items: center; gap: 2px;
+    font-size: 12px; cursor: pointer; padding: 4px 10px; }
+  mdui-card { display: block; margin: 12px 0; }
+  .content { padding: 12px; }
+  /* 页面底色/字色：mdui.css 没来时默认是白底黑字，深色主题会刺眼 */
+  html, body { margin: 0; background: #141218; color: #e6e0e9;
+    font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { -webkit-font-smoothing: antialiased; }
+</style>
 <script src="https://unpkg.com/mdui@2/mdui.global.js"></script>
 <!--
   图标不用 Material Icons 字体，改用内联 SVG（见 theme-mdui.js 的 mduiIcon()）。
@@ -21,7 +36,7 @@
   与其赌 CDN，不如把用到的十来个图标直接写成 SVG path——离线可用、零依赖。
 -->
 
-<link rel="stylesheet" href="theme-mdui.css?v=968162e76b">
+<link rel="stylesheet" href="theme-mdui.css?v=5d8c9c236e">
 </head>
 <body class="mdui-theme-auto">
 <div id="app">
@@ -32,12 +47,12 @@
 </div>
 
 <!-- 数据层：BLE + 协议 + 状态桥（Kotlin/JS 产物，与默认主题共用同一个文件） -->
-<script src="maibms-host.js?v=968162e76b"></script>
-<script src="../maibms-data.js?v=968162e76b"></script>
+<script src="maibms-host.js?v=5d8c9c236e"></script>
+<script src="../maibms-data.js?v=5d8c9c236e"></script>
 <script>
 /* 启动数据层：bundle 以 UMD 输出，main() 不会自动跑，必须显式调用（幂等） */
 if (window.MaibmsBoot) window.MaibmsBoot();
 </script>
-<script src="theme-mdui.js?v=968162e76b"></script>
+<script src="theme-mdui.js?v=5d8c9c236e"></script>
 </body>
 </html>
