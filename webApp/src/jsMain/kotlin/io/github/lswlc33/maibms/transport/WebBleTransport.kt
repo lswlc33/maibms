@@ -169,24 +169,24 @@ class WebBleTransport : BmsTransport {
     }
 
     private fun requestOptions(all: Boolean): dynamic {
-        if (all) {
-            return js("""({
-                acceptAllDevices: true,
-                optionalServices: [SERVICE]
-            })""")
+        // 不能用 js() 字面量里写 [SERVICE]：js() 是编译期原样输出，Kotlin 常量不会被
+        // 解析进去，SERVICE 会变成裸 JS 标识符 → requestDevice 时抛
+        // "SERVICE is not defined"，设备选择器根本弹不出来（实测）。
+        // 这里用运行时字符串模板 + JSON.parse，SERVICE 以真字符串插进去。
+        val options = if (all) {
+            """{"acceptAllDevices":true,"optionalServices":["$SERVICE"]}"""
+        } else {
+            // 按广播名前缀过滤：与 DeviceFamily.namePrefixes 对齐（蓝宝 blue/lb、陆行 EM2APP、蚂蚁 ANT）。
+            // 名字匹配是 Chrome 主动扫描做的，选择器里只会出现这几类设备。
+            """{"filters":[
+                {"namePrefix":"ANT"},
+                {"namePrefix":"BlueBabe"},
+                {"namePrefix":"blue"},
+                {"namePrefix":"lb"},
+                {"namePrefix":"EM2APP"}
+            ],"optionalServices":["$SERVICE"]}"""
         }
-        // 按广播名前缀过滤：与 DeviceFamily.namePrefixes 对齐（蓝宝 blue/lb、陆行 EM2APP、蚂蚁 ANT）。
-        // 名字匹配是 Chrome 主动扫描做的，选择器里只会出现这几类设备。
-        return js("""({
-            filters: [
-                { namePrefix: 'ANT' },
-                { namePrefix: 'BlueBabe' },
-                { namePrefix: 'blue' },
-                { namePrefix: 'lb' },
-                { namePrefix: 'EM2APP' },
-            ],
-            optionalServices: [SERVICE]
-        })""")
+        return JSON.parse(options)
     }
 
     override fun stopScan() {
