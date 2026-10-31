@@ -90,7 +90,10 @@ fun DeviceScreen(onBack: () -> Unit) {
                 }
             }
         }
-        InfoBanner("删除设备会连同其密码与数据快照一并清除；自动重连目标被删后回退为上次连接", kind = "warn", action = "了解")
+        InfoBanner(
+            "删除设备会连同其密码与数据快照一并清除；自动重连目标被删后回退为上次连接",
+            kind = "warn", action = "了解", rememberKey = "device-delete-warning",
+        )
         note?.let { InfoBanner(it, kind = "info") }
     }
 
@@ -158,7 +161,9 @@ private fun DeviceRow(profile: DeviceProfile, isLast: Boolean, onClick: () -> Un
                 }
             }
             Text(
-                "${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)} · 密码 ${profile.passwords.size} 级",
+                // 多级密码是蚂蚁保护板专有；电量计档案没有密码库，摘要里也不再提「密码 N 级」
+                "${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)}" +
+                    if (profile.family.isMeter) "" else " · 密码 ${profile.passwords.size} 级",
                 fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 1.dp),
             )
@@ -197,22 +202,25 @@ private fun DeviceDetailDialog(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
-            // 按设备密码库：逐级进入编辑（复用权限页的密码弹窗，按地址写入档案）
-            Column(Modifier.padding(top = 10.dp)) {
-                Text("密码库", fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface)
-                listOf(1, 2, 3, 4, 5, 9).forEach { lv ->
-                    val saved = profile.passwords[lv]
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.fillMaxWidth().clickable { editingLevel = lv }.padding(vertical = 6.dp),
-                    ) {
-                        Text(if (lv == 9) "9 级厂家" else "$lv 级", fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.weight(1f))
-                        Text(saved?.let { "••••••••" } ?: "未设置", fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text(" ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // 按设备密码库：逐级进入编辑（复用权限页的密码弹窗，按地址写入档案）。
+            // 多级密码是蚂蚁保护板专有——电量计档案不显示这块（也没有可写的槽位）
+            if (!profile.family.isMeter) {
+                Column(Modifier.padding(top = 10.dp)) {
+                    Text("密码库", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface)
+                    listOf(1, 2, 3, 4, 5, 9).forEach { lv ->
+                        val saved = profile.passwords[lv]
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { editingLevel = lv }.padding(vertical = 6.dp),
+                        ) {
+                            Text(if (lv == 9) "9 级厂家" else "$lv 级", fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface)
+                            Spacer(Modifier.weight(1f))
+                            Text(saved?.let { "••••••••" } ?: "未设置", fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(" ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }

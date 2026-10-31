@@ -401,13 +401,20 @@ object MockBms {
             present.forEachIndexed { i, v ->
                 byIndex[r.cellIndices?.getOrNull(i) ?: (i + 1)] = v
             }
+            // 最高/最低串号官方不在帧里找（108 帧那两个 index 字节官方 EM02.js 只读不用于高亮，
+            // 高亮走 updateVoltageExtremes 现算：有效值里取最大/最小，同值取先出现的串）——
+            // 这里按同一口径在合并层算，否则单体网格的黄/蓝高亮永远是空的
+            val maxIdx = byIndex.entries.filter { it.value != null }
+                .maxWithOrNull(compareBy({ it.value }, { -it.key }))?.key
+            val minIdx = byIndex.entries.filter { it.value != null }
+                .minWithOrNull(compareBy({ it.value }, { it.key }))?.key
             (1..total).map { idx ->
                 val v = byIndex[idx]
                 CellV(
                     index = idx,
                     volt = v ?: 0.0,
-                    isMax = false,
-                    isMin = false,
+                    isMax = idx == maxIdx,
+                    isMin = idx == minIdx,
                     balancing = false,
                     missing = v == null,
                 )

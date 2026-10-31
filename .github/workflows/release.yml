@@ -189,12 +189,13 @@ jobs:
           path: ~/.konan
           key: konan-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
 
-      - name: 写入新版本号到 iOS 壳工程（只改工作区，不提交）
+      - name: 写入新版本号（IPA 的两条版本路径要一起改）
         env:
           CODE: ${{ needs.version.outputs.code }}
           NAME: ${{ needs.version.outputs.name }}
         run: |
           set -euo pipefail
+          # 路径一：壳工程 Info.plist 的 CFBundleShortVersionString（系统设置里看到的版本）
           # 壳工程的 CFBundleShortVersionString/CFBundleVersion 取自 project.yml 的
           # MARKETING_VERSION/CURRENT_PROJECT_VERSION，由 xcodegen 在打包时填进 Info.plist。
           # 不在这里写，打出来的 ipa 版本号会停在上一版（v0.1.4 的 ipa 里就还是 0.1.3）。
@@ -208,6 +209,16 @@ jobs:
           grep -qE "^[[:space:]]*CURRENT_PROJECT_VERSION: \"${CODE}\"" "$F" \
             || { echo "::error::$F 的 CURRENT_PROJECT_VERSION 没写成 ${CODE}"; exit 1; }
           grep -E 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' "$F"
+          # 路径二：应用内「当前版本/检查更新」读的 AppVersion——iOS 没有 AGP 的 BuildConfig，
+          # 版本号由 Gradle 从 build.gradle.kts 解析生成（generatePlatformVersion 任务）。
+          # 这条路径之前只有 APK job 在改，ipa 里的应用内版本一直是 main 上的旧值
+          #（v0.1.8 的 ipa：Info.plist 是 0.1.8，应用内却显示 0.1.7）。
+          G=composeApp/build.gradle.kts
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${CODE}/" "$G"
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$G"
+          grep -qE "versionName = \"${NAME}\"" "$G" \
+            || { echo "::error::$G 的 versionName 没写成 ${NAME}"; exit 1; }
+          grep -E 'versionCode|versionName' "$G" | head -4
 
       - name: 构建未签名 ipa（Release 配置，包体最小）
         id: ipa

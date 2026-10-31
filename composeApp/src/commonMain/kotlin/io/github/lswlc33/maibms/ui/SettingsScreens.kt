@@ -176,46 +176,38 @@ fun SettingsHomeScreen(
         // ---- 后台与通知 ----
         // 退到后台之后干什么，此前没有任何策略：仍按 600ms 轮询、占着 BLE 连接，
         // 却没有展示也没有通知（电耗换不回东西）。现在由这一个开关决定两种行为。
+        // 只在支持通知的平台（Android）显示整卡：iOS/桌面没有注入通知实现，
+        // 没有可操作的开关，整卡「本平台不支持」只是占屏的噪声
         val bgMonitor = AppStore.backgroundMonitor
         val notifySupported = io.github.lswlc33.maibms.data.Notifications.supported
-        SectionCard {
-            SectionHeader("后台与通知", tail = if (notifySupported) "Android" else "本平台不支持")
-            SettingRow(
-                title = "后台监控",
-                inlineValue = when {
-                    !notifySupported -> "本平台不支持"
-                    bgMonitor -> "开 · 保持连接并通知"
-                    else -> "关 · 退后台暂停轮询"
-                },
-                trailing = { if (notifySupported) AppSwitch(bgMonitor) { io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(it) } },
-                onClick = {
-                    if (notifySupported) {
-                        io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(!bgMonitor)
-                    }
-                },
-            )
-            if (notifySupported && bgMonitor) {
+        if (notifySupported) {
+            SectionCard {
+                SectionHeader("后台与通知", tail = "Android")
                 SettingRow(
-                    title = "告警通知",
-                    inlineValue = if (AppStore.alarmNotify) "开" else "关",
-                    trailing = { AppSwitch(AppStore.alarmNotify) { AppStore.alarmNotify = it } },
-                    onClick = { AppStore.alarmNotify = !AppStore.alarmNotify },
+                    title = "后台监控",
+                    inlineValue = if (bgMonitor) "开 · 保持连接并通知" else "关 · 退后台暂停轮询",
+                    trailing = { AppSwitch(bgMonitor) { io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(it) } },
+                    onClick = {
+                        io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(!bgMonitor)
+                    },
+                )
+                if (bgMonitor) {
+                    SettingRow(
+                        title = "告警通知",
+                        inlineValue = if (AppStore.alarmNotify) "开" else "关",
+                        trailing = { AppSwitch(AppStore.alarmNotify) { AppStore.alarmNotify = it } },
+                        onClick = { AppStore.alarmNotify = !AppStore.alarmNotify },
+                    )
+                }
+                Text(
+                    if (bgMonitor)
+                        "保持连接与轮询（常驻通知栏，可随时关掉）。保护/告警**新触发**、以及设备失联时发一条通知；前台不重复提醒，界面本身就有告警卡。"
+                    else
+                        "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。",
+                    fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            Text(
-                when {
-                    // 这两个平台没有注入通知实现，也拿不到可靠的前后台信号（AppForeground 默认恒为 true），
-                    // 所以这里不能承诺"退到后台会暂停"——按实际行为写
-                    !notifySupported ->
-                        "本平台不做后台保活与系统通知（iOS 与桌面端）：没有「正在监控」的常驻提示，也不发告警通知，轮询节奏不受前后台影响。"
-                    bgMonitor ->
-                        "保持连接与轮询（常驻通知栏，可随时关掉）。保护/告警**新触发**、以及设备失联时发一条通知；前台不重复提醒，界面本身就有告警卡。"
-                    else ->
-                        "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。"
-                },
-                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
         }
         SectionCard {
             SettingRow(
@@ -227,23 +219,31 @@ fun SettingsHomeScreen(
                 trailing = { Chevron() },
                 onClick = { onOpen(Route.Snapshots) },
             )
-            SettingRow(
-                title = "权限与密码",
-                inlineValue = if (saved.isEmpty()) "未设置" else "已记住 " + saved.keys.sorted().joinToString("/") + " 级",
-                trailing = { Chevron() },
-                onClick = { onOpen(Route.Password) },
-            )
+            // 权限与密码是蚂蚁保护板专有（多级密码校验，0x23）——电量计没有这套机制，不显示入口
+            if (!meterMode) {
+                SettingRow(
+                    title = "权限与密码",
+                    inlineValue = if (saved.isEmpty()) "未设置" else "已记住 " + saved.keys.sorted().joinToString("/") + " 级",
+                    trailing = { Chevron() },
+                    onClick = { onOpen(Route.Password) },
+                )
+            }
             SettingRow(title = "开发者", trailing = { Chevron() }, onClick = { onOpen(Route.Developer) })
         }
-        SectionCard {
-            // 设备日志：读设备里存的历史事件与保护动作次数（0x13 / 0x15）。
-            // 放设置页而不是仪表盘：它是"翻旧账"的地方，不是每拍要盯的读数
-            SettingRow(
-                title = "设备日志",
-                inlineValue = "历史事件 / 保护次数",
-                trailing = { Chevron() },
-                onClick = { onOpen(Route.EventLogs) },
-            )
+        // 设备日志（0x13/0x15 历史事件与保护计数）只有真实连接的蚂蚁保护板才有；
+        // 电量计无此数据，未连接/演示模式读了也是空——入口随之隐藏
+        val boardConnected = connected &&
+            io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value ==
+                io.github.lswlc33.maibms.transport.DeviceFamily.Ant
+        if (boardConnected) {
+            SectionCard {
+                SettingRow(
+                    title = "设备日志",
+                    inlineValue = "历史事件 / 保护次数",
+                    trailing = { Chevron() },
+                    onClick = { onOpen(Route.EventLogs) },
+                )
+            }
         }
         SectionCard {
             SectionHeader("关于", tail = "身份区")
@@ -278,7 +278,6 @@ private fun AboutAppCard() {
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
     var checking by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<io.github.lswlc33.maibms.data.UpdateChecker.Result?>(null) }
-    var channelMenu by remember { mutableStateOf(false) }
     var channel by remember {
         mutableStateOf(io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.fromKey(AppStore.updateChannel))
     }
@@ -301,42 +300,43 @@ private fun AboutAppCard() {
             onClick = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL) } },
         )
         SettingRow(title = "当前版本", inlineValue = io.github.lswlc33.maibms.data.AppVersion.name)
-        // 更新渠道：稳定版=正式 Release；预览版=含 Prerelease 的最近一次发布
-        Box {
-            SettingRow(
-                title = "更新渠道",
-                inlineValue = channel.label,
-                trailing = { Text("⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                onClick = { channelMenu = true },
-            )
-            DropdownMenu(expanded = channelMenu, onDismissRequest = { channelMenu = false }) {
-                io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.entries.forEach { ch ->
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text(ch.label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
-                                Text(
-                                    when (ch) {
-                                        io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.STABLE -> "正式 Release · 适合日常使用"
-                                        io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.PREVIEW -> "含 Prerelease · 抢先体验新功能"
-                                    },
-                                    fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                        trailingIcon = {
-                            if (ch == channel) Text("✓", fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary)
-                        },
-                        onClick = {
-                            channelMenu = false
+        // 更新渠道：稳定版=正式 Release；预览版=含 Prerelease 的最近一次发布。
+        // 分段按钮而不是下拉菜单：这页外层是纵向滚动容器，DropdownMenu 在部分平台
+        //（iOS 上必现）弹不出或点行无响应——同页的轮询频率/界面大小用同款按钮没有此问题
+        Row(
+            Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.entries.forEach { ch ->
+                val selected = ch == channel
+                Column(
+                    Modifier.weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
+                            else MaterialTheme.colorScheme.surfaceVariant
+                        )
+                        .clickable {
                             if (ch != channel) {
                                 channel = ch
                                 AppStore.updateChannel = ch.key
                                 result = null
                                 runCheck(ch)   // 切渠道自动重查一次，省得用户再点
                             }
+                        }
+                        .padding(horizontal = 8.dp, vertical = 7.dp),
+                ) {
+                    Text(ch.label, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurface)
+                    Text(
+                        when (ch) {
+                            io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.STABLE -> "正式 Release"
+                            io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.PREVIEW -> "抢先体验"
                         },
+                        fontSize = 8.5.sp,
+                        color = if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -380,7 +380,10 @@ private fun AboutAppCard() {
             )
             else -> {}
         }
-        InfoBanner("应用只与设备通信；检查更新时仅访问 GitHub/镜像的公开接口", kind = "info", action = "了解")
+        InfoBanner(
+            "应用只与设备通信；检查更新时仅访问 GitHub/镜像的公开接口",
+            kind = "info", action = "了解", rememberKey = "about-privacy",
+        )
     }
 }
 
@@ -399,12 +402,24 @@ fun PasswordScreen(onBack: () -> Unit) {
     // 未连接时实时数据里没有设备名，用记住的那台；否则会显示成「设备：--」
     val label = MockBms.deviceLabel
     val online = status.hasData
+    // 多级密码（0x23/0x25）是蚂蚁保护板专有：电量计没有这套机制，
+    // 页面只剩一句说明（入口在设置页已隐藏，这里兜底防深链直进）
+    val isMeter = io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value.isMeter
     ScreenScaffold(
         title = "权限与密码",
         subtitle = if (online) "设备：$label · 当前权限 ${status.permissionLevel} 级"
                    else "设备：$label · 未连接（权限 ${status.permissionLevel} 级）",
         onBack = onBack,
     ) {
+        if (isMeter) {
+            SectionCard {
+                Text(
+                    "「${label}」是电量计，不支持多级密码校验——密码功能只对蚂蚁保护板有效。",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            return@ScreenScaffold
+        }
         SectionCard {
             SectionHeader("该设备的密码库", tail = "点行设置/修改")
             passwords.forEach { pw ->
@@ -468,7 +483,10 @@ fun PasswordScreen(onBack: () -> Unit) {
             val savedLabel = saved.keys.sorted().joinToString("/") + " 级"
             InfoBanner("已记住 $savedLabel 密码 · 连接时自动升级，权限回落会自动重升", kind = "info")
         }
-        InfoBanner("密码为明文存储，勿共用设备", kind = "err", action = "了解")
+        InfoBanner(
+            "密码为明文存储，勿共用设备",
+            kind = "err", action = "了解", rememberKey = "password-plaintext",
+        )
     }
     editing?.let { lv -> MockBms.savedAddress?.let { addr ->
         PasswordEditDialog(addr, lv, onDismiss = { editing = null })
@@ -615,7 +633,7 @@ fun DeveloperScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 4.dp),
             )
         }
-        // 轮询频率三档：900 更稳更省电 / 600 默认 / 300 数据最跟手（弱信号下可能丢帧）
+        // 轮询频率三档：300 数据最跟手（弱信号下可能丢帧）/ 600 默认 / 900 更稳更省电
         SectionCard {
             SectionHeader("轮询频率", tail = "默认 600ms")
             var poll by remember { mutableStateOf(AppStore.pollIntervalMs) }

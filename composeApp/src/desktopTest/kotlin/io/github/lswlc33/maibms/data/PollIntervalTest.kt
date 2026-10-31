@@ -19,7 +19,7 @@ class PollIntervalTest {
         reset()
         assertEquals(600, AppStore.pollIntervalMs)
         assertEquals(600, POLL_INTERVAL_DEFAULT_MS)
-        assertEquals(listOf(900, 600, 300), POLL_INTERVAL_PRESETS_MS, "顺序即界面展示顺序")
+        assertEquals(listOf(300, 600, 900), POLL_INTERVAL_PRESETS_MS, "顺序即界面展示顺序（从低到高）")
     }
 
     @Test fun writesSnapToNearestPreset() {
@@ -39,8 +39,8 @@ class PollIntervalTest {
 
     @Test fun legacyTestKeyMigratesBySnapping() {
         reset()
-        AppStore.put("test.pollIntervalMs", "450")   // 与 300/600 并列等距 → 取靠前的 600
-        assertEquals(600, AppStore.pollIntervalMs)
+        AppStore.put("test.pollIntervalMs", "450")   // 与 300/600 并列等距 → 取列表靠前的 300（预设按从低到高排）
+        assertEquals(300, AppStore.pollIntervalMs)
         AppStore.put("test.pollIntervalMs", "100")
         assertEquals(300, AppStore.pollIntervalMs)
         AppStore.put("test.pollIntervalMs", "990")

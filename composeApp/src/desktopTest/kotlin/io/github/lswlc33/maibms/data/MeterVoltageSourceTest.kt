@@ -68,6 +68,47 @@ class MeterVoltageSourceTest {
         }
     }
 
+    @Test
+    fun cell_grid_highlights_max_and_min() {
+        MockBms.clearForRealDevice()
+        try {
+            // 未接串（index 3）不得参与高亮；最高 4.21@4、最低 4.19@2
+            MockBms.applyMeterReading(MeterReading(
+                totalVoltage = 48.0,
+                cells = listOf(4.2, 4.19, 4.21),
+                cellIndices = listOf(1, 2, 4),
+                cellCount = 4,
+            ))
+            val cells = MockBms.status.value.cells
+            assertTrue(cells[3].isMax, "最高单体（串4）应高亮")
+            assertTrue(cells[1].isMin, "最低单体（串2）应高亮")
+            assertFalse(cells[2].isMax || cells[2].isMin, "未接的占位格不得参与高亮")
+            assertEquals(1, cells.count { it.isMax }, "高亮的最高串应恰好一格")
+            assertEquals(1, cells.count { it.isMin }, "高亮的最低串应恰好一格")
+        } finally {
+            MockBms.clearForRealDevice()
+        }
+    }
+
+    @Test
+    fun equal_voltages_highlight_lowest_index() {
+        MockBms.clearForRealDevice()
+        try {
+            // 官方 updateVoltageExtremes 用严格 >/< 扫描：同值取先出现的串（最低串号）
+            MockBms.applyMeterReading(MeterReading(
+                totalVoltage = 48.0,
+                cells = listOf(4.2, 4.2, 4.1),
+                cellCount = 3,
+            ))
+            val cells = MockBms.status.value.cells
+            assertTrue(cells[0].isMax, "两串同为最高时只高亮先出现的串1")
+            assertFalse(cells[1].isMax)
+            assertTrue(cells[2].isMin)
+        } finally {
+            MockBms.clearForRealDevice()
+        }
+    }
+
     // ---- 合成帧（字段偏移与 MeterProtocolTest 一致，仅保留本用例需要的字段） ----
 
     private class Writer(val d: ByteArray) {

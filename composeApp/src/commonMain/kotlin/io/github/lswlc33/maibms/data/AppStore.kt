@@ -280,7 +280,7 @@ object AppStore {
     private const val KEY_UI_SCALE = "ui.scale"
 
     /**
-     * 轮询间隔（ms）：三档预设 [POLL_INTERVAL_PRESETS_MS]（900 / 600 / 300），默认 600。
+     * 轮询间隔（ms）：三档预设 [POLL_INTERVAL_PRESETS_MS]（300 / 600 / 900），默认 600。
      * 900 = 更稳更省电（弱信号场景）；300 = 数据最跟手（弱信号下可能丢帧）。
      * 读写都吸附到最近档位；老版本开发者页存过任意值（旧键 `test.pollIntervalMs`），
      * 读取时同样吸附迁移，无需手动清理。
@@ -333,13 +333,13 @@ fun normalizePowerStages(raw: List<Int>): List<Int> {
 
 /* ---------- 轮询间隔的三档预设 ---------- */
 
-/** 轮询间隔预设（ms）：顺序即界面展示顺序（900 更稳 / 600 默认 / 300 最跟手） */
-val POLL_INTERVAL_PRESETS_MS = listOf(900, 600, 300)
+/** 轮询间隔预设（ms）：顺序即界面展示顺序（300 最跟手 / 600 默认 / 900 更稳），从低到高 */
+val POLL_INTERVAL_PRESETS_MS = listOf(300, 600, 900)
 
 /** 默认轮询间隔（ms）：600——数据跟手与链路稳定的平衡点 */
 const val POLL_INTERVAL_DEFAULT_MS = 600
 
-/** 任意值吸附到最近的预设档位（并列取靠前的，如 450 → 600）；空列表兜底回默认 */
+/** 任意值吸附到最近的预设档位（并列取列表靠前的，即更低档，如 450 → 300）；空列表兜底回默认 */
 internal fun nearestPollPreset(v: Int): Int =
     POLL_INTERVAL_PRESETS_MS.minByOrNull { kotlin.math.abs(it - v) } ?: POLL_INTERVAL_DEFAULT_MS
 

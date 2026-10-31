@@ -264,11 +264,15 @@ fun RadioDot(selected: Boolean) {
 }
 
 @Composable
-fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAction: (() -> Unit)? = null) {
+fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAction: (() -> Unit)? = null, rememberKey: String? = null) {
     // 行尾动作的兜底：给了回调就执行回调，没给就当作「知道了」把横幅收起。
     // 原来 onAction 默认空实现——调用方写了 action 却没传回调，就成了点不动的死按钮
     //（密码页的「了解」正是踩的这个坑）。按 text 记忆，换一条消息重新有机会显示。
     var dismissed by remember(text) { mutableStateOf(false) }
+    // rememberKey 非空 = 提示要求跨会话记住：点过一次落盘（键 banner.dismissed.<key>），
+    // 之后每次进页面（重启也算）都不再弹。调用方用短横线 key 唯一标识这条提示
+    val dismissedKey = rememberKey?.let { "banner.dismissed.$it" }
+    if (dismissedKey != null && AppStore.get(dismissedKey) == "1") return
     if (dismissed) return
     // 深色下用半透明色块 + 亮字，浅色下用淡底 + 深字（照截图的扁平横幅）
     val (bg, fg) = when (kind) {
@@ -287,6 +291,8 @@ fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAc
                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
                 modifier = Modifier.padding(start = 8.dp).clickable {
                     if (onAction != null) onAction() else dismissed = true
+                    // 「了解/知道了」类动作（无自定义回调）且调用方给了 rememberKey：落盘，不再弹
+                    if (onAction == null && dismissedKey != null) AppStore.put(dismissedKey, "1")
                 })
         }
     }
