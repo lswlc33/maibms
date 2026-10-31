@@ -575,8 +575,19 @@ class BmsRepository(
         }
         val ok = runCatching {
             real.scan { d ->
-                _scanResults.value =
-                    (_scanResults.value.filterNot { it.address == d.address } + d).sortedByDescending { it.rssi }
+                // 扫描期间**锁定列表顺序**：行位置必须稳定，否则「按下某行 → 松手」之间
+                // 它可能已被 RSSI 重排挪走，这次点击就丢失或落到别的设备上（iOS 上会直接丢失，
+                // 是「扫描出的新设备点不中」的根因）。
+                // 已出现的设备只就地更新 RSSI（不重排、不换位置）；新发现的追加到末尾。
+                // 排序留给扫描结束（stopScan）与手动刷新时统一做一次。
+                val cur = _scanResults.value
+                val idx = cur.indexOfFirst { it.address == d.address }
+                _scanResults.value = if (idx >= 0) {
+                    // 原位替换：保持顺序，只把这一行的 RSSI/名称更新为最新
+                    cur.toMutableList().also { it[idx] = d }
+                } else {
+                    cur + d
+                }
             }
         }
         if (ok.isFailure) {
@@ -597,6 +608,10 @@ class BmsRepository(
         scanTimeoutJob?.cancel(); scanTimeoutJob = null
         _scanning.value = false
         realTransport?.stopScan()
+        // 扫描结束统一按信号强度排序一次：扫描期间为保住点击目标而锁定顺序（见 startScan），
+        // 停下来之后再排好，既不丢点击又让最强的排在最前
+        val cur = _scanResults.value
+        if (cur.size > 1) _scanResults.value = cur.sortedByDescending { it.rssi }
     }
 
     /**

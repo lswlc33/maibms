@@ -432,9 +432,13 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                         enabled = selected != null,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) {
-                        // 显示要连哪台：选中的行在扫描中会随信号强度移动，写出来更不容易连错
-                        val selName = results.firstOrNull { it.address == selected }?.name
-                        Text(if (selName != null) "连接 $selName" else "连接")
+                        // 显示要连哪台：选中的行在扫描中会随信号强度移动，写出来更不容易连错。
+                        // 名称截断到 12 字：BLE 广播名最长 31 字符，原样塞进来会把底部按钮行撑破
+                        val fullName = results.firstOrNull { it.address == selected }?.name
+                        val selName = fullName?.let {
+                            if (it.length > 12) it.take(12) + "…" else it
+                        }
+                        Text(if (selName != null) "连接 $selName" else "连接", maxLines = 1)
                     }
                 }
             }
