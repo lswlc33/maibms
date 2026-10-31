@@ -177,26 +177,31 @@ fun SettingsHomeScreen(
         // 退到后台之后干什么，此前没有任何策略：仍按 600ms 轮询、占着 BLE 连接，
         // 却没有展示也没有通知（电耗换不回东西）。现在由这一个开关决定两种行为。
         // 只在支持通知的平台（Android）显示整卡：iOS/桌面没有注入通知实现，
-        // 没有可操作的开关，整卡「本平台不支持」只是占屏的噪声
-        val bgMonitor = AppStore.backgroundMonitor
+        // 没有可操作的开关，整卡「本平台不支持」只是占屏的噪声。
+        // 开关状态必须是组合内状态：AppStore 的 KV 不是可观察源，直接读它的开关
+        // 点击后落盘生效了但界面不重组——开关看起来「没反应」（帧级日志开关用 StateFlow 没这问题）
         val notifySupported = io.github.lswlc33.maibms.data.Notifications.supported
         if (notifySupported) {
+            var bgMonitor by remember { mutableStateOf(AppStore.backgroundMonitor) }
+            var alarmNotify by remember { mutableStateOf(AppStore.alarmNotify) }
+            fun setBgMonitor(v: Boolean) {
+                bgMonitor = v
+                io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(v)
+            }
             SectionCard {
                 SectionHeader("后台与通知", tail = "Android")
                 SettingRow(
                     title = "后台监控",
                     inlineValue = if (bgMonitor) "开 · 保持连接并通知" else "关 · 退后台暂停轮询",
-                    trailing = { AppSwitch(bgMonitor) { io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(it) } },
-                    onClick = {
-                        io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(!bgMonitor)
-                    },
+                    trailing = { AppSwitch(bgMonitor) { setBgMonitor(it) } },
+                    onClick = { setBgMonitor(!bgMonitor) },
                 )
                 if (bgMonitor) {
                     SettingRow(
                         title = "告警通知",
-                        inlineValue = if (AppStore.alarmNotify) "开" else "关",
-                        trailing = { AppSwitch(AppStore.alarmNotify) { AppStore.alarmNotify = it } },
-                        onClick = { AppStore.alarmNotify = !AppStore.alarmNotify },
+                        inlineValue = if (alarmNotify) "开" else "关",
+                        trailing = { AppSwitch(alarmNotify) { alarmNotify = it; AppStore.alarmNotify = it } },
+                        onClick = { alarmNotify = !alarmNotify; AppStore.alarmNotify = alarmNotify },
                     )
                 }
                 Text(
@@ -251,15 +256,20 @@ fun SettingsHomeScreen(
             else if (!connected && id.isEmpty()) InfoBanner("未连接设备 · 连接后自动读取身份区", kind = "warn")
             else if (!connected) InfoBanner("未连接 · 以下为「${MockBms.deviceLabel}」上次成功连接的缓存", kind = "info")
             else if (id.isEmpty()) InfoBanner("身份区暂时读不到（权限不足或设备未就绪）", kind = "warn")
+            // Boot/电池组 ID/Code Key/设备地址 是保护板身份区专有，电量计不回报——
+            // 有值才显示该行，免得电量计用户看到一列恒为 "--" 的噪声
+            //（未连接时 id 为空则全隐，与空态横幅一致；保护板用户不受影响，这些键总有值）
             SettingRow(title = "软件版本", inlineValue = v(id["swVersion"], status.swVersion))
             SettingRow(title = "硬件版本", inlineValue = v(id["hwVersion"], status.hwVersion))
             // 电池类型：保护板取自实时帧（0xFAFx → 中文，docs/13 §13.5），电量计取自设备信息表；
             // 官方主页的设备信息头就有这一项，此前我们解码了却没地方看
             SettingRow(title = "电池类型", inlineValue = v(id["batteryType"], status.batteryType))
-            SettingRow(title = "Boot 版本", inlineValue = v(id["boot"], "--"))
-            SettingRow(title = "设备地址", inlineValue = "A1")
-            SettingRow(title = "电池组 ID", inlineValue = v(id["packId"], "--"))
-            SettingRow(title = "Code Key", inlineValue = v(id["codeKey"], "--"))
+            if (!meterMode) {
+                SettingRow(title = "Boot 版本", inlineValue = v(id["boot"], "--"))
+                SettingRow(title = "设备地址", inlineValue = "A1")
+                SettingRow(title = "电池组 ID", inlineValue = v(id["packId"], "--"))
+                SettingRow(title = "Code Key", inlineValue = v(id["codeKey"], "--"))
+            }
             // 序列号与电芯串数只有电量计会报（蓝宝表2），保护板身份区没有这两项——
             // 按需显示，免得保护板用户看到两行恒为 "--" 的噪声
             id["serialNo"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "序列号", inlineValue = it) }
@@ -349,6 +359,8 @@ private fun AboutAppCard() {
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update ->
                     if (r.info.prerelease) "发现预览版 v${r.latest}" else "发现新版 v${r.latest}"
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Ahead -> "预览版领先正式版"
+                is io.github.lswlc33.maibms.data.UpdateChecker.Result.PrereleaseSuperseded ->
+                    "测试版已有正式版 v${r.official}"
                 is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> "检查失败"
             },
             trailing = {
@@ -365,6 +377,13 @@ private fun AboutAppCard() {
                     "发现新版本 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 点这里去下载",
                 kind = "info",
                 action = "去下载",
+                onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
+            )
+            is io.github.lswlc33.maibms.data.UpdateChecker.Result.PrereleaseSuperseded -> InfoBanner(
+                "当前测试版 v${io.github.lswlc33.maibms.data.AppVersion.name} 已有对应的正式版 v${r.official}" +
+                    "· 稳定版渠道只提示正式版，要继续收测试版请切回预览版渠道",
+                kind = "info",
+                action = "装正式版",
                 onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
             )
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Ahead -> InfoBanner(

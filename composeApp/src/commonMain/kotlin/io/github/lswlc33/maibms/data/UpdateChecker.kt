@@ -65,6 +65,12 @@ object UpdateChecker {
         data class Update(val latest: String, val info: ReleaseInfo) : Result()
         /** 本机比远端新：装了预览版的用户切回稳定版渠道时的正常情形（不算错误） */
         data class Ahead(val local: String, val remote: String) : Result()
+        /**
+         * 本机是预发布（如 0.1.9-beta.60），稳定版渠道上出现了**同号**正式版（0.1.9）。
+         * 按 semver「预发布 < 同号正式版」会落进 [Update]——对装着 beta 的用户来说
+         * 「发现新版 0.1.9」看着像误报（版本号没变大），单独成态给出明确文案。
+         */
+        data class PrereleaseSuperseded(val official: String, val info: ReleaseInfo) : Result()
         data class Failed(val reason: String) : Result()
     }
 
@@ -87,6 +93,11 @@ object UpdateChecker {
         // beta 是 v<版本名>（如 v0.1.1-beta.20）。直接拿 tag_name 比较会把 "2-0.1.1" 的
         // 首段 2 当主版本号，装着 0.1.1 的用户永远被提示「发现新版 2-0.1.1」——先归一化再比
         val latest = versionFromTag(info.tagName)
+        // 本机是预发布、远端是**同号**正式版（0.1.9-beta.60 vs 0.1.9）：不算「发现新版」，
+        // 单独成态说明「测试版已有对应的正式版」；跨号（0.1.10 正式版）仍走正常 Update
+        if (latest == AppVersion.name.substringBefore('-') && AppVersion.name.contains('-')) {
+            return@withContext Result.PrereleaseSuperseded(latest, info)
+        }
         return@withContext when {
             isNewer(latest, AppVersion.name) -> Result.Update(latest, info)
             // 本机比远端新（预览版用户切回稳定版渠道的常见情形）：单独成态，别混进「已是最新」
