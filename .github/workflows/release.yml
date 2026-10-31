@@ -213,9 +213,10 @@ jobs:
           # 版本号由 Gradle 从 build.gradle.kts 解析生成（generatePlatformVersion 任务）。
           # 这条路径之前只有 APK job 在改，ipa 里的应用内版本一直是 main 上的旧值
           #（v0.1.8 的 ipa：Info.plist 是 0.1.8，应用内却显示 0.1.7）。
+          # macos runner 是 BSD sed：-i 必须带一个（空的）备份后缀参数
           G=composeApp/build.gradle.kts
-          sed -i "s/versionCode = [0-9]\+/versionCode = ${CODE}/" "$G"
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$G"
+          sed -i '' "s/versionCode = [0-9]\+/versionCode = ${CODE}/" "$G"
+          sed -i '' "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" "$G"
           grep -qE "versionName = \"${NAME}\"" "$G" \
             || { echo "::error::$G 的 versionName 没写成 ${NAME}"; exit 1; }
           grep -E 'versionCode|versionName' "$G" | head -4

@@ -170,8 +170,9 @@ jobs:
           set -euo pipefail
           # 与 APK job 同一句 sed：应用内「当前版本/检查更新」在 iOS 上没有 AGP 的 BuildConfig，
           # 版本号由 Gradle 从 build.gradle.kts 生成（generatePlatformVersion）——不写这里，
-          # ipa 里的应用内版本就会停在 main 上的旧值
-          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" composeApp/build.gradle.kts
+          # ipa 里的应用内版本就会停在 main 上的旧值。
+          # macos runner 是 BSD sed：-i 必须带一个（空的）备份后缀参数
+          sed -i '' "s/versionName = \"[^\"]*\"/versionName = \"${NAME}\"/" composeApp/build.gradle.kts
           grep -E 'versionCode|versionName' composeApp/build.gradle.kts
 
       - name: 构建未签名 ipa（Release 配置，包体最小）
