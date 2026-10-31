@@ -1,9 +1,64 @@
 package io.github.lswlc33.maibms.data
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+
+/**
+ * UI 协程的最新请求所有权；调用及回调须在同一调度器（正式 UI 为 Main）。
+ * 先失效旧序号再取消 Job，旧 IO 即使不响应取消，也不能回填结果或收掉新请求的 busy。
+ */
+internal class LatestRequest<K> {
+    private data class Owner<K>(val sequence: Long, val key: K)
+
+    private var sequence = 0L
+    private var owner: Owner<K>? = null
+    private var job: Job? = null
+
+    fun <R> launch(
+        scope: CoroutineScope,
+        key: K,
+        onStart: () -> Unit,
+        request: suspend () -> R,
+        onResult: (R) -> Unit,
+        onFinished: () -> Unit,
+    ): Job {
+        val ticket = Owner(++sequence, key)
+        owner = ticket
+        job?.cancel()
+        onStart()
+        val next = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val result = request()
+                if (owner == ticket && currentCoroutineContext().isActive) onResult(result)
+            } finally {
+                if (owner == ticket) {
+                    job = null
+                    onFinished()
+                }
+            }
+        }
+        job = next
+        next.start()
+        return next
+    }
+
+    fun cancel() {
+        owner = null
+        sequence++
+        job?.cancel()
+        job = null
+    }
+}
 
 /**
  * 应用更新检查：读取 GitHub Releases 的最新版本，与 [AppVersion] 比较。
@@ -76,52 +131,63 @@ object UpdateChecker {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun check(channel: UpdateChannel): Result = withContext(ioDispatcher) {
+    suspend fun check(channel: UpdateChannel): Result =
+        check(channel, AppVersion.name) { url ->
+            httpGetText(
+                url = url,
+                timeoutMs = 5_000,
+                userAgent = "maibms-app/${AppVersion.name}",
+                accept = "application/vnd.github+json",
+            )
+        }
+
+    /** 注入文本请求供测试覆盖正式的镜像回退/解析/版本判定路径，不访问网络。 */
+    internal suspend fun check(
+        channel: UpdateChannel,
+        currentVersion: String,
+        getText: suspend (String) -> String?,
+    ): Result = withContext(ioDispatcher) {
         val errors = mutableListOf<String>()
         val url = apiUrlFor(channel)
         var latestInfo: ReleaseInfo? = null
         for (mirror in sources) {
-            if (latestInfo != null) break   // 拿到结果即停（continue 在 inline lambda 里是 2.2 语法）
+            if (latestInfo != null) break
+            currentCoroutineContext().ensureActive()
+            val sourceUrl = mirror(url)
             try {
-                latestInfo = fetchRelease(mirror(url), channel)
-                if (latestInfo == null) errors.add("${mirror(url)}: 响应为空")            } catch (e: Exception) {
-                errors.add("${mirror(url)}: ${e.message ?: e::class.simpleName}")
+                val body = getText(sourceUrl)
+                // 部分平台的阻塞 IO 不会响应取消；返回后也不能继续回退或解析旧结果。
+                currentCoroutineContext().ensureActive()
+                latestInfo = body?.let { decodeRelease(it, channel) }
+                if (latestInfo == null) errors.add("$sourceUrl: 响应为空")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                currentCoroutineContext().ensureActive()
+                errors.add("$sourceUrl: ${e.message ?: e::class.simpleName}")
             }
         }
         val info = latestInfo ?: return@withContext Result.Failed("所有源都失败了：" + errors.joinToString("；"))
-        // tag 有两种线上形态：稳定版是 <versionCode>-<versionName>（如 2-0.1.1），
-        // beta 是 v<版本名>（如 v0.1.1-beta.20）。直接拿 tag_name 比较会把 "2-0.1.1" 的
-        // 首段 2 当主版本号，装着 0.1.1 的用户永远被提示「发现新版 2-0.1.1」——先归一化再比
         val latest = versionFromTag(info.tagName)
-        // 本机是预发布、远端是**同号**正式版（0.1.9-beta.60 vs 0.1.9）：不算「发现新版」，
-        // 单独成态说明「测试版已有对应的正式版」；跨号（0.1.10 正式版）仍走正常 Update
-        if (latest == AppVersion.name.substringBefore('-') && AppVersion.name.contains('-')) {
+        // 保留同号 beta → 正式版的独立提示，跨号正式版仍走正常 Update。
+        if (latest == currentVersion.substringBefore('-') && currentVersion.contains('-')) {
             return@withContext Result.PrereleaseSuperseded(latest, info)
         }
         return@withContext when {
-            isNewer(latest, AppVersion.name) -> Result.Update(latest, info)
-            // 本机比远端新（预览版用户切回稳定版渠道的常见情形）：单独成态，别混进「已是最新」
-            isNewer(AppVersion.name, latest) -> Result.Ahead(AppVersion.name, latest)
+            isNewer(latest, currentVersion) -> Result.Update(latest, info)
+            isNewer(currentVersion, latest) -> Result.Ahead(currentVersion, latest)
             else -> Result.UpToDate
         }
     }
 
-    /** GET 一次 release JSON（单对象或列表按渠道区分）；非 200 或 body 为空返回 null。
-     *  取文本走平台实现 [httpGetText]（JVM=HttpURLConnection，iOS=NSURLSession），解析留在公共侧 */
-    private suspend fun fetchRelease(url: String, channel: UpdateChannel): ReleaseInfo? {
-        val body = httpGetText(
-            url = url,
-            timeoutMs = 5_000,
-            userAgent = "maibms-app/${AppVersion.name}",
-            accept = "application/vnd.github+json",
-        ) ?: return null
-        // 稳定版=单对象；预览版=release 数组取第一个（GitHub 按 created_at 倒序，即最近一次发布）
+    /** 稳定版=单对象；预览版=release 数组取第一个（最近一次发布）。 */
+    private fun decodeRelease(body: String, channel: UpdateChannel): ReleaseInfo? {
         val info = when (channel) {
             UpdateChannel.STABLE -> json.decodeFromString(ReleaseInfo.serializer(), body)
             UpdateChannel.PREVIEW -> json.decodeFromString(
                 ListSerializer(ReleaseInfo.serializer()), body).firstOrNull()
         } ?: return null
-        // 镜像回退是第三方服务：只接受本仓库的 release 链接，别把用户带去任意地址
+        // 镜像回退是第三方服务：只接受本仓库的 release 链接。
         return info.copy(htmlUrl = sanitizeHtmlUrl(info.htmlUrl))
     }
 

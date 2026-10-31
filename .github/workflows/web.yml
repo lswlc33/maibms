@@ -12,6 +12,9 @@ on:
       - 'webApp/src/**'
       - 'webApp/tests/**'
       - 'webApp/build.gradle.kts'
+      - 'docs/web/**/*.js'              # 手写 JS/CSS 也参与四页资源版本哈希
+      - 'docs/web/**/*.css'
+      - 'composeApp/build.gradle.kts'   # Web 版本名/版本号来源
       - 'composeApp/src/commonMain/**'   # 引擎源码被 webApp 直接复用，改协议要重新出包
       - '.github/workflows/web.yml'
   workflow_dispatch:
@@ -56,7 +59,7 @@ jobs:
           chmod +x ./gradlew
           # syncWebToDocs 会构建数据层、拷进 docs/，并校验四套主题页仍在
           ./gradlew --no-daemon :webApp:syncWebToDocs
-          # 数据层是唯一产物；主题页是手写静态文件，由上面的任务顺带校验存在性
+          # 数据层与四页本站资源的 ?v= 都由 syncWebToDocs 更新
           test -f docs/maibms-data.js || { echo "::error::docs/maibms-data.js 未生成"; exit 1; }
           ls -la docs/maibms-data.js
           ls -la docs/web/
@@ -71,8 +74,8 @@ jobs:
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 只提交构建产物；主题页与 host 脚本是手写源码，由 PR 正常提交，不由本工作流覆盖
-          git add docs/maibms-data.js
+          # 显式提交数据层和四页资源版本号；不宽泛 stage docs/，不提交其他手写源码
+          git add -- docs/maibms-data.js docs/web/index.html docs/web/mdui.html docs/web/console.html docs/web/switch.html
           if git diff --cached --quiet; then
             echo "网页版产物无变化，跳过提交"
             exit 0

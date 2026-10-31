@@ -86,6 +86,24 @@ class DeviceProfilesTest {
         assertEquals("ANT@BLE", DeviceProfiles.find("A1")!!.displayName)
     }
 
+    @Test fun refindingAddressReflectsPasswordAndAliasEditsWithoutChangingOldSnapshot() {
+        reset()
+        DeviceProfiles.upsert(DeviceProfile(address = "A1", name = "ANT@BLE", lastConnectedAt = 100L))
+        val oldSnapshot = DeviceProfiles.find("A1")!!
+        // 详情只能保存 address 后重新定位；旧 DeviceProfile 不会被档案写入原地修改。
+        AppStore.savePassword("A1", 3, "pw3")
+        DeviceProfiles.rename("A1", "阳台电池")
+        val updated = DeviceProfiles.find(oldSnapshot.address)!!
+        assertEquals("阳台电池", updated.displayName)
+        assertEquals(mapOf(3 to "pw3"), updated.passwords)
+        assertEquals("ANT@BLE", oldSnapshot.displayName)
+        assertTrue(oldSnapshot.passwords.isEmpty())
+        AppStore.removePassword("A1", 3)
+        assertTrue(DeviceProfiles.find("A1")!!.passwords.isEmpty(), "重新定位立即看到清除后的摘要")
+        DeviceProfiles.remove("A1")
+        assertNull(DeviceProfiles.find(oldSnapshot.address), "删除后重新定位为空，详情应关闭")
+    }
+
     // ---- 自动重连目标 ----
 
     @Test fun autoConnectResolutionAndFallback() {

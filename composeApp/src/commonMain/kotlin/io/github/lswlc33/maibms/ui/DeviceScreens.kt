@@ -3,9 +3,7 @@ package io.github.lswlc33.maibms.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,7 +28,7 @@ fun DeviceScreen(onBack: () -> Unit) {
     // profiles 从 KV 读，改动后整表刷新
     var profiles by remember { mutableStateOf(DeviceProfiles.all()) }
     var autoTarget by remember { mutableStateOf(AppStore.autoConnectAddress) }
-    var detailFor by remember { mutableStateOf<DeviceProfile?>(null) }
+    var detailFor by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<DeviceProfile?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
     val lastAddress = AppStore.savedAddress
@@ -38,6 +36,7 @@ fun DeviceScreen(onBack: () -> Unit) {
     fun refresh() {
         profiles = DeviceProfiles.all()
         autoTarget = AppStore.autoConnectAddress
+        if (profiles.none { it.address == detailFor }) detailFor = null
     }
     LaunchedEffect(note) {
         if (note != null) { kotlinx.coroutines.delay(2000); note = null }
@@ -64,12 +63,14 @@ fun DeviceScreen(onBack: () -> Unit) {
                 onClick = { AppStore.autoConnectAddress = null; refresh() },
             )
             profiles.forEach { p ->
-                AutoRow(
-                    title = p.displayName,
-                    subtitle = p.address,
-                    selected = autoTarget == p.address,
-                    onClick = { AppStore.autoConnectAddress = p.address; refresh(); note = "自动重连目标：${p.displayName}" },
-                )
+                key(p.address) {
+                    AutoRow(
+                        title = p.displayName,
+                        subtitle = p.address,
+                        selected = autoTarget == p.address,
+                        onClick = { AppStore.autoConnectAddress = p.address; refresh(); note = "自动重连目标：${p.displayName}" },
+                    )
+                }
             }
         }
         SectionCard {
@@ -82,11 +83,13 @@ fun DeviceScreen(onBack: () -> Unit) {
                 )
             } else {
                 profiles.sortedByDescending { it.lastConnectedAt }.forEach { p ->
-                    DeviceRow(
-                        profile = p,
-                        isLast = p.address == lastAddress,
-                        onClick = { detailFor = p },
-                    )
+                    key(p.address) {
+                        DeviceRow(
+                            profile = p,
+                            isLast = p.address == lastAddress,
+                            onClick = { detailFor = p.address },
+                        )
+                    }
                 }
             }
         }
@@ -97,14 +100,15 @@ fun DeviceScreen(onBack: () -> Unit) {
         note?.let { InfoBanner(it, kind = "info") }
     }
 
-    detailFor?.let { p ->
-        DeviceDetailDialog(
-            profile = p,
-            isAutoTarget = autoTarget == p.address,
-            onDismiss = { detailFor = null },
-            onChanged = { refresh() },
-            onDeleteRequest = { detailFor = null; pendingDelete = p },
-        )
+    profiles.firstOrNull { it.address == detailFor }?.let { p ->
+        key(p.address) {
+            DeviceDetailDialog(
+                profile = p,
+                onDismiss = { detailFor = null },
+                onChanged = { refresh() },
+                onDeleteRequest = { detailFor = null; pendingDelete = p },
+            )
+        }
     }
     pendingDelete?.let { p ->
         ConfirmDialog(
@@ -172,95 +176,110 @@ private fun DeviceRow(profile: DeviceProfile, isLast: Boolean, onClick: () -> Un
     }
 }
 
-/** 设备详情：改备注名 / 管密码 / 设为重连目标 / 删除 */
+/** 设备详情：按地址重取最新档案，改备注/密码后不持有旧快照。 */
 @Composable
 private fun DeviceDetailDialog(
     profile: DeviceProfile,
-    isAutoTarget: Boolean,
     onDismiss: () -> Unit,
     onChanged: () -> Unit,
     onDeleteRequest: () -> Unit,
 ) {
-    var alias by remember { mutableStateOf(profile.alias ?: "") }
-    var editingLevel by remember { mutableStateOf<Int?>(null) }
+    var alias by remember(profile.address, profile.alias) { mutableStateOf(profile.alias ?: "") }
+    var editingLevel by remember(profile.address) { mutableStateOf<Int?>(null) }
+    var busy by remember(profile.address) { mutableStateOf(false) }
+    var error by remember(profile.address) { mutableStateOf<String?>(null) }
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
+    // 一次只显示一个 Dialog，键盘与返回键不会落到下面的详情窗口。
+    if (editingLevel == null) {
+        BoundedSettingsDialog(onDismiss = { if (!busy) onDismiss() }) {
             Text(profile.displayName, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold,
-                color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                color = MaterialTheme.colorScheme.onSurface)
             Text("${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)}",
                 fontSize = 10.sp, fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
             OutlinedTextField(
                 value = alias,
-                onValueChange = { alias = it.take(20) },
+                onValueChange = { alias = it.take(20); error = null },
                 label = { Text("备注名（留空 = 用蓝牙名）", fontSize = 11.sp) },
-                singleLine = true,
+                singleLine = true, enabled = !busy,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
-            // 按设备密码库：逐级进入编辑（复用权限页的密码弹窗，按地址写入档案）。
-            // 多级密码是蚂蚁保护板专有——电量计档案不显示这块（也没有可写的槽位）
             if (!profile.family.isMeter) {
                 Column(Modifier.padding(top = 10.dp)) {
-                    Text("密码库", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                    Text("密码库 · 已记住 ${profile.passwords.size} 级", fontSize = 11.sp, fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface)
                     listOf(1, 2, 3, 4, 5, 9).forEach { lv ->
-                        val saved = profile.passwords[lv]
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable { editingLevel = lv }.padding(vertical = 6.dp),
-                        ) {
-                            Text(if (lv == 9) "9 级厂家" else "$lv 级", fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface)
-                            Spacer(Modifier.weight(1f))
-                            Text(saved?.let { "••••••••" } ?: "未设置", fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(" ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        key(lv) {
+                            val saved = profile.passwords[lv]
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                                    .clickable(enabled = !busy) { editingLevel = lv }.padding(vertical = 6.dp),
+                            ) {
+                                Text(if (lv == 9) "9 级厂家" else "$lv 级", fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface)
+                                Spacer(Modifier.weight(1f))
+                                Text(saved?.let { "••••••••" } ?: "未设置", fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(" ›", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("删除设备", fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onDeleteRequest).padding(horizontal = 6.dp, vertical = 4.dp))
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("取消") }
-                TextButton(onClick = {
-                    DeviceProfiles.rename(profile.address, alias)
-                    onChanged()
-                    onDismiss()
-                }) { Text("保存", fontWeight = FontWeight.Bold) }
+            error?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+            TextButton(enabled = !busy, onClick = onDeleteRequest) {
+                Text("删除设备", color = MaterialTheme.colorScheme.error)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(enabled = !busy, onClick = onDismiss) { Text("关闭") }
+                TextButton(enabled = !busy, onClick = {
+                    if (busy) return@TextButton
+                    busy = true
+                    try {
+                        DeviceProfiles.rename(profile.address, alias)
+                        onChanged()
+                        // 保持详情打开，新档案立即更新标题与摘要。
+                    } catch (e: Exception) {
+                        error = "保存备注失败 · 请重试"
+                    } finally {
+                        busy = false
+                    }
+                }) { Text("保存备注", fontWeight = FontWeight.Bold) }
             }
         }
     }
-    // 密码编辑：按地址写入档案（复用权限页弹窗）
     editingLevel?.let { lv ->
-        PasswordEditDialog(profile.address, lv, onDismiss = { editingLevel = null; onChanged() })
+        key(profile.address, lv) {
+            PasswordEditDialog(profile.address, lv, onDismiss = { editingLevel = null; onChanged() })
+        }
     }
 }
 
-/** 删除确认（同快照页样式） */
+/** 删除确认也使用有限、可滚动的视口。 */
 @Composable
 private fun ConfirmDialog(title: String, body: String, confirmText: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
-        ) {
-            Text(title, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-            Text(body, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp))
-            Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDismiss) { Text("取消") }
-                TextButton(onClick = onConfirm) {
-                    Text(confirmText, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    BoundedSettingsDialog(onDismiss = { if (!busy) onDismiss() }) {
+        Text(title, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+        Text(body, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp))
+        error?.let { Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+        Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") }
+            TextButton(enabled = !busy, onClick = {
+                if (busy) return@TextButton
+                busy = true
+                try {
+                    onConfirm()
+                } catch (e: Exception) {
+                    error = "删除失败 · 请重试"
+                } finally {
+                    busy = false
                 }
+            }) {
+                Text(confirmText, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
             }
         }
     }

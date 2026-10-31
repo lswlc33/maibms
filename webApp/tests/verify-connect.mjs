@@ -126,9 +126,11 @@ function lanbaoResponse(table) {
 
 class Events {
   listeners = new Map();
+  maxListeners = new Map();
   addEventListener(type, fn) {
     if (!this.listeners.has(type)) this.listeners.set(type, new Set());
     this.listeners.get(type).add(fn);
+    this.maxListeners.set(type, Math.max(this.maxListeners.get(type) ?? 0, this.count(type)));
   }
   removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
   dispatchEvent(event) {
@@ -185,19 +187,28 @@ class FakeGatt {
   maxInFlight = 0;
   writeInFlight = 0;
   connectCalls = 0;
+  disconnectCalls = 0;
+  heldConnect = null;
   notificationViews = [];
   notificationAvailableAt = 0;
+  dropInjected = false;
   constructor(clock, family, options = {}) {
     this.clock = clock; this.family = family; this.options = options;
     this.replyEnabled = family === 'Ant';
     this.device = new Events();
-    this.device.id = `vm-${family}`;
+    this.device.id = options.id ?? `vm-${family}`;
     this.device.name = options.name ?? { Ant: 'ANT-B2A20', LuXing: 'EM2APP-A581', LanBao: 'BlueBabe-METER' }[family];
     const characteristic = (short, properties) => {
       const c = Object.assign(new Events(), { uuid: uuid(short), properties, value: null, notifying: false });
       c.startNotifications = async () => {
         this.failAt('notifications');
-        c.notifying = true; this.trace.push({ type: 'subscribe', uuid: c.uuid }); return c;
+        if (this.options.notificationDelay) await this.wait(this.options.notificationDelay);
+        c.notifying = true; this.trace.push({ type: 'subscribe', uuid: c.uuid, at: this.clock.now });
+        this.injectDrop('notifications');
+        if (this.options.dropAt === 'settle' && !this.dropInjected) {
+          this.clock.setTimeout(() => this.injectDrop('settle'), 100);
+        }
+        return c;
       };
       c.stopNotifications = async () => { c.notifying = false; return c; };
       c.writeValueWithResponse = (value) => this.write(c, value, 'response');
@@ -212,6 +223,7 @@ class FakeGatt {
       uuid: FFE0,
       getCharacteristics: async () => {
         this.failAt('characteristics');
+        this.injectDrop('characteristics');
         // Notify-only FFE1 first: a property or UUID bug must not pass by luck.
         return family === 'Ant' ? [this.notify] : [this.notify, this.writer];
       },
@@ -223,10 +235,18 @@ class FakeGatt {
     this.server = {
       device: this.device, connected: false,
       connect: () => this.connect(),
-      disconnect: () => this.drop(),
+      disconnect: () => {
+        this.disconnectCalls++;
+        this.trace.push({ type: 'disconnect-call', at: this.clock.now });
+        // Deliberately do not settle held connect: platform abort is best effort.
+        this.drop();
+      },
       getPrimaryService: async (wanted) => {
         this.check(() => assert.equal(wanted.toLowerCase(), FFE0, 'Must discover FFE0'));
-        this.failAt('service'); return this.service;
+        this.failAt('service');
+        if (this.options.serviceDelay) await this.wait(this.options.serviceDelay);
+        this.injectDrop('service');
+        return this.service;
       },
     };
     this.device.gatt = this.server;
@@ -251,13 +271,26 @@ class FakeGatt {
       error.name = this.options.errorName ?? 'NotFoundError'; throw error;
     }
   }
+  wait(ms) { return new Promise((done) => this.clock.setTimeout(done, ms)); }
+  injectDrop(stage) {
+    if (this.options.dropAt !== stage || this.dropInjected) return;
+    this.dropInjected = true;
+    this.drop();
+  }
   async connect() {
-    this.connectCalls++; this.inFlight++;
+    const call = ++this.connectCalls;
+    this.inFlight++;
     this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
     this.trace.push({ type: 'connect', at: this.clock.now });
     try {
-      await new Promise((done) => this.clock.setTimeout(done, this.options.connectDelay ?? 30));
-      this.failAt('connect'); this.server.connected = true; return this.server;
+      if (this.options.holdConnect && call === 1) {
+        await new Promise((done) => { this.heldConnect = done; });
+      } else {
+        await this.wait(this.options.connectDelays?.[call - 1] ?? this.options.connectDelay ?? 30);
+      }
+      this.failAt('connect'); this.server.connected = true;
+      this.trace.push({ type: 'connect-resolve', call, at: this.clock.now });
+      return this.server;
     } finally { this.inFlight--; }
   }
   drop() {
@@ -285,7 +318,9 @@ class FakeGatt {
     this.trace.push({ type: 'write', bytes: hex(bytes) });
     this.writeInFlight++;
     try {
-      await new Promise((done) => this.clock.setTimeout(done, 2));
+      await this.wait(2);
+      this.injectDrop('probe');
+      if (!this.server.connected) return;
       // Meter fixtures do NOT respond to 7E...01, even if production sends it.
       if (bytes[0] === 0x7e && this.family !== 'Ant') return;
       let response;
@@ -354,8 +389,11 @@ process.on('unhandledRejection', unhandled);
 class Harness {
   states = [];
   consoleErrors = [];
+  fixtures = [];
+  physicalStates = [];
   constructor(family = 'Ant', options = {}) {
     this.clock = new Clock(); this.fake = new FakeGatt(this.clock, family, options);
+    this.fixtures.push(this.fake);
     const clock = this.clock, window = new Events(), storage = new Map();
     const location = { href: 'https://vm.invalid/web/index.html', search: '' };
     const localStorage = {
@@ -387,11 +425,22 @@ class Harness {
     vm.runInContext(source, this.context, { filename: bundlePath, timeout: 10_000 });
     this.api = window.Maibms;
     assert.ok(this.api?.state && typeof this.api.connect === 'function', 'Actual bundle must install Maibms');
-    this.api.onState((state) => this.states.push(JSON.parse(JSON.stringify(state))));
+    this.api.onState((state) => {
+      this.states.push(JSON.parse(JSON.stringify(state)));
+      this.physicalStates.push({ link: state.link, connected: state.connected,
+        physical: this.fake.server.connected, at: this.clock.now });
+    });
     this.window = window;
+    this.document = globals.document;
     assert.equal(this.api.supportsWebBluetooth(), true, 'VM must use the real BLE backend');
     assert.equal(this.state.hasData, false, 'Fresh VM must not restore cached/preview data');
     assert.equal(this.state.previewActive, false, 'Tests must not use preview snapshots');
+  }
+  choose(family, options = {}) {
+    this.fake = new FakeGatt(this.clock, family, options);
+    this.fixtures.push(this.fake);
+    this.context.navigator.bluetooth = this.fake.bluetooth;
+    return this.fake;
   }
   get state() { return this.api.state; }
   diagnostics() {
@@ -406,7 +455,9 @@ class Harness {
     assert.ok(predicate(), `${message}\n${this.diagnostics()}`);
   }
   healthy() {
-    assert.deepEqual(this.fake.violations, [], `GATT contract violations\n${this.diagnostics()}`);
+    for (const fixture of this.fixtures) {
+      assert.deepEqual(fixture.violations, [], `GATT contract violations on ${fixture.device.id}\n${this.diagnostics()}`);
+    }
     assert.deepEqual(this.consoleErrors, [], 'Bundle console.error');
     assert.equal(this.clock.errors.length, 0, 'Unhandled artifact errors');
   }
@@ -540,6 +591,196 @@ for (const [stage, expected, forbidden] of [
     assert.equal(h.state.connected, false);
   });
 }
+
+// Review regressions stay here and run against the FULL production artifact.
+function assertOneSession(h) {
+  assert.equal(h.fake.maxInFlight, 1, 'Native GATT promises must never overlap');
+  assert.equal(h.fake.server.connected, true, 'Old cleanup disconnected the current server');
+  assert.equal(h.fake.device.count('gattserverdisconnected'), 1, 'Exactly one current device listener');
+  assert.equal(h.fake.notify.count('characteristicvaluechanged'), 1, 'Exactly one current notify listener');
+  assert.ok(h.fake.device.maxListeners.get('gattserverdisconnected') <= 1, 'Overlapping device listeners');
+  assert.ok(h.fake.notify.maxListeners.get('characteristicvaluechanged') <= 1, 'Overlapping notify listeners');
+}
+function assertNoFalseReady(h) {
+  assert.ok(!h.physicalStates.some((s) => s.connected && !s.physical),
+    `Published Connected with disconnected GATT: ${JSON.stringify(h.physicalStates)}`);
+}
+test('Review >15s native promise drains before retry, maxInFlight1', 'Ant',
+  { connectDelays: [25_000, 30] }, async (h) => {
+    h.api.connect(); await h.until(() => h.fake.inFlight === 1, 'First connect missing');
+    await h.clock.advance(18_000);
+    assert.equal(h.fake.connectCalls, 1, 'Timeout/backoff must not start a second unsettled connect');
+    assert.equal(h.fake.inFlight, 1);
+    await h.until(() => h.state.connected && h.state.hasData, 'Retry after native settlement failed', 12_000);
+    const trace = h.fake.trace;
+    const oldResolve = trace.findIndex((e) => e.type === 'connect-resolve' && e.call === 1);
+    const oldDrop = trace.findIndex((e, i) => i > oldResolve && e.type === 'drop');
+    const nextConnect = trace.findIndex((e, i) => i > oldResolve && e.type === 'connect');
+    assert.ok(oldDrop > oldResolve && nextConnect > oldDrop, 'Late success must disconnect BEFORE next same-server connect');
+    await h.clock.advance(2_000);
+    assertOneSession(h); assertNoFalseReady(h); assertLive(h, 'Ant');
+  });
+test('Review timeout then manual disconnect cannot resurrect late success', 'Ant',
+  { connectDelay: 25_000 }, async (h) => {
+    h.api.connect(); await h.until(() => h.fake.inFlight === 1, 'Pending connect missing');
+    await h.clock.advance(15_500);
+    h.api.disconnect();
+    await h.until(() => h.state.link === 'Disconnected', 'Disconnect must be immediate', 100);
+    await h.clock.advance(30_000);
+    assert.equal(h.fake.connectCalls, 1, 'Manual stop must cancel retry intent');
+    assert.equal(h.fake.server.connected, false, 'Timed-out late success resurrected GATT');
+    assert.equal(h.fake.writes.length, 0);
+    assert.equal(h.fake.device.count('gattserverdisconnected'), 0);
+    assert.ok(!h.states.some((s) => s.connected), 'Late promise must never publish Connected');
+  });
+test('Review pending disconnect releases user connectionGuard and old result cannot tear new', 'Ant',
+  { connectDelays: [25_000, 30] }, async (h) => {
+    h.api.connect(); await h.until(() => h.fake.inFlight === 1, 'Pending connect missing');
+    h.api.disconnect();
+    await h.until(() => h.state.link === 'Disconnected', 'Disconnect waited on unbounded native Promise', 100);
+    h.api.connect();
+    await h.until(() => h.fake.requests.length === 2, 'User reconnect must reach chooser immediately', 100);
+    await h.clock.advance(500);
+    assert.equal(h.fake.connectCalls, 1, 'Reconnect must wait behind old native operation');
+    await h.until(() => h.state.connected && h.state.hasData, 'Reconnect never recovered after late result', 30_000);
+    assert.equal(h.fake.connectCalls, 2);
+    await h.clock.advance(2_000);
+    assertOneSession(h); assertLive(h, 'Ant');
+  });
+for (const family of ['LuXing', 'LanBao']) {
+  for (const dropAt of ['notifications', 'settle', 'service', 'characteristics']) {
+    test(`Review ${family} ${dropAt} windowdrop never false Connected and retries`, family, { dropAt }, async (h) => {
+      h.api.connect();
+      await h.until(() => h.fake.dropInjected, 'Window drop fixture never fired');
+      await h.clock.advance(500);
+      assert.equal(h.state.connected, false, 'Dropped build must not become logically Connected');
+      assert.equal(h.fake.notify.count('characteristicvaluechanged'), 0, 'Failed attempt listener leaked');
+      assertNoFalseReady(h);
+      await h.until(() => h.fake.connectCalls >= 2 && h.state.connected && h.fake.server.connected,
+        'Window drop must retry into a valid meter session');
+      h.fake.enableReplies();
+      await h.until(() => h.state.hasData, 'Recovered meter stopped polling');
+      assert.ok(!h.fake.writes.some((w) => w.bytes.startsWith('7ea101')), 'Meters must still skip ANT probes');
+      assertOneSession(h); assertNoFalseReady(h);
+    });
+  }
+}
+test('Review ANT probe windowdrop must not commit Connected', 'Ant', { dropAt: 'probe' }, async (h) => {
+  h.api.connect(); await h.until(() => h.fake.dropInjected, 'Probe drop never fired');
+  await h.clock.advance(500);
+  assert.equal(h.state.connected, false); assertNoFalseReady(h);
+  await h.until(() => h.fake.connectCalls >= 2 && h.state.connected && h.state.hasData,
+    'Probe drop failed to recover');
+  assertOneSession(h);
+});
+test('Review BFCache resumes intended connection without duplicate listeners or started pipeline', 'Ant', {}, async (h) => {
+  h.api.connect(); await h.until(() => h.state.connected && h.state.hasData, 'Initial connect failed');
+  for (let round = 0; round < 2; round++) {
+    await h.clock.advance(100); // finish already-started writes before freezing
+    const calls = h.fake.connectCalls, writes = h.fake.writes.length;
+    const windowCounts = ['pagehide', 'pageshow', 'message'].map((type) => h.window.count(type));
+    const visibilityCount = h.document.count('visibilitychange');
+    h.window.dispatchEvent({ type: 'pagehide', persisted: true });
+    await h.until(() => !h.state.connected && !h.fake.server.connected, 'BFCache hide must suspend BLE', 100);
+    await h.clock.advance(20_000);
+    assert.equal(h.fake.connectCalls, calls, 'Frozen page must not reconnect');
+    assert.equal(h.fake.writes.length, writes, 'Frozen page must not poll');
+    h.window.dispatchEvent({ type: 'pageshow', persisted: true });
+    h.window.dispatchEvent({ type: 'pageshow', persisted: true });
+    await h.until(() => h.fake.connectCalls === calls + 1 && h.state.connected,
+      'BFCache return must restore prior connection intent');
+    await h.until(() => h.fake.writes.length > writes, 'Restored page must resume polling');
+    assert.deepEqual(['pagehide', 'pageshow', 'message'].map((type) => h.window.count(type)), windowCounts);
+    assert.equal(h.document.count('visibilitychange'), visibilityCount, 'Visibility listener duplicated');
+    assert.equal(h.window.count('pagehide'), 1); assert.equal(h.window.count('pageshow'), 1);
+    assert.equal(h.api.logText().split('网页端启动：').length - 1, 1, 'Data pipeline must only start once');
+    assertOneSession(h);
+  }
+});
+test('Review BFCache does not revive manual stop but subsequent user connect works', 'Ant', {}, async (h) => {
+  h.api.connect(); await h.until(() => h.state.connected, 'Initial connect failed');
+  h.api.disconnect(); await h.until(() => h.state.link === 'Disconnected', 'Manual stop failed');
+  await h.clock.advance(100);
+  const calls = h.fake.connectCalls;
+  h.window.dispatchEvent({ type: 'pagehide', persisted: true });
+  h.window.dispatchEvent({ type: 'pageshow', persisted: true });
+  await h.clock.advance(20_000);
+  assert.equal(h.fake.connectCalls, calls, 'pageshow must not revive manual disconnect intent');
+  assert.equal(h.state.connected, false);
+  h.api.connect(); await h.until(() => h.state.connected && h.state.hasData, 'User reconnect after BFCache failed');
+  assertOneSession(h);
+});
+test('Review BFCache manual stop while suspended prevents automatic revival', 'Ant', {}, async (h) => {
+  h.api.connect(); await h.until(() => h.state.connected, 'Initial connect failed');
+  h.window.dispatchEvent({ type: 'pagehide', persisted: true });
+  await h.clock.advance(100);
+  h.api.disconnect(); await h.clock.advance(100);
+  const calls = h.fake.connectCalls;
+  h.window.dispatchEvent({ type: 'pageshow', persisted: true });
+  await h.clock.advance(20_000);
+  assert.equal(h.fake.connectCalls, calls); assert.equal(h.state.connected, false);
+});
+test('Review old A listeners and cleanup cannot act on selected B', 'Ant', { id: 'vm-A' }, async (h) => {
+  h.api.connect(); await h.until(() => h.state.connected && h.state.hasData, 'A connect failed');
+  const a = h.fake;
+  const oldDrop = [...a.device.listeners.get('gattserverdisconnected')];
+  const oldNotify = [...a.notify.listeners.get('characteristicvaluechanged')];
+  assert.equal(oldDrop.length, 1); assert.equal(oldNotify.length, 1);
+  const b = h.choose('LanBao', { id: 'vm-B' });
+  h.api.connect(); await h.until(() => h.state.connected && h.state.family === 'LanBao', 'Selected B connect failed');
+  assert.equal(a.device.count('gattserverdisconnected'), 0, 'A listener removed from wrong authorized device');
+  assert.equal(a.notify.count('characteristicvaluechanged'), 0);
+  assert.equal(a.server.connected, false);
+  const bCalls = b.connectCalls;
+  const stale = antRealtime();
+  a.notify.value = new DataView(Uint8Array.from(stale).buffer);
+  for (const fn of oldDrop) fn({ type: 'gattserverdisconnected', target: a.device });
+  for (const fn of oldNotify) fn({ type: 'characteristicvaluechanged', target: a.notify });
+  a.device.dispatchEvent({ type: 'gattserverdisconnected' });
+  await h.clock.advance(500);
+  assert.equal(h.state.hasData, false, 'Old ANT listener fed readings into B before B handshake');
+  assert.equal(h.state.connected, true); assert.equal(b.server.connected, true);
+  assert.equal(b.connectCalls, bCalls, 'Old A callback dropped/reconnected B');
+  b.enableReplies(); await h.until(() => h.state.hasData, 'B polling failed after stale A callbacks');
+  assertOneSession(h); assertLive(h, 'LanBao');
+});
+test('Review old A service completion cannot clean newly selected B', 'Ant',
+  { id: 'vm-A', serviceDelay: 1_000 }, async (h) => {
+    h.api.connect(); await h.until(() => h.fake.server.connected, 'A native connect missing');
+    await h.clock.advance(50);
+    const a = h.fake;
+    const b = h.choose('LanBao', { id: 'vm-B' });
+    h.api.connect(); await h.until(() => h.state.connected && h.state.family === 'LanBao', 'B connect missing');
+    await h.clock.advance(2_000);
+    assert.equal(a.device.count('gattserverdisconnected'), 0);
+    assert.equal(a.server.connected, false);
+    assert.equal(b.server.connected, true); assert.equal(b.connectCalls, 1);
+    assertOneSession(h);
+  });
+
+test('Review suspended A Promise cannot block different B or tear B on late A success', 'Ant',
+  { id: 'vm-held-A', holdConnect: true }, async (h) => {
+    h.api.connect(); await h.until(() => h.fake.inFlight === 1, 'A held connect missing');
+    const a = h.fake;
+    h.api.disconnect();
+    await h.until(() => h.state.link === 'Disconnected', 'Manual disconnect must not await A', 100);
+    const b = h.choose('Ant', { id: 'vm-ready-B' });
+    h.api.connect();
+    await h.until(() => b.requests.length === 1, 'Chooser must return B', 100);
+    await h.until(() => b.server.connected && h.state.connected && h.state.hasData,
+      'Different B must connect while A Promise remains unsettled', 2_000);
+    assert.equal(a.inFlight, 1, 'A must remain unsettled until explicitly released');
+    assert.ok(a.disconnectCalls >= 1, 'Cancellation must try abort on A own GATT server');
+    assert.equal(a.device.count('gattserverdisconnected'), 0);
+    const calls = b.connectCalls, disconnects = b.disconnectCalls;
+    a.heldConnect();
+    await h.clock.advance(1_000);
+    assert.equal(a.inFlight, 0); assert.equal(a.server.connected, false, 'Late A success must be drained');
+    assert.equal(a.writes.length, 0, 'Late A must never probe or poll');
+    assert.equal(b.connectCalls, calls, 'Late A must not force B to reconnect');
+    assert.equal(b.disconnectCalls, disconnects, 'Late A cleanup must never disconnect B');
+    assertOneSession(h); assertLive(h, 'Ant');
+  });
 
 const selected = tests.filter((t) => t.name.toLowerCase().includes(filter));
 assert.ok(selected.length, `No test matches --case ${filter}`);

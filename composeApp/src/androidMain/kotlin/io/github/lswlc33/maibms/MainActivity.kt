@@ -29,6 +29,16 @@ class MainActivity : ComponentActivity() {
         setContent { App() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        io.github.lswlc33.maibms.data.Notifications.refreshStatus()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        io.github.lswlc33.maibms.data.Notifications.refreshStatus()
+    }
+
     override fun onDestroy() {
         if (AndroidApp.activity === this) AndroidApp.activity = null
         super.onDestroy()

@@ -6,6 +6,7 @@ import kotlin.math.sin
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertNull
 
 /**
  * 横屏表盘数学（ClusterMath）——`Plan/横屏仪表原型.html`「静态函数表」的参考值逐条锁定。
@@ -25,6 +26,29 @@ class ClusterMathTest {
         assertEquals(ClusterMath.END_ANGLE, ClusterMath.sweepAngle(52.5f, 94.5f, 999f))
         // 竖直向上（270°）= 量程正中
         assertEquals(270f, ClusterMath.sweepAngle(-5000f, 5000f, 0f), 0.01f)
+    }
+
+    @Test fun unknown_cells_use_neutral_voltage_range_without_protection_bands() {
+        listOf(0f, 72f, 87.87f, Float.NaN, Float.POSITIVE_INFINITY).forEach { voltage ->
+            val spec = ClusterMath.voltageSpec(0, voltage)
+            assertEquals(0f, spec.range.start)
+            assertEquals(100f, spec.range.endInclusive)
+            assertNull(spec.amberTo)
+            assertNull(spec.redFrom)
+        }
+        val high = ClusterMath.voltageSpec(0, 120f)
+        assertTrue(high.range.endInclusive > 120f)
+        assertNull(high.redFrom)
+        assertEquals(0f, ClusterMath.voltageRange(-1).start)
+        assertTrue(ClusterMath.sweepAngle(0f, 100f, 72f) < ClusterMath.END_ANGLE)
+    }
+
+    @Test fun known_cells_keep_existing_voltage_spec() {
+        val spec = ClusterMath.voltageSpec(21, 87.87f)
+        assertEquals(52.5f, spec.range.start)
+        assertEquals(94.5f, spec.range.endInclusive)
+        assertEquals(58.8f, spec.amberTo)
+        assertEquals(90.3f, spec.redFrom)
     }
 
     @Test fun voltageRangeAndZones() {

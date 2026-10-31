@@ -54,9 +54,25 @@ object ClusterMath {
     fun sweepAngle(min: Float, max: Float, v: Float): Float =
         START_ANGLE + ((v - min) / (max - min)).coerceIn(0f, 1f) * SWEEP
 
-    /** 电压量程：串数 × 单体窗口。(21) → 52.5..94.5 */
+    /** 电压盘规格；无逐串数据时中性量程只用于展示读数，不冒充保护阈值。 */
+    data class VoltageSpec(
+        val range: ClosedFloatingPointRange<Float>,
+        val amberTo: Float? = null,
+        val redFrom: Float? = null,
+    )
+
+    fun voltageSpec(cellCount: Int, totalVoltage: Float = 0f): VoltageSpec {
+        if (cellCount > 0) return VoltageSpec(voltageRange(cellCount), vAmberTo(cellCount), vRedFrom(cellCount))
+        val observed = totalVoltage.takeIf { it.isFinite() && it > 0f } ?: 0f
+        // 0..100V 起步，只按实际总压向上扩展；不从总压倒猜串数/电池类型。
+        val upper = (ceil(observed.toDouble() * 1.1 / 10.0) * 10.0)
+            .coerceIn(100.0, Float.MAX_VALUE.toDouble()).toFloat()
+        return VoltageSpec(0f..upper)
+    }
+
+    /** 电压量程：串数 × 单体窗口。(21) → 52.5..94.5；未知串数用中性范围。 */
     fun voltageRange(cellCount: Int): ClosedFloatingPointRange<Float> =
-        cellCount * CELL_WINDOW_MIN..cellCount * CELL_WINDOW_MAX
+        if (cellCount > 0) cellCount * CELL_WINDOW_MIN..cellCount * CELL_WINDOW_MAX else 0f..100f
 
     /** 过充红区起点（V）。(21) → 90.3 */
     fun vRedFrom(cellCount: Int): Float = cellCount * CELL_OVP

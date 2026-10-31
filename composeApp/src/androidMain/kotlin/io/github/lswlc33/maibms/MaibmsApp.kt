@@ -42,7 +42,11 @@ class MaibmsApp : Application() {
             private val sp = getSharedPreferences("antbms", MODE_PRIVATE)
             override fun get(key: String): String? = sp.getString(key, null)
             override fun put(key: String, value: String?) {
-                sp.edit().apply { if (value == null) remove(key) else putString(key, value) }.apply()
+                val edit = sp.edit().apply { if (value == null) remove(key) else putString(key, value) }
+                // 半写保护标记必须先落盘再发设备命令，进程终止后也不能绕过保存拦截。
+                if (key.startsWith("write.unconfirmedU32.")) {
+                    check(edit.commit()) { "参数写入保护标记未能保存" }
+                } else edit.apply()
             }
         }
         runCatching {

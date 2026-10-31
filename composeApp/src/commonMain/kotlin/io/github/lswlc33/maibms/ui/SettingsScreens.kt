@@ -178,35 +178,44 @@ fun SettingsHomeScreen(
         // 却没有展示也没有通知（电耗换不回东西）。现在由这一个开关决定两种行为。
         // 只在支持通知的平台（Android）显示整卡：iOS/桌面没有注入通知实现，
         // 没有可操作的开关，整卡「本平台不支持」只是占屏的噪声。
-        // 开关状态必须是组合内状态：AppStore 的 KV 不是可观察源，直接读它的开关
-        // 点击后落盘生效了但界面不重组——开关看起来「没反应」（帧级日志开关用 StateFlow 没这问题）
+        // 开关展示用户偏好；下方另读服务的 StateFlow，不能把偏好当成正在运行。
+        // AppStore 的 KV 本身不可观察，点击后同步更新组合状态以重组开关。
         val notifySupported = io.github.lswlc33.maibms.data.Notifications.supported
         if (notifySupported) {
             var bgMonitor by remember { mutableStateOf(AppStore.backgroundMonitor) }
             var alarmNotify by remember { mutableStateOf(AppStore.alarmNotify) }
+            val monitoring by io.github.lswlc33.maibms.data.Notifications.monitoring.collectAsState()
             fun setBgMonitor(v: Boolean) {
                 bgMonitor = v
                 io.github.lswlc33.maibms.data.Bms.repository.setBackgroundMonitor(v)
             }
             SectionCard {
                 SectionHeader("后台与通知", tail = "Android")
+                SwitchSettingRow(title = "后台监控", checked = bgMonitor, onChange = ::setBgMonitor)
                 SettingRow(
-                    title = "后台监控",
-                    inlineValue = if (bgMonitor) "开 · 保持连接并通知" else "关 · 退后台暂停轮询",
-                    trailing = { AppSwitch(bgMonitor) { setBgMonitor(it) } },
-                    onClick = { setBgMonitor(!bgMonitor) },
+                    title = "监控状态",
+                    inlineValue = when {
+                        monitoring.error != null -> "启动失败"
+                        !monitoring.notificationAllowed -> "通知权限未授予"
+                        monitoring.running -> "运行中 · 常驻通知"
+                        bgMonitor && !connected -> "等待连接"
+                        bgMonitor -> "已开启 · 后台生效"
+                        else -> "已关闭"
+                    },
                 )
+                monitoring.error?.let { InfoBanner("后台监控失败：$it", kind = "warn") }
+                if (!monitoring.notificationAllowed) {
+                    InfoBanner("通知权限未授予 · 请到系统设置允许通知；开关偏好不代表监控服务已运行", kind = "warn")
+                }
                 if (bgMonitor) {
-                    SettingRow(
-                        title = "告警通知",
-                        inlineValue = if (alarmNotify) "开" else "关",
-                        trailing = { AppSwitch(alarmNotify) { alarmNotify = it; AppStore.alarmNotify = it } },
-                        onClick = { alarmNotify = !alarmNotify; AppStore.alarmNotify = alarmNotify },
-                    )
+                    SwitchSettingRow(title = "告警通知", checked = alarmNotify, onChange = {
+                        alarmNotify = it
+                        AppStore.alarmNotify = it
+                    })
                 }
                 Text(
                     if (bgMonitor)
-                        "保持连接与轮询（常驻通知栏，可随时关掉）。保护/告警**新触发**、以及设备失联时发一条通知；前台不重复提醒，界面本身就有告警卡。"
+                        "开启偏好后，有连接且通知权限允许时才会保持后台轮询并显示常驻通知；实际状态见上方。保护/告警新触发及设备失联时发通知，前台不重复提醒。"
                     else
                         "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。",
                     fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -292,13 +301,20 @@ private fun AboutAppCard() {
         mutableStateOf(io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel.fromKey(AppStore.updateChannel))
     }
 
+    val checks = remember { io.github.lswlc33.maibms.data.LatestRequest<io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel>() }
+    DisposableEffect(checks) {
+        onDispose { checks.cancel() }
+    }
+
     fun runCheck(ch: io.github.lswlc33.maibms.data.UpdateChecker.UpdateChannel) {
-        if (checking) return
-        checking = true; result = null
-        scope.launch {
-            result = io.github.lswlc33.maibms.data.UpdateChecker.check(ch)
-            checking = false
-        }
+        checks.launch(
+            scope = scope,
+            key = ch,
+            onStart = { checking = true; result = null },
+            request = { io.github.lswlc33.maibms.data.UpdateChecker.check(ch) },
+            onResult = { if (channel == ch) result = it },
+            onFinished = { if (channel == ch) checking = false },
+        )
     }
 
     SectionCard {
@@ -367,7 +383,7 @@ private fun AboutAppCard() {
                 if (checking) Text("检查中…", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 else Chevron()
             },
-            onClick = { runCheck(channel) },
+            onClick = if (checking) null else { { runCheck(channel) } },
         )
         when (val r = result) {
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Update -> InfoBanner(
@@ -456,39 +472,43 @@ fun PasswordScreen(onBack: () -> Unit) {
         }
         SectionCard {
             SectionHeader("连接行为", tail = "0x23")
-            Box {
-                SettingRow(
-                    title = "连接后自动升级到",
-                    inlineValue = if (autoLevel > 0) "$autoLevel 级" else "自动（最高可用）",
-                    trailing = { Text("⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    onClick = { levelMenu = true },
-                )
-                DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
-                    listOf(0, 1, 2, 3, 4, 5, 9).forEach { lv ->
-                        val has = saved.containsKey(lv)
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (lv == 0) "自动（最高可用）" else if (lv == 9) "9 级厂家" else "$lv 级",
-                                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface,
-                                )
-                            },
-                            trailingIcon = {
-                                Text(
-                                    when {
-                                        lv == 0 -> ""
-                                        has -> "已记住"
-                                        else -> "未设置"
-                                    },
-                                    fontSize = 10.sp,
-                                    color = if (lv != 0 && has) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            onClick = {
+            // 不用 DropdownMenu：本页在纵向滚动容器里，DropdownMenu（Popup）在 iOS 上
+            // 弹不出或点项无效。改成行内展开——点行展开等级列表，再点某级即设定并收起
+            SettingRow(
+                title = "连接后自动升级到",
+                inlineValue = if (autoLevel > 0) "$autoLevel 级" else "自动（最高可用）",
+                trailing = { Text(if (levelMenu) "⌃" else "⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                onClick = { levelMenu = !levelMenu },
+            )
+            if (levelMenu) {
+                listOf(0, 1, 2, 3, 4, 5, 9).forEach { lv ->
+                    val has = saved.containsKey(lv)
+                    val isSel = (lv == 0 && autoLevel == 0) || (lv > 0 && autoLevel == lv)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
                                 io.github.lswlc33.maibms.data.Bms.repository.setAutoUpgradeTarget(lv)
                                 levelMenu = false
+                            }
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                    ) {
+                        RadioDot(isSel)
+                        Text(
+                            if (lv == 0) "自动（最高可用）" else if (lv == 9) "9 级厂家" else "$lv 级",
+                            fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 9.dp).weight(1f),
+                        )
+                        Text(
+                            when {
+                                lv == 0 -> ""
+                                has -> "已记住"
+                                else -> "未设置"
                             },
+                            fontSize = 10.sp,
+                            color = if (lv != 0 && has) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
@@ -521,79 +541,128 @@ internal fun PasswordEditDialog(address: String, level: Int, onDismiss: () -> Un
     val saved by MockBms.plainPasswords.collectAsState()
     val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
-    // 当前会话设备：可向设备校验，明文从会话流取；其他设备：离线写入档案
     val sessionDevice = address == MockBms.savedAddress
     val existing = if (sessionDevice) saved[level] else AppStore.loadPassword(address, level)
-    // 已记住的直接带出来，省得重打一遍（本机就是明文存的，页脚也声明了）
-    var input by remember { mutableStateOf(existing ?: "") }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var input by remember(address, level) { mutableStateOf(existing ?: "") }
+    var busy by remember(address, level) { mutableStateOf(false) }
+    var confirmingClear by remember(address, level) { mutableStateOf(false) }
+    var error by remember(address, level) { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val slot = io.github.lswlc33.maibms.protocol.ParamTable.slotAddr(level)
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
-        ) {
-            Text(
-                if (level == 9) "9 级厂家密码（12 段点分十进制，如 0.0.0.…）"
-                else "$level 级密码（槽 ${io.github.lswlc33.maibms.protocol.ParamTable.slotLen(level)} 字节）",
-                fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-                "该设备的密码库 · 寄存器 $slot" +
-                    if (connected && sessionDevice) " · 保存时向设备校验" else " · 离线写入设备档案",
-                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            OutlinedTextField(
-                value = input, onValueChange = { input = it; error = null },
-                label = { Text(if (level == 9) "点分十进制密码" else "密码") }, singleLine = true, enabled = !busy,
-                isError = error != null,
-                modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
-            )
-            error?.let {
-                Text(it, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 5.dp))
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                if (existing != null) {
-                    TextButton(enabled = !busy, onClick = {
-                        if (sessionDevice) io.github.lswlc33.maibms.data.Bms.repository.forgetPassword(level)
+    BoundedSettingsDialog(onDismiss = { if (!busy) onDismiss() }) {
+        Text(
+            if (level == 9) "9 级厂家密码（12 段点分十进制，如 0.0.0.…）"
+            else "$level 级密码（槽 ${io.github.lswlc33.maibms.protocol.ParamTable.slotLen(level)} 字节）",
+            fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            "该设备的密码库 · 寄存器 $slot" +
+                if (connected && sessionDevice) " · 保存时向设备校验" else " · 离线写入设备档案",
+            fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        OutlinedTextField(
+            value = input, onValueChange = { input = it; error = null },
+            label = { Text(if (level == 9) "点分十进制密码" else "密码") }, singleLine = true,
+            enabled = !busy && !confirmingClear, isError = error != null,
+            modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        )
+        error?.let {
+            Text(it, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = 5.dp))
+        }
+        if (confirmingClear) {
+            Text("清除本机记住的 $level 级密码？不会修改设备密码，自动升权将不再使用它。",
+                fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 10.dp))
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(enabled = !busy, onClick = { confirmingClear = false }) { Text("保留") }
+                TextButton(enabled = !busy, onClick = {
+                    if (busy) return@TextButton
+                    busy = true
+                    try {
+                        if (address == MockBms.savedAddress) io.github.lswlc33.maibms.data.Bms.repository.forgetPassword(level)
                         else AppStore.removePassword(address, level)
                         onDismiss()
-                    }) { Text("清除", color = MaterialTheme.colorScheme.error) }
+                    } catch (e: Exception) {
+                        error = "清除失败 · 请重试"
+                        confirmingClear = false
+                    } finally {
+                        busy = false
+                    }
+                }) { Text("确认清除", color = MaterialTheme.colorScheme.error) }
+            }
+        } else {
+            // 按钮分行，窄屏/大字号也不把保存挤到窗口外。
+            if (existing != null) {
+                TextButton(enabled = !busy, onClick = { confirmingClear = true; error = null }) {
+                    Text("清除已记住的密码", color = MaterialTheme.colorScheme.error)
                 }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("取消", color = MaterialTheme.colorScheme.primary) }
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
+                TextButton(enabled = !busy, onClick = onDismiss) { Text("取消") }
                 Spacer(Modifier.width(4.dp))
                 Button(
                     enabled = input.isNotBlank() && !busy,
                     onClick = {
+                        if (busy) return@Button
                         val pw = input.trim()
-                        // 槽长/格式先本地校验：12 字节槽发 8 字节帧、每段超 255 这类问题，
-                        // 一旦发出去设备只会静默不认，界面还看不出为什么
                         val bad = io.github.lswlc33.maibms.protocol.PasswordCodec.validate(level, pw)
                         if (bad != null) { error = bad; return@Button }
+                        // 在 launch 前置 busy，连续点击不能发出两次校验。
+                        busy = true
+                        error = null
                         scope.launch {
-                            busy = true
-                            val repo = io.github.lswlc33.maibms.data.Bms.repository
-                            if (connected && sessionDevice) {
-                                // 校验失败不存：错密码留在库里只会让每次连接都白试
-                                val lv = repo.auth(level, pw)
+                            try {
+                                val repo = io.github.lswlc33.maibms.data.Bms.repository
+                                val stillSessionDevice = address == MockBms.savedAddress
+                                val stillConnected = repo.linkState.value == io.github.lswlc33.maibms.transport.LinkState.Connected
+                                if (stillConnected && stillSessionDevice) {
+                                    val lv = repo.auth(level, pw)
+                                    if (lv >= level && lv > 0) onDismiss()
+                                    else error = "校验未通过或设备未应答 · 未保存，请检查连接与密码后重试"
+                                } else {
+                                    if (stillSessionDevice) repo.savePassword(level, pw)
+                                    else AppStore.savePassword(address, level, pw)
+                                    onDismiss()
+                                }
+                            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                                error = "设备校验超时 · 未保存，请检查连接后重试"
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                error = "校验或保存失败（连接/设备异常）· 请重试，不代表密码错误"
+                            } finally {
                                 busy = false
-                                if (lv > 0) onDismiss() else error = "密码不正确 · 未保存"
-                            } else {
-                                if (sessionDevice) repo.savePassword(level, pw)
-                                else AppStore.savePassword(address, level, pw)
-                                busy = false
-                                onDismiss()
                             }
                         }
                     },
-                ) { Text(if (busy) "校验中…" else if (connected && sessionDevice) "保存并校验" else "保存") }
+                ) { Text(if (busy) "处理中…" else if (connected && sessionDevice) "保存并校验" else "保存") }
             }
+        }
+    }
+}
+
+/** 这些设置/档案弹窗共享有限视口；IME 出现后内容和末尾按钮都可滚动到达。 */
+@Composable
+internal fun BoundedSettingsDialog(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().imePadding().padding(horizontal = 24.dp, vertical = 16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                Modifier.widthIn(max = 560.dp).fillMaxWidth()
+                    .heightIn(max = minOf(maxHeight, 560.dp))
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(MaterialTheme.colorScheme.surface)
+                    .verticalScroll(rememberScrollState()).padding(18.dp),
+                content = content,
+            )
         }
     }
 }
@@ -685,11 +754,13 @@ fun DeveloperScreen(onBack: () -> Unit) {
                 modifier = Modifier.padding(top = 6.dp))
         }
         SectionCard {
-            SettingRow(
+            SwitchSettingRow(
                 title = "帧级日志（TX/RX 报文）",
-                inlineValue = if (logOn) "开启" else "关闭",
-                trailing = { AppSwitch(logOn) { io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = it; AppStore.logFrameOn = it } },
-                onClick = { val v = !logOn; io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = v; AppStore.logFrameOn = v },
+                checked = logOn,
+                onChange = {
+                    io.github.lswlc33.maibms.data.BmsLog.frameLogOn.value = it
+                    AppStore.logFrameOn = it
+                },
             )
             SettingRow(
                 title = "显示级别",
@@ -699,25 +770,31 @@ fun DeveloperScreen(onBack: () -> Unit) {
                     io.github.lswlc33.maibms.data.BmsLog.Level.WARN -> "仅警告+"
                     io.github.lswlc33.maibms.data.BmsLog.Level.ERROR -> "仅错误"
                 },
-                trailing = { Text("⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                onClick = { levelMenu = true },
+                trailing = { Text(if (levelMenu) "⌃" else "⌄", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                onClick = { levelMenu = !levelMenu },
             )
-            Box {
-                DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
-                    listOf(
-                        "全部（含帧）" to io.github.lswlc33.maibms.data.BmsLog.Level.DEBUG,
-                        "普通+" to io.github.lswlc33.maibms.data.BmsLog.Level.INFO,
-                        "仅警告+" to io.github.lswlc33.maibms.data.BmsLog.Level.WARN,
-                        "仅错误" to io.github.lswlc33.maibms.data.BmsLog.Level.ERROR,
-                    ).forEach { (label, lv) ->
-                        DropdownMenuItem(
-                            text = { Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface) },
-                            onClick = {
+            // 行内展开（原先 DropdownMenu）：开发者页在滚动容器里，Popup 在 iOS 上弹不出
+            if (levelMenu) {
+                listOf(
+                    "全部（含帧）" to io.github.lswlc33.maibms.data.BmsLog.Level.DEBUG,
+                    "普通+" to io.github.lswlc33.maibms.data.BmsLog.Level.INFO,
+                    "仅警告+" to io.github.lswlc33.maibms.data.BmsLog.Level.WARN,
+                    "仅错误" to io.github.lswlc33.maibms.data.BmsLog.Level.ERROR,
+                ).forEach { (label, lv) ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
                                 io.github.lswlc33.maibms.data.BmsLog.minLevel.value = lv
                                 AppStore.logMinLevel = lv.name.first().toString()
                                 levelMenu = false
-                            },
-                        )
+                            }
+                            .padding(horizontal = 6.dp, vertical = 6.dp),
+                    ) {
+                        RadioDot(minLevel == lv)
+                        Text(label, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(start = 9.dp))
                     }
                 }
             }

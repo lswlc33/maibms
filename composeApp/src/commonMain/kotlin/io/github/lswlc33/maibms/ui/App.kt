@@ -18,6 +18,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import kotlinx.coroutines.launch
@@ -133,16 +141,6 @@ fun App(
             )
         }
         BmsTheme(darkTheme = dark) {
-            // 系统返回键：先关弹窗，再退栈，最后回仪表盘标签
-            PlatformBackHandler(
-                enabled = dialog.value != null || backStack.isNotEmpty() || currentTab.value != Route.Dashboard
-            ) {
-                when {
-                    dialog.value != null -> dialog.value = null
-                    backStack.isNotEmpty() -> { navForward = false; backStack.pop() }
-                    else -> currentTab.value = Route.Dashboard
-                }
-            }
             val route = backStack.lastOrNull() ?: currentTab.value
             val isRoot = backStack.isEmpty()
             // 页面内的异步动作（写参数/控制命令）与弹窗共用一个 scope
@@ -152,7 +150,9 @@ fun App(
             val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
             val bmsLink by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
             val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
-            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(permissionLevel) && connected
+            val modifying by MockBms.modifying.collectAsState()
+            val unsaved by MockBms.unsavedWriteError.collectAsState()
+            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(permissionLevel) && connected && !modifying
             // 电量计（中继器）模式：隐藏"配置"标签（参数/控制/升级对电量计无意义），深链也重定向到仪表盘
             val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
             val meterMode = family.isMeter
@@ -171,6 +171,20 @@ fun App(
             // 判据是宽高比（不是绝对宽度），见 ClusterMode：正方形屏/大竖屏不进表盘，
             // 手动「仪表视图」进、表盘内「退出仪表」出（三端都可用）
             val onCluster = useClusterLayout(maxWidth, maxHeight) && route == Route.Dashboard
+            PlatformBackHandler(
+                enabled = dialog.value != null || backStack.isNotEmpty() ||
+                        currentTab.value != Route.Dashboard || onCluster
+            ) {
+                when {
+                    dialog.value != null -> {
+                        if (dialog.value == DialogKind.Scan) io.github.lswlc33.maibms.data.Bms.repository.stopScan()
+                        dialog.value = null
+                    }
+                    backStack.isNotEmpty() -> { navForward = false; backStack.pop() }
+                    onCluster -> exitCluster()
+                    else -> currentTab.value = Route.Dashboard
+                }
+            }
             // 有底栏时，滚动内容末尾要留出底栏 + 系统导航栏的高度，否则最后一行被压在底栏下
             val navBarPad = if (isTabRoot && !onCluster) BottomNavHeight else 20.dp
             // 非表盘态给内容限宽并居中：平板/横屏手机上不再把手机布局拉成"宽扁脸"
@@ -224,6 +238,7 @@ fun App(
                                     onOpenGroup = { i -> push(Route.ParamGroup(i)) },
                                     onOpenTools = { push(Route.ControlTools) },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
+                                    onConnect = { dialog.value = DialogKind.Scan },
                                 )
                                 Route.Settings -> SettingsHomeScreen(
                                     bottomPadding = navBarPad,
@@ -243,9 +258,11 @@ fun App(
                                         dialog.value = when {
                                             !canWrite -> DialogKind.ParamEdit(
                                                 item, readOnly = true,
-                                                readOnlyNote = if (!connected)
-                                                    "未连接保护板：连接后才能写入；运行权限需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上"
-                                                else "当前运行权限 $permissionLevel 级只读：写入需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上，点「去校验」升权",
+                                                readOnlyNote = when {
+                                                    !connected -> "未连接保护板：连接后才能修改参数"
+                                                    modifying -> "正在保存修改，请等待设备确认后再操作"
+                                                    else -> "当前运行权限 $permissionLevel 级只读：修改需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上，点「去校验」升权"
+                                                },
                                             )
                                             def?.readOnly == true -> DialogKind.ParamEdit(
                                                 item, readOnly = true,
@@ -255,12 +272,14 @@ fun App(
                                         }
                                     },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
-                                    onSave = { scope.launch { io.github.lswlc33.maibms.data.Bms.repository.saveAllParams() } },
+                                    onSave = { if (canWrite && unsaved == null) scope.launch { io.github.lswlc33.maibms.data.Bms.repository.saveAllParams() } },
+                                    onConnect = { dialog.value = DialogKind.Scan },
                                 )
                                 Route.ControlTools -> ControlToolsScreen(
                                     onBack = popBack,
                                     onCommand = { cmd -> dialog.value = DialogKind.ControlConfirm(cmd) },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
+                                    onConnect = { dialog.value = DialogKind.Scan },
                                 )
                                 Route.Password -> PasswordScreen(onBack = popBack)
                                 Route.Developer -> DeveloperScreen(onBack = popBack)
@@ -317,8 +336,7 @@ fun App(
                         onConfirm = { cmd ->
                             io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户确认执行：${io.github.lswlc33.maibms.protocol.ControlCmd.name(cmd)}")
                             scope.launch {
-                                val code = io.github.lswlc33.maibms.data.Bms.repository.control(cmd)
-                                MockBms.lastControlResult.value = cmd to code
+                                io.github.lswlc33.maibms.data.Bms.repository.control(cmd)
                             }
                         })
                     is DialogKind.ParamEdit -> ParamEditDialog(
@@ -332,7 +350,7 @@ fun App(
                             io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交参数写入：${d.item.name} = $raw ${d.item.unit}")
                             scope.launch {
                                 val addr = d.item.addr.removePrefix("0x").removePrefix("0X").toIntOrNull(16) ?: 0
-                                MockBms.lastWriteResult.value = io.github.lswlc33.maibms.data.Bms.repository.writeParam(addr, raw)
+                                io.github.lswlc33.maibms.data.Bms.repository.writeParam(addr, raw)
                             }
                         })
                     DialogKind.PermLevels -> PermLevelsDialog(onDismiss = { dialog.value = null })
@@ -434,8 +452,10 @@ fun ScreenScaffold(
         Spacer(Modifier.height(WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 4.dp))
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 16.dp)) {
             if (onBack != null) {
-                Text("‹", fontSize = 19.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.clickable { onBack() }.padding(end = 10.dp))
+                Box(Modifier.size(48.dp).clickable(onClick = onBack)
+                    .semantics { contentDescription = "返回" }, contentAlignment = Alignment.Center) {
+                    Text("‹", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                }
             }
             Text(title, fontSize = 19.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             if (trailing != null) {
@@ -463,6 +483,20 @@ fun ScreenScaffold(
 /* ---------- 危险确认弹窗（S04） ---------- */
 
 @Composable
+private fun AppDialog(onDismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxWidth().imePadding().padding(vertical = 12.dp)) {
+            Column(
+                Modifier.fillMaxWidth().heightIn(max = maxHeight)
+                    .clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.surface)
+                    .verticalScroll(rememberScrollState()).padding(18.dp),
+                content = content,
+            )
+        }
+    }
+}
+
+@Composable
 fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Unit = {}) {
     val name = io.github.lswlc33.maibms.protocol.ControlCmd.name(cmd)
     val dangerous = io.github.lswlc33.maibms.protocol.ControlCmd.isDangerous(cmd)
@@ -471,15 +505,21 @@ fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Un
     val typed = io.github.lswlc33.maibms.protocol.ControlCmd.requiresTypedConfirm(cmd)
     var input by remember(cmd) { mutableStateOf("") }
     val confirmed = !typed || input.trim().let { it == "确认" || it.equals("ok", ignoreCase = true) }
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
-        ) {
+    val level by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
+    val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
+    val modifying by MockBms.modifying.collectAsState()
+    val allowed = link == io.github.lswlc33.maibms.transport.LinkState.Connected &&
+            io.github.lswlc33.maibms.protocol.Perm.canWrite(level) && !modifying
+    AppDialog(onDismiss) {
             Text(name + "？", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold,
                 color = if (dangerous) BmsColors.BadRed else MaterialTheme.colorScheme.onSurface)
             Text(
-                "将向设备发送对应控制命令（0x51）。执行期间自动暂停实时轮询，完成后恢复。",
+                when {
+                    link != io.github.lswlc33.maibms.transport.LinkState.Connected -> "设备未连接，请连接后再操作。"
+                    modifying -> "正在保存修改，请等待设备确认。"
+                    !io.github.lswlc33.maibms.protocol.Perm.canWrite(level) -> "当前权限不足，请先校验密码。"
+                    else -> "确认后向设备发送控制命令，请阅读下方提示。"
+                },
                 fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 8.dp, bottom = 6.dp)
             )
@@ -492,18 +532,6 @@ fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Un
                 }
                 Spacer(Modifier.height(6.dp))
             }
-            Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant).padding(10.dp)
-            ) {
-                // 直接显示这条命令的真实报文，排查时对得上日志
-                Text(
-                    io.github.lswlc33.maibms.data.BmsLog.hex(
-                        io.github.lswlc33.maibms.protocol.Frame.control(cmd)
-                    ),
-                    fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface
-                )
-            }
             if (typed) {
                 OutlinedTextField(
                     value = input, onValueChange = { input = it },
@@ -515,14 +543,13 @@ fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Un
                 TextButton(onClick = onDismiss) { Text("取消", color = MaterialTheme.colorScheme.primary) }
                 Spacer(Modifier.width(4.dp))
                 Button(
-                    enabled = confirmed,
+                    enabled = confirmed && allowed,
                     onClick = { onConfirm(cmd); onDismiss() },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (dangerous) BmsColors.BadRed else MaterialTheme.colorScheme.primary
                     )
                 ) { Text("执行") }
             }
-        }
     }
 }
 
@@ -532,99 +559,111 @@ fun ControlConfirmDialog(cmd: Int, onDismiss: () -> Unit, onConfirm: (Int) -> Un
 fun PermLevelsDialog(onDismiss: () -> Unit) {
     val passwords by MockBms.passwords.collectAsState()
     val plain by MockBms.plainPasswords.collectAsState()
-    val status by MockBms.status.collectAsState()
-    val linkState = io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
-    val canAuth = linkState.value == io.github.lswlc33.maibms.transport.LinkState.Connected
+    val level by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
+    val link by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
+    val modifying by MockBms.modifying.collectAsState()
+    val canAuth = link == io.github.lswlc33.maibms.transport.LinkState.Connected && !modifying
     var editingLevel by remember { mutableStateOf<Int?>(null) }
     var input by remember { mutableStateOf("") }
     var pwError by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var visible by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
-                .background(MaterialTheme.colorScheme.surface).padding(18.dp)
-        ) {
-            Text("切换权限等级", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-            Text("当前 ${status.permissionLevel} 级 · 设备 ${MockBms.deviceLabel}",
-                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-            // 374 地址冲突待实测：新参数表把 374 定义为「系统基准电压偏移」，旧版按管理员密码槽写 12 字节
-            // （docs/附录A、docs/09 都标注了这处冲突）。校验失败会自动删除已存的 9 级密码，为防误删先警示
-            if (editingLevel == 9) {
-                Text(
-                    "注意：9 级（管理员）槽地址 374 与新版参数表「系统基准电压偏移」冲突（固件代际有关），校验不通过会移除已记住的密码",
-                    fontSize = 10.sp, color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
+
+    fun authenticate(target: Int, password: String) {
+        if (!canAuth || busy) return
+        val bad = io.github.lswlc33.maibms.protocol.PasswordCodec.validate(target, password)
+        if (bad != null) { pwError = bad; return }
+        val address = MockBms.savedAddress
+        busy = true
+        pwError = null
+        scope.launch {
+            try {
+                val result = io.github.lswlc33.maibms.data.Bms.repository.auth(target, password)
+                if (address != MockBms.savedAddress) {
+                    pwError = "设备已切换，请重新校验"
+                } else if (result >= target) {
+                    onDismiss()
+                } else {
+                    pwError = "校验未通过或设备未应答，请检查密码与连接后重试"
+                }
+            } catch (e: CancellationException) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                pwError = "连接已结束，请重新连接后校验"
+            } catch (e: Exception) {
+                pwError = "校验未完成，请检查连接后重试"
+            } finally {
+                busy = false
             }
-            Text(
-                if (canAuth) "点已记住的等级直接校验；点未设置的等级可输入密码"
-                else "未连接保护板 · 校验需要先连上设备",
-                fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
-            )
-            passwords.forEach { pw ->
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                        .clickable {
-                            val saved = plain[pw.level]
-                            if (!status.hasData && linkState.value != io.github.lswlc33.maibms.transport.LinkState.Connected) {
-                                // 未连接时校验必然失败，点了只会静默无反应
-                                editingLevel = null
-                                return@clickable
-                            }
-                            if (saved != null) {
-                                io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户点已记住的 ${pw.level} 级直接校验")
-                                scope.launch {
-                                    val lvl = io.github.lswlc33.maibms.data.Bms.repository.auth(pw.level, saved)
-                                    if (lvl > 0) onDismiss()
-                                }
-                            } else {
-                                io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户输入 ${pw.level} 级密码")
-                                editingLevel = pw.level; input = ""; pwError = null
-                            }
+        }
+    }
+
+    AppDialog(onDismiss) {
+        Text("切换权限等级", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold,
+            color = MaterialTheme.colorScheme.onSurface)
+        Text("当前 $level 级 · 设备 ${MockBms.deviceLabel}", fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+        if (editingLevel == 9) {
+            Text("管理员密码与部分新版固件的参数地址冲突；请先确认设备支持，不要试用未知密码。",
+                fontSize = 10.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 4.dp))
+        }
+        Text(
+            when {
+                busy -> "正在校验，请等待设备确认"
+                modifying -> "正在保存修改，请稍后校验"
+                canAuth -> "点已记住的等级校验；未设置的等级可输入密码"
+                else -> "未连接保护板，连接后才能校验"
+            },
+            fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
+        )
+        pwError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
+        passwords.forEach { pw ->
+            key("perm-${pw.level}") {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                    .clickable(enabled = canAuth && !busy) {
+                        val saved = plain[pw.level]
+                        if (saved != null) authenticate(pw.level, saved)
+                        else {
+                            editingLevel = pw.level
+                            input = ""
+                            visible = false
+                            pwError = null
                         }
-                        .padding(vertical = 9.dp)
-                ) {
-                    Text(if (pw.level == 9) "9 级厂家" else "${pw.level} 级",
-                        fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
-                    Text(plain[pw.level]?.let { "已记住" } ?: "未设置", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(12.dp))
-                    RadioDot(selected = pw.isCurrent)
-                }
-                if (editingLevel == pw.level) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                        OutlinedTextField(
-                            value = input, onValueChange = { input = it; pwError = null },
-                            label = { Text(if (pw.level == 9) "点分十进制（12 段）" else "输入 ${pw.level} 级密码（槽 ${io.github.lswlc33.maibms.protocol.ParamTable.slotLen(pw.level)} 字节）") },
-                            singleLine = true, isError = pwError != null,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Button(onClick = {
-                            val lv = pw.level
-                            val bad = io.github.lswlc33.maibms.protocol.PasswordCodec.validate(lv, input.trim())
-                            if (bad != null) { pwError = bad; return@Button }
-                            io.github.lswlc33.maibms.data.BmsLog.i("UI", "用户提交 $lv 级新密码，保存并校验")
-                            MockBms.plainPasswords.value = plain + (lv to input.trim())
-                            MockBms.passwords.value = MockBms.passwords.value.map {
-                                if (it.level == lv) it.copy(masked = "••••••••") else it
-                            }
-                            scope.launch {
-                                if (io.github.lswlc33.maibms.data.Bms.repository.auth(lv, input.trim()) > 0) onDismiss()
-                            }
-                        }) { Text("校验") }
-                    }
-                    pwError?.let {
-                        Text(it, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(bottom = 8.dp))
+                    }.padding(vertical = 8.dp),
+            ) {
+                Text(if (pw.level == 9) "9 级厂家" else "${pw.level} 级",
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f))
+                Text(if (plain.containsKey(pw.level)) "已记住" else "未设置",
+                    fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(12.dp))
+                RadioDot(selected = pw.isCurrent)
+            }
+            }
+            if (editingLevel == pw.level) {
+                OutlinedTextField(
+                    value = input, onValueChange = { input = it; pwError = null },
+                    label = { Text(if (pw.level == 9) "点分十进制（12 段）" else "输入 ${pw.level} 级密码") },
+                    singleLine = true, isError = pwError != null, enabled = !busy,
+                    visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { visible = !visible }) { Text(if (visible) "隐藏密码" else "显示密码") }
+                    Button(enabled = canAuth && !busy, onClick = { authenticate(pw.level, input.trim()) }) {
+                        Text(if (busy) "校验中" else "校验")
                     }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
-            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onDismiss) { Text("关闭", color = MaterialTheme.colorScheme.primary) }
-            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        }
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = onDismiss) { Text("关闭") }
         }
     }
 }

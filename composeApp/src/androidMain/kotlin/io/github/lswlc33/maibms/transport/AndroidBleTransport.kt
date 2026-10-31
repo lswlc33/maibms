@@ -9,6 +9,8 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
+import io.github.lswlc33.maibms.data.PlatformLock
+import io.github.lswlc33.maibms.data.withLock
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -112,12 +114,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     @Volatile private var manualStop = false
     private var loopJob: Job? = null
 
-    /** 本次尝试的「就绪」信号：true=服务/通知就绪，false=就绪前掉线 */
-    private var readySignal: CompletableDeferred<Boolean>? = null
-    /** 服务发现完成信号：让「建链 + 发现服务」与「通道探测」两段超时分开算 */
-    @Volatile private var servicesSignal: CompletableDeferred<Unit>? = null
-    /** 已就绪后的掉线信号 */
-    private var dropSignal: CompletableDeferred<Unit>? = null
+    /** 回调、候选切换、收尾与 Connected 发布必须在同一把可重入锁内。 */
+    private val attemptLock = PlatformLock()
+    private val attempts = ConnectionAttempts()
 
     private val LOG = io.github.lswlc33.maibms.data.BmsLog
 
@@ -203,16 +202,13 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
      * 订阅落地后的动作：保护板走 ANT 探测（发实时帧等 0x11/0x12 应答），
      * 电量计暂无探测帧，直接按“FFE0 + 写/通知就绪”判就绪（后续阶段再补各家握手）。
      */
-    private fun afterSubscribed(g: BluetoothGatt, c: Candidate) {
-        if (g !== gatt) return
-        // CCCD 失败翻页后，旧候选的 250ms 兜底仍可能迟到；不校验会把旧通道标成"已就绪"
-        if (candidates.getOrNull(candidateIndex) !== c) return
+    private fun afterSubscribed(g: BluetoothGatt, c: Candidate): Unit = withLock(attemptLock) {
+        val owner = attempts.current ?: return@withLock
+        if (g !== gatt || !attempts.acceptsCandidate(owner, c)) return@withLock
         if (targetFamily.isMeter) {
-            _activeChannel.value = c.channel
-            logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
-            completeReady(g)
+            completeReady(g, owner, c)
         } else {
-            startProbe(g, c)
+            startProbe(g, owner, c)
         }
     }
 
@@ -226,15 +222,18 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
      * 全部候选都失败就按本轮连接失败处理，交给重连循环退避重试。
      */
     @SuppressLint("MissingPermission")
-    private fun probeNext(g: BluetoothGatt) {
+    private fun probeNext(g: BluetoothGatt): Unit = withLock(attemptLock) {
+        val owner = attempts.current ?: return@withLock
+        if (g !== gatt || !attempts.owns(owner)) return@withLock
         val c = candidates.getOrNull(candidateIndex)
         if (c == null) {
             logE("候选通道全部探测失败（共 ${candidates.size} 条）")
             _activeChannel.value = null
-            readySignal?.complete(false)
+            owner.ready.complete(false)
             runCatching { g.disconnect() }
-            return
+            return@withLock
         }
+        attempts.selectCandidate(owner, c)
         writeChar = c.write
         notifyChar = c.notify
         probeStarted = false
@@ -247,7 +246,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             runCatching { g.requestMtu(MTU_TARGET) }
             runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
             afterSubscribed(g, c)
-            return
+            return@withLock
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             runCatching { g.writeDescriptor(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) }
@@ -263,45 +262,51 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         // CCCD 写回调个别 ROM 不给：超时也按「订阅已发出」进入探测，别把连接卡死
         scope.launch {
             delay(READY_FALLBACK_MS)
-            if (g === gatt) afterSubscribed(g, c)
+            afterSubscribed(g, c)
         }
     }
 
-    /** 发探测帧并等应答；通过就置「就绪」，否则换下一个候选 */
-    private fun startProbe(g: BluetoothGatt, c: Candidate) {
-        if (probeStarted || g !== gatt) return
-        // 迟到的兜底（候选已经翻页）不能再探：否则会拿旧候选的写特征去发帧
-        if (candidates.getOrNull(candidateIndex) !== c) return
+    /** 发探测帧并等应答；每次 suspend 后重新核查 attempt / GATT / 候选所有权。 */
+    private fun startProbe(g: BluetoothGatt, owner: ConnectionAttempt, c: Candidate): Unit = withLock(attemptLock) {
+        if (probeStarted || g !== gatt || !attempts.acceptsCandidate(owner, c)) return@withLock
         probeStarted = true
         val signal = CompletableDeferred<Boolean>()
         probeSignal = signal
         scope.launch {
-            delay(PROBE_SETTLE_MS)   // 等订阅生效，与官方 200ms 切通道间隔一致
-            if (g !== gatt) return@launch
+            delay(PROBE_SETTLE_MS)
+            val current = withLock(attemptLock) {
+                g === gatt && attempts.acceptsCandidate(owner, c) && probeSignal === signal
+            }
+            if (!current) return@launch
             val probe = io.github.lswlc33.maibms.protocol.Frame.readRealtime()
             runCatching { writeChunks(g, c.write, probe) }
                 .onFailure { logW("探测帧写入失败：${it.message}") }
             val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
-            if (g !== gatt) return@launch
-            probeSignal = null
-            if (ok) {
-                _activeChannel.value = c.channel
-                logI("通道就绪：${c.channel.label}（${c.channel.id}）")
-                completeReady(g)
-            } else {
-                logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
-                unsubscribe(g, c)   // 退订这条通道，免得它的帧还往上游送
-                candidateIndex++
-                probeNext(g)
+            withLock(attemptLock) {
+                if (g !== gatt || !attempts.acceptsCandidate(owner, c) || probeSignal !== signal) return@launch
+                probeSignal = null
+                if (ok) {
+                    completeReady(g, owner, c)
+                } else {
+                    logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
+                    unsubscribe(g, c)
+                    candidateIndex++
+                    probeNext(g)
+                }
             }
         }
     }
 
-    /** 标记链路就绪：置连接态并唤醒等待中的重连循环。只在 g 仍是当前 GATT 时生效（丢弃迟到回调） */
-    private fun completeReady(g: BluetoothGatt) {
-        if (g !== gatt) return
-        _linkState.value = LinkState.Connected
-        readySignal?.complete(true)
+    /** valid/current GATT/drop 检查与 Connected 发布同锁，不允许掉线后被等待方重新置态。 */
+    private fun completeReady(g: BluetoothGatt, owner: ConnectionAttempt, c: Candidate): Unit = withLock(attemptLock) {
+        if (g !== gatt || !attempts.acceptsCandidate(owner, c)) return@withLock
+        attempts.publishReady(owner) {
+            _activeChannel.value = c.channel
+            _linkState.value = LinkState.Connected
+            _connectHint.value = null
+            logI(if (targetFamily.isMeter) "电量计通道就绪：${c.channel.id}（跳过保护板探测）"
+                 else "通道就绪：${c.channel.label}（${c.channel.id}）")
+        }
     }
 
     // ---------------- 扫描 ----------------
@@ -382,6 +387,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 _linkState.value = LinkState.Disconnected
                 return
             }
+        loopJob?.cancelAndJoin()
+        closeGatt()
         manualStop = false
         desiredAddress = device.address
         _currentFamily.value = targetFamily
@@ -414,54 +421,46 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             logI("连接尝试 #$attempt${if (useAuto) "（等待广播）" else ""}")
             _linkState.value = LinkState.Connecting
 
-            // 先把上一轮的 GATT 收干净，再挂新信号。openGatt 不再内部 closeGatt：
-            // 否则它会把刚挂上的 servicesSignal 清掉，等待方只能吃满 12~25s 超时。
-            closeGatt()
-            val ready = CompletableDeferred<Boolean>()
-            readySignal = ready
-            val servicesFound = CompletableDeferred<Unit>()
-            servicesSignal = servicesFound
-            dropSignal = null
-            val started = openGatt(device, useAuto)
-            if (!started) {
-                _connectHint.value = "蓝牙栈拒绝了连接请求"
-            } else {
-                // 两段超时：① 建链 + 发现服务用连接超时；② 通道探测按候选条数给预算
-                //（每条候选最多 PROBE_TIMEOUT_MS；官方也是 8s/条，不能挤进 12s 里）
-                val connectBudget = if (useAuto) CONNECT_TIMEOUT_AUTO_MS else CONNECT_TIMEOUT_MS
-                val discovered = withTimeoutOrNull(connectBudget) { servicesFound.await() } != null
-                val outcome: Boolean? = if (!discovered) null else {
-                    val probeBudget = PROBE_TIMEOUT_MS * candidates.size.coerceAtLeast(1) + 2_000L
-                    withTimeoutOrNull(probeBudget) { ready.await() }
-                }
-                if (outcome == true) {
-                    _connectHint.value = null
-                    _linkState.value = LinkState.Connected
-                    logI("链路就绪（MTU ${mtu}，通道 ${_activeChannel.value?.id ?: "?"}）")
-                    val dropped = CompletableDeferred<Unit>()
-                    dropSignal = dropped
-                    val connectedAt = System.currentTimeMillis()
-                    runCatching { dropped.await() }
-                    // 掉线：短命连接（<5s）按失败计入退避，避免弱信号下疯狂重连
-                    val livedMs = System.currentTimeMillis() - connectedAt
-                    closeGatt()
-                    _linkState.value = LinkState.Disconnected
-                    if (manualStop || !currentCoroutineContext().isActive) break
-                    if (livedMs < 5_000) {
-                        attempt = attempt.coerceAtLeast(1)
-                        _connectHint.value = "连接建立后很快断开（${statusText(lastDisconnectStatus)}）"
-                    } else {
-                        attempt = 0
-                        _connectHint.value = "连接已断开，正在重连…"
-                    }
-                } else {
-                    closeGatt()
-                    _connectHint.value = if (outcome == null) "连接超时，正在重试…"
-                                        else "连接失败（${statusText(lastDisconnectStatus)}）"
-                }
+            // 本轮 services / ready / drop 在 connectGatt 前一起创建，不能漏掉 ready→wait 窗口的掉线。
+            val (owner, started) = withLock(attemptLock) {
+                closeGatt()
+                _linkState.value = LinkState.Connecting
+                val owner = attempts.begin(device.address)
+                owner to openGatt(device, useAuto)
             }
-            readySignal = null
-            servicesSignal = null
+            try {
+                if (!started) {
+                    _connectHint.value = "蓝牙栈拒绝了连接请求"
+                } else {
+                    val connectBudget = if (useAuto) CONNECT_TIMEOUT_AUTO_MS else CONNECT_TIMEOUT_MS
+                    val discovered = withTimeoutOrNull(connectBudget) { owner.services.await() } != null
+                    val outcome: Boolean? = if (!discovered) null else {
+                        val probeBudget = withLock(attemptLock) {
+                            PROBE_TIMEOUT_MS * owner.candidateCount.coerceAtLeast(1) + 2_000L
+                        }
+                        withTimeoutOrNull(probeBudget) { owner.ready.await() }
+                    }
+                    if (outcome == true) {
+                        // Connected 只由 completeReady 同锁发布，等待方绝不复活已经断开的链路。
+                        val connectedAt = System.currentTimeMillis()
+                        owner.dropped.await()
+                        val livedMs = System.currentTimeMillis() - connectedAt
+                        if (manualStop || !currentCoroutineContext().isActive) break
+                        if (livedMs < 5_000) {
+                            attempt = attempt.coerceAtLeast(1)
+                            _connectHint.value = "连接建立后很快断开（${statusText(lastDisconnectStatus)}）"
+                        } else {
+                            attempt = 0
+                            _connectHint.value = "连接已断开，正在重连…"
+                        }
+                    } else {
+                        _connectHint.value = if (outcome == null) "连接超时，正在重试…"
+                                            else "连接失败（${statusText(lastDisconnectStatus)}）"
+                    }
+                }
+            } finally {
+                closeGatt(owner)
+            }
             if (manualStop || !currentCoroutineContext().isActive) break
             val wait = (1_000L shl minOf(attempt, 3)).coerceAtMost(8_000L)
             delay(wait)
@@ -489,28 +488,35 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
      * SecurityException——这里都是尽力而为的清理调用，runCatching 已兜住，注解仅为标注意图
      */
     @SuppressLint("MissingPermission")
-    private fun closeGatt() {
-        val g = gatt ?: return
+    private fun closeGatt(owner: ConnectionAttempt? = null): Unit = withLock(attemptLock) {
+        if (owner != null && !attempts.owns(owner)) return@withLock
+        val current = attempts.current
+        val g = gatt
+        val probe = probeSignal
         gatt = null
         writeChar = null
         notifyChar = null
         probeSignal = null
-        servicesSignal = null
         probeStarted = false
         candidates = emptyList()
         candidateIndex = 0
         _activeChannel.value = null
-        runCatching { g.disconnect() }
-        runCatching { g.close() }
+        _linkState.value = LinkState.Disconnected
+        if (current != null) attempts.finish(current)
+        probe?.complete(false)
+        if (g != null) {
+            runCatching { g.disconnect() }
+            runCatching { g.close() }
+        }
     }
 
     @Volatile private var lastDisconnectStatus = 0
 
     private val callback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
-        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+        override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int): Unit = withLock(attemptLock) {
             // 旧 GATT 的迟到回调（重试时上一次连接的收尾）必须丢弃，否则会把新连接判死
-            if (g !== gatt) { runCatching { g.close() }; return }
+            if (g !== gatt) { runCatching { g.close() }; return@withLock }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     logD("GATT 已连接 status=${statusText(status)}")
@@ -519,40 +525,29 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     lastDisconnectStatus = status
                     logW("GATT 断开：${statusText(status)}")
-                    // 先抓住信号再 closeGatt：closeGatt 会清空 servicesSignal/probeSignal，
-                    // 清完再完成等于没完成，等待方只能等满超时。且必须在 gatt 置空后再唤醒
-                    // 探测协程，否则它会以为当前连接还活着、继续翻候选。
-                    val services = servicesSignal
-                    val probe = probeSignal
-                    val ready = readySignal
-                    val drop = dropSignal
                     closeGatt()
-                    _linkState.value = LinkState.Disconnected
-                    services?.complete(Unit)
-                    probe?.complete(false)
-                    ready?.complete(false)
-                    drop?.complete(Unit)
                 }
             }
         }
 
         @SuppressLint("MissingPermission")
-        override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (g !== gatt) return
-            // 阶段一结束（无论成败）：让建链等待尽快落到"服务发现完毕"
-            servicesSignal?.complete(Unit)
+        override fun onServicesDiscovered(g: BluetoothGatt, status: Int): Unit = withLock(attemptLock) {
+            val owner = attempts.current ?: return@withLock
+            if (g !== gatt || !attempts.owns(owner)) return@withLock
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 logE("发现服务失败：${statusText(status)}")
-                readySignal?.complete(false)
+                owner.services.complete(Unit)
+                owner.ready.complete(false)
                 runCatching { g.disconnect() }
-                return
+                return@withLock
             }
             logD("服务列表: " + g.services.joinToString { shortUuid(it.uuid) })
             val service = g.getService(SERVICE) ?: run {
                 logE("设备没有 FFE0 服务（不是已知的保护板/电量计？）")
-                readySignal?.complete(false)
+                owner.services.complete(Unit)
+                owner.ready.complete(false)
                 runCatching { g.disconnect() }
-                return
+                return@withLock
             }
             // 特征全集（含属性）：回答「这块板到底有没有备用通道」的第一手证据（每次连接一行）
             logI("特征列表: " + service.characteristics.joinToString {
@@ -563,9 +558,10 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             _availableChannels.value = found.map { it.channel }.ifEmpty { listOf(BleChannel.Default) }
             if (found.isEmpty()) {
                 logE("FFE0 下没有可用的写/通知特征")
-                readySignal?.complete(false)
+                owner.services.complete(Unit)
+                owner.ready.complete(false)
                 runCatching { g.disconnect() }
-                return
+                return@withLock
             }
             logI("可用通道：${found.joinToString { it.channel.id }}" +
                 if (found.size == 1) "（设备只提供默认通道，无备用通道）" else "")
@@ -574,33 +570,38 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             candidates = listOfNotNull(found.firstOrNull { it.channel == pref }) +
                 found.filter { it.channel != pref }
             candidateIndex = 0
-            servicesSignal?.complete(Unit)
+            // 候选表发布后再唤醒等待方，备用三通道获得完整探测预算。
+            attempts.servicesDiscovered(owner, candidates.size)
             probeNext(g)
         }
 
-        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int): Unit = withLock(attemptLock) {
+            if (g !== gatt) return@withLock
             logD("MTU 协商=$mtu status=$status")
-            if (g === gatt) this@AndroidBleTransport.mtu = mtu
+            this@AndroidBleTransport.mtu = mtu
         }
 
         // 主动断开也属尽力而为的清理：权限被回收时 SecurityException 由 runCatching 兜住
         @SuppressLint("MissingPermission")
-        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            if (g !== gatt || d.uuid != CCCD) return
+        override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int): Unit = withLock(attemptLock) {
+            if (g !== gatt || d.uuid != CCCD || d.characteristic !== notifyChar) return@withLock
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 // 订阅没落地 = 这条通道收不到任何帧：换下一个候选（没有下一个则本轮连接失败）
                 logE("CCCD 写入失败：${statusText(status)}（订阅未落地，换下一个候选通道）")
+                probeSignal?.complete(false)
+                probeSignal = null
                 candidateIndex++
                 probeNext(g)
-                return
+                return@withLock
             }
             logD("CCCD 写入成功，订阅已落地，开始发探测帧")
             candidates.getOrNull(candidateIndex)?.let { afterSubscribed(g, it) }
         }
 
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic): Unit = withLock(attemptLock) {
+            if (g !== gatt || c !== notifyChar || attempts.current == null) return@withLock
             @Suppress("DEPRECATION")
-            val data = c.value ?: return
+            val data = c.value ?: return@withLock
             // 帧级转储：开关关着时只拼「← 245B」——这里在 BLE 回调线程上，
             // 一帧 245 字节的十六进制是 245 次字符串分配，会推迟后面的 tryEmit
             LOG.frame("BLE", "←", data.size) { hex(data) }
@@ -610,7 +611,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
 
         override fun onCharacteristicChanged(
             g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (g !== gatt || c !== notifyChar || attempts.current == null) return@withLock
             LOG.frame("BLE", "←", value.size) { hex(value) }
             noteProbeResponse(value)
             if (!_incoming.tryEmit(value.copyOf())) noteDropped()
@@ -705,7 +707,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     override suspend fun disconnect() {
         manualStop = true
         desiredAddress = null
-        loopJob?.cancel()
+        loopJob?.cancelAndJoin()
         loopJob = null
         stopScan()
         closeGatt()

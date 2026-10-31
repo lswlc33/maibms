@@ -76,6 +76,7 @@ fun DashboardScreen(
     val chargeOn by MockBms.chargeSwitch.collectAsState()
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
     val previewing by repo.previewActive.collectAsState()
+    val busy by MockBms.modifying.collectAsState()
     val previewLabel by repo.previewLabel.collectAsState()
     val scope = rememberCoroutineScope()
     /** 权限不够时点控制按钮的一次性说明（点掉即清） */
@@ -244,8 +245,10 @@ fun DashboardScreen(
                             if (canWrite) onForceCharge()
                             else permDenied = "强制充电：需 ${io.github.lswlc33.maibms.protocol.Perm.WRITE_MIN_LEVEL} 级及以上权限（当前 $permissionLevel 级）"
                         },
-                        enabled = link == io.github.lswlc33.maibms.transport.LinkState.Connected,
+                        enabled = link == io.github.lswlc33.maibms.transport.LinkState.Connected && status.hasData && !busy,
                     )
+                    if (busy) InfoBanner("正在提交修改，请等待设备确认…", kind = "info")
+                    else if (!linkDown && !status.hasData) InfoBanner("尚未收到实时数据 · 开关状态未知", kind = "info")
                     // 权限不够时点了不是没反应，而是当场说明原因（点横幅右侧可直接去校验）
                     permDenied?.let {
                         Spacer(Modifier.height(6.dp))
@@ -335,10 +338,12 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { io.github.lswlc33.maibms.data.Bms.repository.startScan() }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+            Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp))
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Text("附近的设备", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             Text(
                 when {
@@ -364,6 +369,9 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                 Text("历史设备", fontSize = 11.sp, fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 2.dp))
                 history.forEach { p ->
+                    // key：列表重排时保持节点身份。否则 iOS 上「按下→松开」之间若节点被替换，
+                    // 这次点击会被丢弃（扫描列表每 600ms 整表重排，点击丢失率很高）
+                    key("history-${p.address}") {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
@@ -376,14 +384,20 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                         }
                         Text("连接 ›", fontSize = 10.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     }
+                    }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, modifier = Modifier.padding(vertical = 6.dp))
             }
             results.forEach { d ->
+                // 同上：地址是稳定身份。扫描中 RSSI 每拍变化会重排整表，没有 key 时
+                // iOS 上点击常在「按下→松开」之间失效（本次报障的直接原因）
+                key("scan-${d.address}") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                         .clickable { selected = d.address }
+                        // 热区加高：iOS 触摸判定比 Android 严格，行太矮（约 33dp）容易判成滑动手势
+                        .heightIn(min = 48.dp)
                         .padding(vertical = 7.dp)
                 ) {
                     RadioDot(selected == d.address)
@@ -397,22 +411,57 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                     }
                     Text("${d.rssi} dBm", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                }
             }
             if (scanning) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
                 StatusDot(BmsColors.OffGray, 6.dp)
                 Text("正在搜索…", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 9.dp))
             }
-            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                // 报错时也要能重试：原先带了 scanError == null，一旦扫描失败按钮就消失，用户只剩
-                // 「关闭」。iOS 上管理器状态没就绪时首次扫描必然报错，那时没有重试入口等于卡死
-                if (canScan && !scanning) {
-                    TextButton(onClick = { scope.launch { io.github.lswlc33.maibms.data.Bms.repository.startScan() } }) { Text("重新扫描", color = MaterialTheme.colorScheme.primary) }
+            }
+            Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                if (canScan && !scanning) TextButton(onClick = {
+                    scope.launch { io.github.lswlc33.maibms.data.Bms.repository.startScan() }
+                }) { Text("重新扫描") }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("关闭") }
+                    Spacer(Modifier.width(8.dp))
+                    // 高度给到 48dp：iOS 上 40dp 的默认按钮在弹窗底部不容易点中
+                    Button(
+                        onClick = { selected?.let(onConnect) },
+                        enabled = selected != null,
+                        modifier = Modifier.heightIn(min = 48.dp),
+                    ) {
+                        // 显示要连哪台：选中的行在扫描中会随信号强度移动，写出来更不容易连错
+                        val selName = results.firstOrNull { it.address == selected }?.name
+                        Text(if (selName != null) "连接 $selName" else "连接")
+                    }
                 }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onDismiss) { Text("关闭", color = MaterialTheme.colorScheme.primary) }
-                Button(onClick = { selected?.let(onConnect) }, enabled = selected != null) { Text("连接") }
             }
         }
+        }
+    }
+}
+
+/** 排查建议仅依据官方 BitDict/MosStateDict 名称分类，不推断硬件故障、不建议绕过保护。 */
+internal fun safetyChecks(status: io.github.lswlc33.maibms.data.BmsStatus): List<String> {
+    if (!status.hasData) return emptyList()
+    val bitDict = io.github.lswlc33.maibms.protocol.BitDict
+    val mos = io.github.lswlc33.maibms.protocol.MosStateDict
+    val reasons = status.protectPairs.mapNotNull { bitDict.protectNames[it.first] } +
+        status.alarmPairs.mapNotNull { bitDict.warnNames[it.first] } +
+        listOfNotNull(mos.chargeReason(status.chMosCode), mos.dischargeReason(status.disMosCode))
+    return buildList {
+        if (reasons.any { "过压" in it || "欠压" in it || "低压" in it || "压差" in it })
+            add("查看总压、最高/最低单体和压差，核对电池规格及充电器输出；不要提高阈值来掩盖异常。")
+        if (reasons.any { "高温" in it || "过温" in it || "低温" in it })
+            add("暂停相关充放电，查看电池和功率管温度；等温度恢复到设备允许范围再检查。")
+        if (reasons.any { "过流" in it || "短路" in it || "电流异常" in it })
+            add("停止相关充放电，检查外部负载、充电器和线缆；不要反复尝试开启开关。")
+        if (reasons.any { "异常" in it || "失败" in it || "掉串" in it || "失联" in it || "粘连" in it })
+            add("保存当前状态和历史事件，断电后由具备资质的人员检查连接及设备；不要带电拆接采样线。")
+        if (reasons.isEmpty()) add("MOS 关闭可能是手动关闭或设备正常等待，先看运行状态和历史事件，不要仅凭开关关闭判断故障。")
+        add("保护持续、设备发热或电池异常时停止使用并联系专业人员；软件建议不能代替现场检查。")
     }
 }
 
@@ -422,28 +471,25 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
 fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) {
     val status by MockBms.status.collectAsState()
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+            Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp))
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
-            Row {
-                Text("告警详情", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-                Spacer(Modifier.weight(1f))
-                Text("实时帧偏移 4~11 保护 / 12~19 告警", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text("告警与保护详情", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             Spacer(Modifier.height(8.dp))
             // 加了「运行状态」段后内容会明显变长（状态位常有 3~6 条），这里限高并内部滚动，
             // 否则在小屏 / 大字体档下弹窗底部（含"知道了"按钮）会被推出屏幕
             Column(
-                Modifier.heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+                Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())
             ) {
             if (!status.hasData) {
-                Text("未连接 · 无数据（连接保护板后此处显示位置位详情）",
+                Text("未连接 · 无数据（连接后显示设备报告的告警与保护）",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 10.dp))
             }
             if (status.alarmPairs.isNotEmpty() || (status.hasData && status.alarmList.isNotEmpty())) {
-                Text("告警", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("普通告警（设备预警）", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // 与告警卡同源展示：卡片用 displayAlarmList（含合成的「MOS关」提示），
             // 详情只列真实位（带 bit 号），MOS 关提示按同一条规则补在末尾，两边条数才对得上。
@@ -451,6 +497,8 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
             // 合成提示会说出一件没有依据的事（与"缺数据显示 --"同一条原则）
             val mosHints = if (status.hasData) io.github.lswlc33.maibms.protocol.BitDict.mosClosedHints(
                 status.chMos == "开启", status.disMos == "开启") else emptyList()
+            if (status.hasData && status.alarmPairs.isEmpty()) Text("无普通告警；MOS 关闭是开关状态，不等同于故障。",
+                fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             status.alarmPairs.forEach { (bit, a) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                     StatusDot(BmsColors.WarnAmber)
@@ -468,7 +516,7 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
             if (status.protectPairs.isNotEmpty()) {
-                Text("保护", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Text("保护动作（设备已限制运行）", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = if (status.alarmPairs.isNotEmpty()) 6.dp else 0.dp))
             }
             status.protectPairs.forEach { (bit, p) ->
@@ -481,7 +529,7 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
             }
             if (status.hasData && status.alarmPairs.isEmpty() && status.protectPairs.isEmpty()) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
                 StatusDot(BmsColors.OffGray)
-                Text("其余位正常", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
+                Text("无保护动作", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f).padding(start = 9.dp))
                 Text("u64", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             // ---- 运行状态：以前整段看不到的部分 ----
@@ -524,15 +572,20 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
-            }
-            Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.End) {
-                // 从「这里为什么亮」直接跳到设备里存的历史记录（0x13），不用自己找入口
-                if (onOpenLog != null) {
-                    TextButton(onClick = onOpenLog) { Text("查看历史事件", color = MaterialTheme.colorScheme.primary) }
-                    Spacer(Modifier.width(4.dp))
+            if (status.hasData) {
+                Text("安全排查", fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
+                safetyChecks(status).forEach { tip ->
+                    Text("• $tip", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 5.dp))
                 }
+            }
+            }
+            Column(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalAlignment = Alignment.End) {
+                // 从「这里为什么亮」直接跳到设备里存的历史记录（0x13），不用自己找入口
+                if (onOpenLog != null) TextButton(onClick = onOpenLog) { Text("查看历史事件") }
                 Button(onClick = onDismiss) { Text("知道了") }
             }
+        }
         }
     }
 }

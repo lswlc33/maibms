@@ -68,7 +68,15 @@ fun startDataLayer() {
             AppForeground.setActive(!isDocumentHidden())
             BmsLog.d("WEB", "页面可见性 → ${if (isDocumentHidden()) "后台" else "前台"}")
         })
-        window.addEventListener("pagehide", { transport.shutdown() })
+        window.addEventListener("pagehide", { event ->
+            AppForeground.setActive(false)
+            if (event.asDynamic().persisted == true) transport.suspendForPageCache()
+            else transport.shutdown()
+        })
+        window.addEventListener("pageshow", { event ->
+            AppForeground.setActive(!isDocumentHidden())
+            if (event.asDynamic().persisted == true) transport.resumeFromPageCache()
+        })
     }
 
     // 5) 数据管线：恢复记忆设备、装配收集器；**不会自动连**——

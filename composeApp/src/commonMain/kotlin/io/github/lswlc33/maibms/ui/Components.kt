@@ -13,6 +13,19 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.triStateToggleable
+import androidx.compose.ui.state.ToggleableState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.CircleShape
@@ -136,8 +149,8 @@ fun SettingRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = verticalPadding * 2 + 20.dp)
-            .clickable(enabled = onClick != null) { onClick?.invoke() }
+            .heightIn(min = if (onClick != null) 48.dp else verticalPadding * 2 + 20.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(vertical = verticalPadding)
     ) {
         if (icon != null) {
@@ -165,31 +178,82 @@ fun SettingRow(
 /**
  * 紧凑开关：M3 `Switch` 控件自身高 32dp，套进列表行后比纯文字行高出一整圈
  * （「开关控制」比「校准与维护」明显高一截就是它撑的）。
- * 自绘 34x20dp 轨道、16dp 滑块；外圈横向留给触摸（44dp 宽），纵向靠调用方给整行挂 onClick。
+ * 自绘 34x20dp 轨道、16dp 滑块；外圈 48x48dp 热区，自带开关角色/状态和禁用语义。
  */
 @Composable
-fun AppSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
+fun AppSwitch(checked: Boolean, onChange: (Boolean) -> Unit) =
+    AppSwitch(checked = checked, enabled = true, label = null, onChange = onChange)
+
+@Composable
+fun AppSwitch(checked: Boolean, enabled: Boolean = true, label: String? = null, onChange: (Boolean) -> Unit) {
+    Box(
+        Modifier.size(48.dp)
+            .toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+            .semantics {
+                label?.let { contentDescription = it }
+                stateDescription = if (checked) "开启" else "关闭"
+            },
+        contentAlignment = Alignment.Center,
+    ) { SwitchTrack(checked, enabled) }
+}
+
+/** 只有父行有开关语义/动作，避免读屏重复播报两个开关。 */
+@Composable
+fun SwitchSettingRow(title: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) =
+    SwitchSettingRow(title, checked, enabled, unknown = false, onChange = onChange)
+
+/** 未收到数据不是 OFF：旁文字与读屏状态均为未知，且不能切换。 */
+@Composable
+fun SwitchSettingRow(
+    title: String, checked: Boolean, enabled: Boolean = true,
+    unknown: Boolean, onChange: (Boolean) -> Unit,
+) {
+    val actionable = enabled && !unknown
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+            .triStateToggleable(state = switchState(checked, unknown), enabled = actionable, role = Role.Switch,
+                onClick = { onChange(!checked) })
+            .semantics(mergeDescendants = true) { stateDescription = switchStateText(checked, unknown) },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+            color = if (actionable) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f))
+        // 旁文字由父层统一播报，不制造第二份状态语义。
+        if (unknown) Text("未知", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clearAndSetSemantics {})
+        Box(Modifier.size(48.dp).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+            SwitchTrack(checked && !unknown, actionable)
+        }
+    }
+}
+
+internal fun switchState(checked: Boolean, unknown: Boolean): ToggleableState = when {
+    unknown -> ToggleableState.Indeterminate
+    checked -> ToggleableState.On
+    else -> ToggleableState.Off
+}
+
+internal fun switchStateText(checked: Boolean, unknown: Boolean): String = when {
+    unknown -> "未知"
+    checked -> "开启"
+    else -> "关闭"
+}
+
+@Composable
+private fun SwitchTrack(checked: Boolean, enabled: Boolean) {
     val onColor = MaterialTheme.colorScheme.primary
     val offColor = MaterialTheme.colorScheme.surfaceVariant
     val thumbOn = MaterialTheme.colorScheme.onPrimary
     val thumbOff = MaterialTheme.colorScheme.onSurfaceVariant
-    val t by androidx.compose.animation.core.animateFloatAsState(
-        targetValue = if (checked) 1f else 0f,
-        label = "appSwitch",
-    )
+    val t by animateFloatAsState(targetValue = if (checked) 1f else 0f, label = "appSwitch")
     Box(
-        Modifier.width(44.dp).height(20.dp).clip(RoundedCornerShape(99.dp)).clickable { onChange(!checked) },
-        contentAlignment = Alignment.Center,
+        Modifier.width(34.dp).height(20.dp).clip(RoundedCornerShape(99.dp))
+            .graphicsLayer { alpha = if (enabled) 1f else .5f }
+            .background(androidx.compose.ui.graphics.lerp(offColor, onColor, t))
     ) {
-        Box(
-            Modifier.width(34.dp).height(20.dp).clip(RoundedCornerShape(99.dp))
-                .background(androidx.compose.ui.graphics.lerp(offColor, onColor, t))
-        ) {
-            Box(
-                Modifier.offset(x = 2.dp + 14.dp * t, y = 2.dp).size(16.dp).clip(CircleShape)
-                    .background(androidx.compose.ui.graphics.lerp(thumbOff, thumbOn, t))
-            )
-        }
+        Box(Modifier.offset(x = 2.dp + 14.dp * t, y = 2.dp).size(16.dp).clip(CircleShape)
+            .background(androidx.compose.ui.graphics.lerp(thumbOff, thumbOn, t)))
     }
 }
 
@@ -289,7 +353,7 @@ fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAc
         if (action != null) {
             Text(action, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = fg,
                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                modifier = Modifier.padding(start = 8.dp).clickable {
+                modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp).wrapContentHeight().clickable {
                     if (onAction != null) onAction() else dismissed = true
                     // 「了解/知道了」类动作（无自定义回调）且调用方给了 rememberKey：落盘，不再弹
                     if (onAction == null && dismissedKey != null) AppStore.put(dismissedKey, "1")
@@ -298,8 +362,62 @@ fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAc
     }
 }
 
+/** 以字体缩放后的内容宽度确定列数，保留正常档紧凑布局。 */
+internal fun cardColumnCount(widthDp: Float, fontScale: Float, minWidthDp: Float, maxColumns: Int): Int {
+    if (!widthDp.isFinite() || !fontScale.isFinite() || !minWidthDp.isFinite() || minWidthDp <= 0f) return 1
+    return (widthDp / (minWidthDp * fontScale.coerceAtLeast(1f))).toInt().coerceIn(1, maxColumns.coerceAtLeast(1))
+}
+
+// 标准 720px/2x 屏幕扣除卡内外边距后约 300dp，140dp 可保留双列；大字体仍减列。
+internal const val DASHBOARD_CARD_COLUMN_MIN_DP = 140f
+
+internal fun dashboardCardColumns(widthDp: Float, fontScale: Float): Int =
+    cardColumnCount(widthDp, fontScale, DASHBOARD_CARD_COLUMN_MIN_DP, 2)
+
+internal fun presentTemperatures(temps: List<Pair<String, Double>>): List<Pair<String, Double>> =
+    temps.filter { it.second.isFinite() && it.second != TEMP_NOT_CONNECTED }
+
+internal fun cellStateLabels(c: CellV): List<String> = buildList {
+    if (c.missing) add("无读数")
+    else {
+        if (c.isMax) add("最高")
+        if (c.isMin) add("最低")
+        if (c.balancing) add("均衡")
+    }
+}
+
+internal fun parsePowerStages(sub: String, positive: List<String>): List<Int>? {
+    val subV = sub.trim().toIntOrNull() ?: return null
+    // 限制输入量程，避免 abs(Int.MIN_VALUE) 溢出，也避免生成数百万根表盘刻度。
+    if (subV == 0 || subV !in -999999..999999 || positive.size != 3) return null
+    val caps = positive.map { it.trim().toIntOrNull() ?: return null }
+    if (caps.any { it !in 1..999999 } || caps.distinct().size != 3) return null
+    return listOf(-kotlin.math.abs(subV)) + caps.sorted()
+}
+
+@Composable
+private fun <T> AdaptiveCardGrid(
+    items: List<T>, minWidth: Dp, maxColumns: Int,
+    spacing: Dp = 5.dp,
+    content: @Composable (T, Modifier) -> Unit,
+) {
+    val fontScale = LocalDensity.current.fontScale
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val columns = cardColumnCount(maxWidth.value, fontScale, minWidth.value, maxColumns)
+        Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
+            items.chunked(columns).forEach { row ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
+                    row.forEach { content(it, Modifier.weight(1f)) }
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
 /* ---------- 卡1：电池大卡（背景即电量） ---------- */
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun BatteryCard(
     status: BmsStatus,
@@ -357,26 +475,30 @@ fun BatteryCard(
         // 电量填充（左=有电，右=空电）：父级 clip 已把右缘裁直，与截图一致
         Box(Modifier.matchParentSize()) {
             Box(
-                Modifier.fillMaxHeight().fillMaxWidth(status.soc / 100f)
+                    Modifier.fillMaxHeight().fillMaxWidth(status.soc.coerceIn(0, 100) / 100f)
                     .background(fill.copy(alpha = fillAlpha))
             )
         }
         // 右缘电池极头已去掉：在扁平进度卡上就是一根莫名其妙的竖条
         // 左侧：电压大标题（小 desc 紧跟其后）→ 设备名 → 循环 · 运行时间（无底衬，常规前景）
-        Row(
-            modifier = Modifier.padding(CardPadding).fillMaxWidth().height(IntrinsicSize.Min),
-            verticalAlignment = Alignment.CenterVertically
+        BoxWithConstraints(Modifier.fillMaxWidth().padding(CardPadding)) {
+        val compact = dashboardCardColumns(maxWidth.value, LocalDensity.current.fontScale) == 1
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            maxItemsInEachRow = if (compact) 1 else 2,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Column(if (compact) Modifier.fillMaxWidth() else Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         // 小数位跟家族能力位走（陆行官方只显示 1 位，末位测量噪声不再抖）
                         if (status.hasData) "%.${caps.voltageDecimals}f".fmt(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false,
                     )
                     Text(
-                        " V · 当前电压",
+                        " V",
                         fontSize = 10.sp, fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = .72f),
                         modifier = Modifier.padding(start = 3.dp, bottom = 5.dp),
@@ -403,8 +525,8 @@ fun BatteryCard(
                 )
             }
             Column(
-                Modifier.fillMaxHeight(),
-                verticalArrangement = Arrangement.SpaceBetween,
+                Modifier.then(if (compact) Modifier.fillMaxWidth() else Modifier),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
                 horizontalAlignment = Alignment.End
             ) {
                 if (showPerm && caps.permission) Row(
@@ -447,11 +569,14 @@ fun BatteryCard(
                         else -> "未连接"
                     }
                     val pct = socText ?: (if (everConnected && status.hasData) status.soc.toString() + "%" else "--")
-                    Text(conn + " · " + pct,
-                        fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface)
+                    Row {
+                        Text(conn, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+                        Text(" · $pct", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
+                            fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, softWrap = false)
+                    }
                 }
             }
+        }
         }
     }
 }
@@ -553,38 +678,29 @@ fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
                 Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".fmt(status.totalCapAh) + " Ah" else "--"),
             ),
         )
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            rows.forEach { cells ->
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    cells.forEach { (dot, label, value) ->
-                        SRow(dot, label, value, Modifier.weight(1f))
-                    }
-                }
-            }
+        AdaptiveCardGrid(rows.flatten(), minWidth = DASHBOARD_CARD_COLUMN_MIN_DP.dp, maxColumns = if (caps.mos || caps.balance) 2 else 1, spacing = 4.dp) { cell, mod ->
+            SRow(cell.first, cell.second, cell.third, mod)
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SRow(dot: Color, label: String, value: String, modifier: Modifier = Modifier) {
-    // 标签与读数**各占一半**并各自贴边（读数右对齐）：此前读数按内容宽度排，
-    // 值一长（「关闭·均衡线掉串」这类带原因的 MOS 读数、或缩放到大档时）就把标签挤没；
-    // 等分后短值外观与原来完全一致，长值在右半边自行省略，标签不再被挤掉。
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
-        StatusDot(dot)
-        Spacer(Modifier.width(6.dp))
-        Text(
-            label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Text(
-            value, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            textAlign = androidx.compose.ui.text.style.TextAlign.End,
-            modifier = Modifier.weight(1f),
-        )
+    // 常规值与标签同行；长原因或大字体自然换到下一行，不省略实际读数。
+    FlowRow(
+        modifier,
+        maxItemsInEachRow = if (LocalDensity.current.fontScale > 1.3f) 1 else 2,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 4.dp)) {
+            StatusDot(dot)
+            Spacer(Modifier.width(6.dp))
+            Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Text(value, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -658,7 +774,8 @@ fun MetricGridCard(
             .background(MaterialTheme.colorScheme.surface)   // 底色：进度条未覆盖时的轨道区
             .then(cardClickable)
     ) {
-        Box(Modifier.fillMaxWidth()) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val roomy = cardColumnCount(maxWidth.value, LocalDensity.current.fontScale, 190f, 2) == 2
             if (bgOn) PowerGaugeBackground(powerW, stages, hasData, Modifier.matchParentSize())
             // 关闭态提示点：卡片被双击关掉后右上角留一个小圆点（再次双击即恢复）
             if (!gaugeOn) Box(
@@ -675,12 +792,8 @@ fun MetricGridCard(
                 ) {
                     val current = metrics.firstOrNull { it.label == "电流" }
                     val power = metrics.firstOrNull { it.label == "功率" }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        CenterMetric(current, labelColor, Modifier.weight(1f))
-                        CenterMetric(power, labelColor, Modifier.weight(1f))
+                    AdaptiveCardGrid(listOf(current, power), minWidth = 142.dp, maxColumns = 2) { metric, mod ->
+                        CenterMetric(metric, labelColor, mod)
                     }
                     // 大读数下方的小灰字：充电/放电剩余（扩展段 86/88，0=设备未报 → "--"）。
                     // 只显示与当前状态相关的一项：充电中（P < -20W，与横屏表盘同一死区）给
@@ -708,7 +821,7 @@ fun MetricGridCard(
                 }
                 // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）；
                 // 顶破末档时左右轻摇表示到顶
-                sticker?.let { res ->
+                sticker?.takeIf { roomy }?.let { res ->
                     Image(
                         painterResource(res),
                         contentDescription = null,
@@ -741,13 +854,9 @@ private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Mod
             Text("--", fontSize = 10.sp, color = labelColor)
             return@Column
         }
-        Text(m.label, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor)
-        Row(verticalAlignment = Alignment.Bottom) {
-            Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-                 color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
-            Text(m.unit, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor,
-                 modifier = Modifier.padding(start = 3.dp, bottom = 3.dp))
-        }
+        Text("${m.label} · ${m.unit}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor)
+        Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
     }
 }
 
@@ -824,15 +933,7 @@ private fun PowerStageDialog(
     var s2 by remember { mutableStateOf(caps0.getOrNull(1)?.toString() ?: "3000") }
     var s3 by remember { mutableStateOf(caps0.getOrNull(2)?.toString() ?: "5000") }
     var error by remember { mutableStateOf<String?>(null) }
-    fun parsed(): List<Int>? {
-        val subV = sub.trim().toIntOrNull() ?: return null
-        if (subV == 0) return null
-        val caps = listOf(s1, s2, s3).map { it.trim().toIntOrNull() ?: return null }
-        if (caps.any { it <= 0 }) return null
-        if (caps.distinct().size < 3) return null
-        // 副档位统一存负数；正档排序在这里做（onConfirm 把返回值原样赋给卡面状态）
-        return listOf(-kotlin.math.abs(subV)) + caps.sorted()
-    }
+    fun parsed(): List<Int>? = parsePowerStages(sub, listOf(s1, s2, s3))
     val fields = listOf(
         "副档位上限（W，充电/动能回收）" to sub,
         "一档上限（W）" to s1,
@@ -844,10 +945,12 @@ private fun PowerStageDialog(
         { s2 = it; error = null }, { s3 = it; error = null },
     )
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        BoxWithConstraints(Modifier.fillMaxWidth().imePadding()) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(22.dp))
+            Modifier.fillMaxWidth().heightIn(max = maxHeight).clip(RoundedCornerShape(22.dp))
                 .background(MaterialTheme.colorScheme.surface).padding(18.dp)
         ) {
+            Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Text("功率阶梯（换挡进度条）", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
             Text("副档位=充电/动能回收共用的量程（如 -1500，填正数也按负值存）；" +
                     "三个放电档填上限，功率升到上限就换下一档，不需要的档位可以把上限设得很高",
@@ -855,8 +958,9 @@ private fun PowerStageDialog(
             fields.forEachIndexed { i, (label, value) ->
                 OutlinedTextField(
                     value = value,
-                    // 副档位框允许前导负号；其余只收数字。6 位上限（999999W）足够覆盖实际量程
-                    onValueChange = { setters[i](it.filter { ch -> ch.isDigit() || (i == 0 && ch == '-') }.take(7)) },
+                    // 不过滤/截断输入，非法数字明确报错，不能静默变成另一档值。
+                    onValueChange = setters[i],
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     label = { Text(label, fontSize = 11.sp) },
                     singleLine = true,
                     textStyle = TextStyle(
@@ -867,14 +971,16 @@ private fun PowerStageDialog(
                 )
             }
             error?.let { Text(it, fontSize = 10.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp)) }
+            }
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) { Text("取消") }
                 TextButton(onClick = {
                     val v = parsed()
-                    if (v == null) error = "四个档位都要填：副档位为非零整数，三个放电档为正整数且互不相同"
+                    if (v == null) error = "四档均需 1~999999W 整数：副档可为负，放电档为正且互不相同"
                     else onConfirm(v)
                 }) { Text("确定", fontWeight = FontWeight.Bold) }
             }
+        }
         }
     }
 }
@@ -927,7 +1033,7 @@ private fun PwCard(
         if (!hasData) {
             Text("未连接 · 无数据", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
         } else if (items.isEmpty()) {
-            Text("无保护动作 ✓", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+            Text(if (title == "保护信息") "无保护动作" else "无普通告警", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
         } else items.take(3).forEach {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 StatusDot(dot, 5.dp); Spacer(Modifier.width(5.dp))
@@ -947,14 +1053,12 @@ private fun PwCard(
 internal const val TEMP_NOT_CONNECTED = -40.0
 
 /**
- * 温度卡。未接的 -40 路不显示（通常是 T1~T4 没装探头），按 T 剩余路数收排：
- * 缺 0/1 个：左列 MOS/均衡 两行 + 右侧 T 两行两列（窄屏 360dp 实测一字排开会挤成「T122.0」）；
- * 缺 2 个：四块收成 2×2，MOS/均衡 上排、两路 T 下排；缺 3 个：一行 3 个；缺 4 个：一行 2 个。
+ * 温度卡：过滤协议未接哨兵，保留所有其他有效通道；按宽度/字体缩放减列。
  */
 @Composable
 fun TempCard(temps: List<Pair<String, Double>>, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
-        val present = temps.filter { it.second != TEMP_NOT_CONNECTED }
+        val present = presentTemperatures(temps)
         SectionHeader("温度", tail = if (present.isEmpty()) "--" else present.size.toString() + " 路")
         // 整帧没有任何温度、或所有通道都是 -40（未接）时，都走空态；
         // 不能只看 temps.isEmpty()，否则会留下一张「0 路」的空卡。
@@ -963,53 +1067,23 @@ fun TempCard(temps: List<Pair<String, Double>>, modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(vertical = 2.dp))
             return@SectionCard
         }
-        val mosEq = present.filter { it.first == "MOS" || it.first == "均衡" }
-        val sensors = present.filter { it.first.startsWith("T") }
-        when (sensors.size) {
-            // 缺 3/4 个：一行 3 个 / 一行 2 个
-            0, 1 -> Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                (mosEq + sensors).forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
-            }
-            // 缺 2 个：MOS/均衡 + 两路 T 正好收成 2×2
-            2 -> Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                (mosEq + sensors).chunked(2).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                        row.forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
-                        if (row.size == 1) Spacer(Modifier.weight(1f))
-                    }
-                }
-            }
-            // 缺 0/1 个：常规布局——左列 MOS/均衡，右侧 T 两行两列
-            else -> Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                if (mosEq.isNotEmpty()) {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(0.9f)) {
-                        mosEq.forEach { (k, v) -> TempBox(k, v) }
-                    }
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(2.1f)) {
-                    sensors.chunked(2).forEach { pair ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                            pair.forEach { (k, v) -> TempBox(k, v, Modifier.weight(1f)) }
-                            // 奇数个时补占位，避免最后一个块被拉宽
-                            if (pair.size == 1) Spacer(Modifier.weight(1f))
-                        }
-                    }
-                }
-            }
+        // 所有有效通道都保留，包括电量计报告的「电池」「环境」等未分类名称。
+        AdaptiveCardGrid(present, minWidth = 112.dp, maxColumns = 3, spacing = 6.dp) { temp, mod ->
+            TempBox(temp.first, temp.second, mod)
         }
     }
 }
 
 @Composable
 private fun TempBox(label: String, value: Double?, modifier: Modifier = Modifier) {
-    Row(
+    Column(
         modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 9.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+            .background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 9.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(label, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(if (value == null) "--" else "%.1f°".fmt(value), fontSize = 10.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+        Text(if (value == null) "--" else "%.1f°".fmt(value), fontSize = 10.5.sp, fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
     }
 }
 
@@ -1020,45 +1094,27 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
                  avgCell: String = "--", deltaCell: String = "--",
                  maxCell: String = "--", minCell: String = "--") {
     SectionCard(modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 4.dp)) {
+        Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
             Text(if (cells.isEmpty()) "单体电压" else "单体电压 × ${cells.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.weight(1f))
-            if (cells.isNotEmpty()) {
-                // 正经字体 + 语义标注：平均/压差紧跟标题（图例说明见卡片底部的小字）
-                Text(
-                    "平均：${avgCell}V  压差：${deltaCell}V",
-                    fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            if (cells.isNotEmpty()) Text("平均：${avgCell}V  压差：${deltaCell}V",
+                fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (cells.isEmpty()) {
             // 电量计（蓝宝）没有逐串，但有最高/最低/压差：这里退化为一行汇总，而不是空卡
             val hasMinMax = maxCell != "--" || minCell != "--"
             if (hasMinMax) {
-                Row(horizontalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.fillMaxWidth()) {
-                    MiniStat("最高", maxCell, Modifier.weight(1f))
-                    MiniStat("最低", minCell, Modifier.weight(1f))
-                    MiniStat("平均", avgCell, Modifier.weight(1f))
-                    MiniStat("压差", deltaCell, Modifier.weight(1f))
-                }
+                AdaptiveCardGrid(listOf("最高" to maxCell, "最低" to minCell, "平均" to avgCell, "压差" to deltaCell),
+                    minWidth = 72.dp, maxColumns = 4) { stat, mod -> MiniStat(stat.first, stat.second, mod) }
             } else {
                 Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 2.dp))
             }
             return@SectionCard
         }
-        // 5 列：20 串正好 4 行（4 列要 5 行，仪表盘上白白多一排）。窄屏 360dp 实测每格仍容得下 4.263
-        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            cells.chunked(5).forEach { row ->
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                    row.forEach { c -> CellBox(c, Modifier.weight(1f)) }
-                    repeat(5 - row.size) { Spacer(Modifier.weight(1f)) }
-                }
-            }
-        }
-        // 颜色图例移到网格下方小字（原先挤在标题行，换成了平均/压差）
+        // 正常档最多五列；窄窗/特大字体按有效宽度减列，读数不能逐字竖排。
+        AdaptiveCardGrid(cells, minWidth = 64.dp, maxColumns = 5, spacing = 4.dp) { cell, mod -> CellBox(cell, mod) }
         Text(
-            "黄=最高 蓝=最低 ●=均衡",
+            "最高/最低以文字标注 · 均衡显示「均」",
             fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 3.dp),
         )
@@ -1093,16 +1149,20 @@ private fun CellBox(c: CellV, modifier: Modifier = Modifier) {
         modifier
             .clip(RoundedCornerShape(10.dp))
             .background(bg)
-            .padding(vertical = 3.dp),
+            .padding(vertical = 3.dp)
+            .clearAndSetSemantics {
+                contentDescription = "第 ${c.index} 节，" + (if (c.missing) "无读数" else "%.3f 伏".fmt(c.volt))
+                stateDescription = cellStateLabels(c).joinToString("，")
+            },
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("${c.index}", fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
-            Text(if (c.missing) "--" else "%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = valueColor)
+            Text("${c.index}" + (if (!c.missing && c.balancing) " 均" else ""), fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            Text(if (c.missing) "--" else "%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace, color = valueColor, maxLines = 1, softWrap = false)
+            val limits = cellStateLabels(c).filter { it == "最高" || it == "最低" }
+            if (limits.isNotEmpty()) Text(limits.joinToString("/"), fontSize = 8.sp, color = valueColor)
         }
-        if (c.balancing) Box(
-            Modifier.align(Alignment.TopEnd).padding(2.5.dp).size(4.5.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary)
-        )
     }
 }
 

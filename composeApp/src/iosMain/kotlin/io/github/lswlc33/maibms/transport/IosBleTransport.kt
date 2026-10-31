@@ -1,6 +1,8 @@
 package io.github.lswlc33.maibms.transport
 
 import io.github.lswlc33.maibms.data.BmsLog
+import io.github.lswlc33.maibms.data.PlatformLock
+import io.github.lswlc33.maibms.data.withLock
 import io.github.lswlc33.maibms.data.epochMillisNow
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.Frame
@@ -14,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -133,10 +136,7 @@ class IosBleTransport : BmsTransport {
     )
 
     // ---- 连接尝试的共享状态 ----
-    // 下面这些字段被两个线程读写：CoreBluetooth 的 delegate（queue = null → 主队列）与连接循环 /
-    // 探测协程（Dispatchers.Default）。Android 那边回调与循环同属一套线程池、JVM 的内存模型也更宽容，
-    // 同样的写法没出过事；iOS 上必须显式 @Volatile，否则会出现「探测应答看不到」「掉线回调看不到
-    // dropSignal」这类只此一家的错乱。
+    // 通信字段由 delegate 与主队列协程使用；公共入口也用 attemptLock 串行核查所有权。
 
     @Volatile private var candidates: List<Candidate> = emptyList()
     @Volatile private var candidateIndex = 0
@@ -144,19 +144,17 @@ class IosBleTransport : BmsTransport {
     @Volatile private var probeSignal: CompletableDeferred<Boolean>? = null
 
     /**
-     * 本次连接的「代次」：每开始一次尝试、每次收尾（[closePeripheral]）都 +1。
-     *
-     * 为什么不用对象身份判断「这是不是上一轮的迟到者」：CoreBluetooth 在 ObjC 层对同一台设备
-     * 只有一个 CBPeripheral 实例，但每次回调跨进 Kotlin 都可能包一层新包装——`p !== peripheral`
-     * 这种判断在**同一次连接内都可能为真**，拿它放行/拦人曾把所有通往就绪的路径静默掐断
-     * （见 [afterSubscribed] 注释）。代次比较不依赖对象身份，是这里唯一可靠的「认人」方式。
+     * 捕获到异步 probe/settle 中的代次；每次建链和收尾递增。
+     * 平台 delegate 只携带 identifier，不携带代次：同 identifier 重连必须另等终止屏障。
+     * 不使用 CBPeripheral 的 K/N wrapper 身份判定同一台设备。
      */
     @Volatile private var attemptGen = 0
 
     /** 下次连接优先尝试的通道（手动切换或按设备记忆；仅本进程有效） */
     @Volatile private var preferred: BleChannel? = null
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    // 与 CoreBluetooth 的主队列串行：终止回调返回/队列旧事件排空后才启动下一轮。
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     /** 用户想要连接的目标（iOS 上是外设标识串）；null = 已主动断开 */
     @Volatile private var desiredAddress: String? = null
@@ -170,12 +168,17 @@ class IosBleTransport : BmsTransport {
     /** 单次写上限（字节），由 maximumWriteValueLengthForType 更新 */
     @Volatile private var maxWriteLen: Int = 20
 
-    /** 本次尝试的「就绪」信号：true=服务/订阅就绪，false=就绪前断开 */
-    @Volatile private var readySignal: CompletableDeferred<Boolean>? = null
-    /** 服务发现完成信号：让「建链 + 发现服务」与「通道探测」两段超时分开算 */
-    @Volatile private var servicesSignal: CompletableDeferred<Unit>? = null
-    /** 已就绪后的断开信号（**必须在可能就绪之前就挂好**，见 connectionLoop） */
-    @Volatile private var dropSignal: CompletableDeferred<Unit>? = null
+    /** delegate 与公共入口的所有权判断/状态发布都在同锁内。 */
+    private val attemptLock = PlatformLock()
+    private val attempts = ConnectionAttempts()
+    private val terminations = ConnectionTerminationBarrier()
+    private val managerEpochs = ConnectionManagerEpochs(terminations)
+
+    private fun accepts(p: CBPeripheral): Boolean =
+        managerEpochs.accepts(managerEpochs.current) &&
+            attempts.acceptsCallback(p.identifier.UUIDString) &&
+            peripheral?.identifier?.UUIDString.equals(p.identifier.UUIDString, ignoreCase = true) &&
+            terminations.waiting(p.identifier.UUIDString, managerEpochs.current) == null
 
     // ---- 扫描（对外列设备 / 对内找目标）----
     @Volatile private var scanHandler: ((ScanDevice) -> Unit)? = null
@@ -196,14 +199,32 @@ class IosBleTransport : BmsTransport {
 
     private fun hex(b: ByteArray) = b.joinToString(" ") { "%02X".fmt(it) }
 
-    private val delegate = object : NSObject(), CBCentralManagerDelegateProtocol, CBPeripheralDelegateProtocol {
+    private fun createDelegate(epoch: Int): CBCentralManagerDelegateProtocol = object : NSObject(), CBCentralManagerDelegateProtocol, CBPeripheralDelegateProtocol {
+        private fun acceptsEpoch(): Boolean = managerEpochs.accepts(epoch)
 
         // ---------------- 中心设备状态 ----------------
 
-        override fun centralManagerDidUpdateState(central: CBCentralManager) {
-            logI("蓝牙状态：${stateText(central.state)}")
-            if (central.state != CBManagerStatePoweredOn) {
-                _connectHint.value = stateHint(central.state)
+        override fun centralManagerDidUpdateState(central: CBCentralManager): Unit = withLock(attemptLock) {
+            // State is the only entry retained on an invalidated epoch, solely to observe recovery.
+            if (!managerEpochs.isCurrent(epoch)) return@withLock
+            val state = central.state
+            logI("蓝牙状态：${stateText(state)}")
+            if (state == CBManagerStatePoweredOn) {
+                val nextEpoch = managerEpochs.poweredOn(epoch)
+                if (nextEpoch != null) {
+                    runCatching { central.stopScan() }
+                    central.delegate = null
+                    nativeManager = createManager(nextEpoch)
+                    logI("蓝牙恢复，切换 manager epoch $epoch → $nextEpoch")
+                }
+            } else {
+                _connectHint.value = stateHint(state)
+                if (managerEpochs.unavailable(epoch)) {
+                    // Manager loss is not a peripheral cancellation: no terminal callback is promised.
+                    closePeripheral(terminal = true)
+                    pendingPeripheral = null
+                    runCatching { central.stopScan() }
+                }
             }
         }
 
@@ -214,18 +235,19 @@ class IosBleTransport : BmsTransport {
             didDiscoverPeripheral: CBPeripheral,
             advertisementData: Map<Any?, *>,
             RSSI: NSNumber,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch()) return@withLock
             val name = didDiscoverPeripheral.name
                 ?: (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
-                ?: return
+                ?: return@withLock
             // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
-            if (!DeviceFamily.isTarget(name)) return
-            val family = DeviceFamily.matchName(name) ?: return
+            if (!DeviceFamily.isTarget(name)) return@withLock
+            val family = DeviceFamily.matchName(name) ?: return@withLock
             val id = didDiscoverPeripheral.identifier.UUIDString
             logD("scan 发现 $name $id rssi=${RSSI.intValue} → ${family.label}")
             scanHandler?.invoke(ScanDevice(name, id, RSSI.intValue, family))
 
-            if (pendingPeripheral != null) return
+            if (pendingPeripheral != null) return@withLock
             val want = desiredAddress
             if (acceptsPeripheralId(want, id)) {
                 logD("扫描命中目标设备 $name")
@@ -239,7 +261,8 @@ class IosBleTransport : BmsTransport {
 
         // ---------------- 连接 ----------------
 
-        override fun centralManager(central: CBCentralManager, didConnectPeripheral: CBPeripheral) {
+        override fun centralManager(central: CBCentralManager, didConnectPeripheral: CBPeripheral): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(didConnectPeripheral)) return@withLock
             logI("已连接 ${didConnectPeripheral.name ?: didConnectPeripheral.identifier.UUIDString}，开始发现服务")
             didConnectPeripheral.delegate = this
             didConnectPeripheral.discoverServices(null)
@@ -250,10 +273,13 @@ class IosBleTransport : BmsTransport {
             central: CBCentralManager,
             didFailToConnectPeripheral: CBPeripheral,
             error: NSError?,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch()) return@withLock
+            // 取消中的旧外设只完成自己的屏障，不允许唤醒/结束另一台的 attempt。
+            if (terminations.complete(didFailToConnectPeripheral.identifier.UUIDString, epoch)) return@withLock
+            if (!accepts(didFailToConnectPeripheral)) return@withLock
             logE("连接失败：${error?.localizedDescription ?: "未知原因"}")
-            servicesSignal?.complete(Unit)
-            readySignal?.complete(false)
+            closePeripheral(terminal = true)
         }
 
         @ObjCSignatureOverride
@@ -261,29 +287,26 @@ class IosBleTransport : BmsTransport {
             central: CBCentralManager,
             didDisconnectPeripheral: CBPeripheral,
             error: NSError?,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch()) return@withLock
+            if (terminations.complete(didDisconnectPeripheral.identifier.UUIDString, epoch)) return@withLock
+            if (!accepts(didDisconnectPeripheral)) return@withLock
             logW("连接断开：${error?.localizedDescription ?: "正常断开"}")
-            if (peripheral === didDisconnectPeripheral) {
-                peripheral = null
-                writeChar = null
-                notifyChar = null
-            }
-            _linkState.value = LinkState.Disconnected
-            servicesSignal?.complete(Unit)
-            readySignal?.complete(false)
-            dropSignal?.complete(Unit)
+            closePeripheral(terminal = true)
         }
 
         // ---------------- 服务 / 特征 ----------------
 
         @ObjCSignatureOverride
-        override fun peripheral(peripheral: CBPeripheral, didDiscoverServices: NSError?) {
-            // 阶段一结束（无论成败）
-            servicesSignal?.complete(Unit)
+        override fun peripheral(peripheral: CBPeripheral, didDiscoverServices: NSError?): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(peripheral)) return@withLock
+            val owner = attempts.current ?: return@withLock
+            // 保留 iOS 的阶段划分与最坏三候选预算。
+            attempts.servicesDiscovered(owner, 0)
             if (didDiscoverServices != null) {
                 logE("发现服务失败：${didDiscoverServices.localizedDescription}")
-                readySignal?.complete(false)
-                return
+                owner.ready.complete(false)
+                return@withLock
             }
             val services = peripheral.services.orEmpty().mapNotNull { it as? CBService }
             // 原始 UUIDString 一并打出来：iOS 对 16 位 UUID 有时给短形态（"FFE0"）、有时给完整 128 位，
@@ -292,8 +315,8 @@ class IosBleTransport : BmsTransport {
             val service = services.firstOrNull { shortUuid(it.UUID.UUIDString) == SERVICE_FFE0 }
             if (service == null) {
                 logE("设备没有 FFE0 服务（不是已知的保护板/电量计？）")
-                readySignal?.complete(false)
-                return
+                owner.ready.complete(false)
+                return@withLock
             }
             peripheral.discoverCharacteristics(null, forService = service)
         }
@@ -303,11 +326,13 @@ class IosBleTransport : BmsTransport {
             peripheral: CBPeripheral,
             didDiscoverCharacteristicsForService: CBService,
             error: NSError?,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(peripheral) || shortUuid(didDiscoverCharacteristicsForService.UUID.UUIDString) != SERVICE_FFE0) return@withLock
+            val owner = attempts.current ?: return@withLock
             if (error != null) {
                 logE("发现特征失败：${error.localizedDescription}")
-                readySignal?.complete(false)
-                return
+                owner.ready.complete(false)
+                return@withLock
             }
             val chars = didDiscoverCharacteristicsForService.characteristics
                 .orEmpty().mapNotNull { it as? CBCharacteristic }
@@ -344,8 +369,8 @@ class IosBleTransport : BmsTransport {
             _availableChannels.value = found.map { it.channel }.ifEmpty { listOf(BleChannel.Default) }
             if (found.isEmpty()) {
                 logE("FFE0 下没有可用的写/通知特征")
-                readySignal?.complete(false)
-                return
+                owner.ready.complete(false)
+                return@withLock
             }
             logI("可用通道：" + found.joinToString { it.channel.id } +
                 if (found.size == 1) "（设备只提供默认通道，无备用通道）" else "")
@@ -362,37 +387,19 @@ class IosBleTransport : BmsTransport {
             peripheral: CBPeripheral,
             didUpdateNotificationStateForCharacteristic: CBCharacteristic,
             error: NSError?,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(peripheral) || !isCurrentNotify(didUpdateNotificationStateForCharacteristic)) return@withLock
+            val c = candidates.getOrNull(candidateIndex) ?: return@withLock
             if (error != null) {
-                val uuid = didUpdateNotificationStateForCharacteristic.UUID.UUIDString
-                // 上一轮的迟到回调也会走这里：iOS 复用同一个 CBPeripheral，若它在这里翻页，
-                // 本轮的候选指针就被带偏了。认不准期望特征时（expected == null）保持原行为
-                val expected = notifyChar?.UUID?.UUIDString
-                if (expected != null && !uuid.equals(expected, ignoreCase = true)) {
-                    logD("订阅失败回调不属于当前候选（${shortUuid(uuid)}），忽略")
-                    return
-                }
-                // 订阅没落地 = 这条通道收不到任何帧：换下一个候选（没有下一个则本轮连接失败）
                 logE("订阅通知失败：${error.localizedDescription}（换下一个候选通道）")
+                probeSignal?.complete(false)
+                probeSignal = null
                 candidateIndex++
                 probeNext(peripheral)
-                return
+                return@withLock
             }
-            val uuid = didUpdateNotificationStateForCharacteristic.UUID.UUIDString
-            if (uuid.equals(notifyChar?.UUID?.UUIDString, ignoreCase = true)) {
-                logD("订阅已落地，开始发探测帧")
-                val c = candidates.getOrNull(candidateIndex)
-                if (c == null) {
-                    // 有订阅确认却没有当前候选：候选表已被收尾清空（本轮已放弃）。
-                    // 原先这里静默 return，看起来和「迟到者被正确丢弃」一模一样，
-                    // 真正的活链路被吞了就绪信号时也查不到任何痕迹
-                    logW("订阅确认到达时候选表为空（本轮已被收尾？），忽略")
-                    return
-                }
-                afterSubscribed(peripheral, c)
-            } else {
-                logD("订阅确认来自非当前候选（${shortUuid(uuid)} ≠ ${notifyChar?.let { shortUuid(it.UUID.UUIDString) }}），忽略")
-            }
+            logD("订阅已落地，开始发探测帧")
+            afterSubscribed(peripheral, c, attemptGen)
         }
 
         @ObjCSignatureOverride
@@ -400,12 +407,13 @@ class IosBleTransport : BmsTransport {
             peripheral: CBPeripheral,
             didUpdateValueForCharacteristic: CBCharacteristic,
             error: NSError?,
-        ) {
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(peripheral) || !isCurrentNotify(didUpdateValueForCharacteristic)) return@withLock
             if (error != null) {
                 logW("收到数据出错：${error.localizedDescription}")
-                return
+                return@withLock
             }
-            val data = didUpdateValueForCharacteristic.value ?: return
+            val data = didUpdateValueForCharacteristic.value ?: return@withLock
             val bytes = data.toByteArray()
             logD("← ${hex(bytes)}")
             noteProbeResponse(bytes)
@@ -416,14 +424,17 @@ class IosBleTransport : BmsTransport {
          * 试下一个候选通道：订阅通知 → 发探测帧等应答。
          * 全部候选都失败就按本轮连接失败处理，交给重连循环退避重试。
          */
-        private fun probeNext(p: CBPeripheral) {
+        private fun probeNext(p: CBPeripheral): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(p)) return@withLock
+            val owner = attempts.current ?: return@withLock
             val c = candidates.getOrNull(candidateIndex)
             if (c == null) {
                 logE("候选通道全部探测失败（共 ${candidates.size} 条）")
                 _activeChannel.value = null
-                readySignal?.complete(false)
-                return
+                owner.ready.complete(false)
+                return@withLock
             }
+            attempts.selectCandidate(owner, c)
             writeChar = c.write
             notifyChar = c.notify
             probeStarted = false
@@ -435,82 +446,57 @@ class IosBleTransport : BmsTransport {
             val gen = attemptGen
             scope.launch {
                 delay(READY_FALLBACK_MS)
-                if (gen != attemptGen) return@launch
-                // 走到这里说明订阅确认确实没回调（回调了的话探测早就开始了）
-                if (!probeStarted && !targetFamily.isMeter) {
-                    logD("订阅确认未回调，按 ${READY_FALLBACK_MS}ms 兜底进入探测")
+                withLock(attemptLock) {
+                    if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c)) return@launch
+                    if (!probeStarted && !targetFamily.isMeter) {
+                        logD("订阅确认未回调，按 ${READY_FALLBACK_MS}ms 兜底进入探测")
+                    }
+                    afterSubscribed(p, c, gen)
                 }
-                afterSubscribed(p, c)
             }
         }
 
-        /**
-         * 订阅落地后的动作：保护板走 ANT 探测；电量计暂无探测帧，直接按“FFE0 + 写/通知就绪”判就绪。
-         *
-         * **不要在这里用 `p !== peripheral` 拦人**——CoreBluetooth 每次回调交给 Kotlin 的
-         * CBPeripheral 包装对象身份不稳定（与 `peripheral` 字段里持有的经常不是同一个实例），
-         * 这个判断恒为真，曾把所有通往就绪的路径全部静默掐断：订阅确认回调来了、
-         * afterSubscribed 进来就被 return，既不置就绪也不翻候选，26 秒探测预算耗尽后本端拆链，
-         * 日志只剩「订阅已落地」+「连接断开：正常断开」，再无下文。所有设备、每次连接都这样。
-         * 身份的甄别一律交给 [attemptGen] 代次（连接循环每轮、closePeripheral 都 +1，
-         * 上一轮的迟到者自然过期），与 [startProbe] 的探测协程同一套机制。
-         */
-        private fun afterSubscribed(p: CBPeripheral, c: Candidate) {
+        /** Wrapper identity is irrelevant; identifier + captured generation/candidate guard async work. */
+        private fun afterSubscribed(p: CBPeripheral, c: Candidate, gen: Int): Unit = withLock(attemptLock) {
+            val owner = attempts.current ?: return@withLock
+            if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c)) return@withLock
             if (targetFamily.isMeter) {
-                // 订阅确认回调与 800ms 兜底都会走到这里，已就绪就不重复置态/刷日志
-                if (_linkState.value == LinkState.Connected) return
-                _activeChannel.value = c.channel
-                logI("电量计通道就绪：${c.channel.id}（家族 ${targetFamily.label}，跳过保护板探测）")
-                _linkState.value = LinkState.Connected
-                readySignal?.complete(true)
+                completeReady(p, owner, c, gen)
             } else {
-                startProbe(p, c)
+                startProbe(p, owner, c, gen)
             }
         }
 
-        /** 发探测帧并等应答；通过就置「就绪」，否则换下一个候选 */
-        private fun startProbe(p: CBPeripheral, c: Candidate) {
-            if (probeStarted) {
-                logD("探测已在进行，跳过重复触发（候选 ${c.channel.id}）")
-                return
-            }
-            // 迟到的兜底（候选已经翻页）不能再探：否则会拿旧候选的写特征去发帧
-            if (candidates.getOrNull(candidateIndex) !== c) {
-                logD("候选已翻页，跳过过期探测（${c.channel.id}）")
-                return
-            }
+        /** 发探测帧并等应答；settle 与等待返回后都检查旧代次/候选。 */
+        private fun startProbe(p: CBPeripheral, owner: ConnectionAttempt, c: Candidate, gen: Int): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c) || probeStarted) return@withLock
             probeStarted = true
-            val gen = attemptGen
             val signal = CompletableDeferred<Boolean>()
             probeSignal = signal
             scope.launch {
-                delay(PROBE_SETTLE_MS)   // 等订阅生效，与官方 200ms 切通道间隔一致
-                if (gen != attemptGen) return@launch   // 本轮已被收尾，别碰新链路
-                runCatching {
-                    p.writeValue(
-                        Frame.readRealtime().toNSData(),
-                        forCharacteristic = c.write,
-                        type = CBCharacteristicWriteWithoutResponse,
-                    )
-                }.onFailure { logW("探测帧写入失败：${it.message}") }
-                val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
-                // 这 8 秒里链路可能已经换代（掉线重连/被放弃）：iOS 的 p 与当前 peripheral 是**同一个
-                // 对象**，下面的退订和翻页会打在活链路上（退订通知 = 应用从此收不到任何帧），
-                // 所以这里必须按代次认人——这是 Android 那句 `g !== gatt` 在 iOS 的等价物
-                if (gen != attemptGen) {
-                    logD("探测协程已过期（第 $gen 轮），丢弃结果：${c.channel.id}")
-                    return@launch
+                delay(PROBE_SETTLE_MS)
+                withLock(attemptLock) {
+                    if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c) || probeSignal !== signal) return@launch
+                    runCatching {
+                        p.writeValue(
+                            Frame.readRealtime().toNSData(),
+                            forCharacteristic = c.write,
+                            type = CBCharacteristicWriteWithoutResponse,
+                        )
+                    }.onFailure { logW("探测帧写入失败：${it.message}") }
                 }
-                probeSignal = null
-                if (ok) {
-                    _activeChannel.value = c.channel
-                    logI("通道就绪：${c.channel.label}（${c.channel.id}）")
-                    completeReady()
-                } else {
-                    logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
-                    runCatching { p.setNotifyValue(false, forCharacteristic = c.notify) }   // 退订这条通道
-                    candidateIndex++
-                    probeNext(p)
+                val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
+                withLock(attemptLock) {
+                    if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c) || probeSignal !== signal) return@launch
+                    probeSignal = null
+                    if (ok) {
+                        completeReady(p, owner, c, gen)
+                    } else {
+                        logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
+                        runCatching { p.setNotifyValue(false, forCharacteristic = c.notify) }
+                        candidateIndex++
+                        probeNext(p)
+                    }
                 }
             }
         }
@@ -523,11 +509,15 @@ class IosBleTransport : BmsTransport {
             ) s.complete(true)
         }
 
-        private fun completeReady() {
-            if (_linkState.value != LinkState.Connected) {
+        private fun completeReady(p: CBPeripheral, owner: ConnectionAttempt, c: Candidate, gen: Int): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c)) return@withLock
+            attempts.publishReady(owner) {
+                _activeChannel.value = c.channel
                 _linkState.value = LinkState.Connected
+                _connectHint.value = null
+                logI(if (targetFamily.isMeter) "电量计通道就绪：${c.channel.id}（跳过保护板探测）"
+                     else "通道就绪：${c.channel.label}（${c.channel.id}）")
             }
-            readySignal?.complete(true)
         }
     }
 
@@ -560,13 +550,17 @@ class IosBleTransport : BmsTransport {
      * 于是第一次扫描必然报「设备蓝牙未打开或未授权」且扫不到任何设备。
      */
     private suspend fun awaitState(timeoutMs: Long = STATE_WAIT_MS): CBManagerState {
-        val c = central
         var waited = 0L
-        while (c.state == CBManagerStateUnknown && waited < timeoutMs) {
+        while (true) {
+            // Recovery may replace the manager during delay: never return an old central's state.
+            val (state, usable) = withLock(attemptLock) {
+                central.state to managerEpochs.accepts(managerEpochs.current)
+            }
+            if (state != CBManagerStateUnknown && (state != CBManagerStatePoweredOn || usable)) return state
+            if (waited >= timeoutMs) return CBManagerStateUnknown
             delay(50)
             waited += 50
         }
-        return c.state
     }
 
     /** "0000FFE0-0000-1000-8000-00805F9B34FB" → "FFE0"；已经是短形态就原样大写 */
@@ -579,6 +573,13 @@ class IosBleTransport : BmsTransport {
      * 一律归一后再比，别让设备的报法决定我们认不认得它。
      */
     private fun shortId(c: CBCharacteristic): String = shortUuid(c.UUID.UUIDString)
+
+    /** 不比较 K/N wrapper 身份；只接受当前候选的服务 + 通知特征。 */
+    private fun isCurrentNotify(c: CBCharacteristic): Boolean {
+        val expected = notifyChar ?: return false
+        return shortId(c) == shortId(expected) &&
+            c.service?.UUID?.UUIDString?.let { shortUuid(it) } == SERVICE_FFE0
+    }
 
     /** 写特征要可写（与 Android 的 isWritable 对齐）；`.toInt()` 是躲开 NS_OPTIONS 映射成 UInt/ULong 的差异 */
     private fun isWritable(c: CBCharacteristic): Boolean {
@@ -600,23 +601,37 @@ class IosBleTransport : BmsTransport {
         if ((p and CBCharacteristicPropertyIndicate).toInt() != 0) add("指示")
     }.joinToString("/").ifEmpty { "无" }
 
-    private val central: CBCentralManager by lazy {
-        CBCentralManager(delegate = delegate, queue = null)
+    /** Strongly retain the delegate with exactly the manager epoch that created it. */
+    private inner class NativeManager(val epoch: Int) {
+        val delegate = createDelegate(epoch)
+        val central = CBCentralManager(delegate = delegate, queue = null)
     }
+
+    private var nativeManager: NativeManager? = null
+
+    private fun createManager(epoch: Int): NativeManager = NativeManager(epoch)
+
+    private val central: CBCentralManager
+        get() = withLock(attemptLock) {
+            (nativeManager ?: createManager(managerEpochs.current).also { nativeManager = it }).central
+        }
 
     // ---------------- 扫描（对外） ----------------
 
     override suspend fun scan(onFound: (ScanDevice) -> Unit) {
-        val c = central
-        // 先等状态就位（首次创建管理器时 state 还是 unknown，见 awaitState）
+        // 先等状态就位（首次创建或 epoch 重建时 state 还是 unknown）。
         val state = awaitState()
         if (state != CBManagerStatePoweredOn) {
             throw IllegalStateException(stateHint(state))
         }
-        runCatching { c.stopScan() }
-        scanHandler = onFound
-        logI("开始扫描（保护板 ANT + 电量计 蓝宝/陆行）")
-        c.scanForPeripheralsWithServices(null, null)
+        withLock(attemptLock) {
+            check(managerEpochs.accepts(managerEpochs.current))
+            val c = central
+            runCatching { c.stopScan() }
+            scanHandler = onFound
+            logI("开始扫描（保护板 ANT + 电量计 蓝宝/陆行）")
+            c.scanForPeripheralsWithServices(null, null)
+        }
     }
 
     override fun stopScan() {
@@ -627,6 +642,8 @@ class IosBleTransport : BmsTransport {
     // ---------------- 连接 ----------------
 
     override suspend fun connect(address: String?) {
+        loopJob?.cancelAndJoin()
+        closePeripheral()
         manualStop = false
         desiredAddress = address
         _currentFamily.value = targetFamily
@@ -640,14 +657,12 @@ class IosBleTransport : BmsTransport {
         var attempt = 0
         while (!manualStop && currentCoroutineContext().isActive) {
             attempt++
-            // 代次 +1：上一轮遗留的探测协程 / 订阅兜底就此作废（它们手里的 CBPeripheral 与本轮
-            // 是同一个对象，只比对象身份分不出新旧，见 attemptGen 的注释）
-            attemptGen++
             if (attempt > 1) _connectHint.value = "第 $attempt 次尝试…"
-            logI("连接尝试 #$attempt（代次 $attemptGen）")
+            logI("连接尝试 #$attempt")
             _linkState.value = LinkState.Connecting
 
             // 1) 先扫到设备（CoreBluetooth 必须先持有 CBPeripheral 才能连接）
+            val targetEpoch = withLock(attemptLock) { managerEpochs.current }
             val target = runCatching { findPeripheral(address) }.getOrNull()
             if (target == null) {
                 _connectHint.value = if (address.isNullOrBlank()) "没有扫描到目标设备"
@@ -658,50 +673,52 @@ class IosBleTransport : BmsTransport {
                 continue
             }
 
-            // 2) 建链 + 等订阅就绪
-            val ready = CompletableDeferred<Boolean>()
-            readySignal = ready
-            val servicesFound = CompletableDeferred<Unit>()
-            servicesSignal = servicesFound
-            // 掉线信号必须在「可能就绪」之前挂好：delegate 在主队列、这里在 Default，
-            // 若等 ready 返回后再赋值，正好落在这个窗口里的掉线会被漏掉（回调落在上一轮的
-            // deferred 上），本轮就永远挂在 dropped.await()——界面停在「已连接」，也不再重连
-            val dropped = CompletableDeferred<Unit>()
-            dropSignal = dropped
-            peripheral = target
-            logI("连接目标 ${target.name ?: "未命名"} ${target.identifier.UUIDString}")
-            central.connectPeripheral(target, null)
-            // 两段超时：① 建链 + 发现服务用连接超时；② 通道探测按**最坏候选数**给预算
-            //（每条候选最多 PROBE_TIMEOUT_MS，与 Android/官方同量级；不能按此刻的候选数算，见 PROBE_BUDGET_MS）
-            val discovered = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { servicesFound.await() } != null
-            val outcome: Boolean? = if (!discovered) null else {
-                withTimeoutOrNull(PROBE_BUDGET_MS) { ready.await() }
+            // 同一 identifier 必须先收到旧连接的终止回调；超时只能继续等，不能重开。
+            val barrier = withLock(attemptLock) { terminations.waiting(target.identifier.UUIDString, targetEpoch) }
+            if (barrier != null && withTimeoutOrNull(CONNECT_TIMEOUT_MS) { barrier.await() } == null) {
+                _connectHint.value = "等待上一轮蓝牙连接结束…"
+                delay(backoffMs(attempt))
+                continue
             }
-            if (outcome == true) {
-                _connectHint.value = null
-                _linkState.value = LinkState.Connected
-                logI("链路就绪（通道 ${_activeChannel.value?.id ?: "?"}，单次写上限 $maxWriteLen 字节）")
-                val connectedAt = epochMillisNow()
-                runCatching { dropped.await() }
-                val livedMs = epochMillisNow() - connectedAt
-                // 存活时长是判断「连上就断」的关键：~7s 说明是本端失联轮切拆的，
-                // 秒级以内则更像板子/系统终止的链路（对照上一行的「连接断开：…」看有无 error）
-                logW("链路断开：就绪后存活 ${livedMs}ms（通道 ${_activeChannel.value?.id ?: "?"}）")
-                closePeripheral()
-                _linkState.value = LinkState.Disconnected
-                if (manualStop || !currentCoroutineContext().isActive) break
-                if (livedMs < 5_000) {
-                    _connectHint.value = "连接建立后很快断开，正在重试…"
-                } else {
-                    attempt = 0
-                    _connectHint.value = "连接已断开，正在重连…"
+            val owner = withLock(attemptLock) {
+                // A retired epoch's barrier can wake us: re-find the target on the new manager.
+                if (!managerEpochs.accepts(targetEpoch)) return@withLock null
+                check(terminations.waiting(target.identifier.UUIDString, targetEpoch) == null)
+                val owner = attempts.begin(target.identifier.UUIDString)
+                attemptGen++
+                peripheral = target
+                logI("连接目标 ${target.name ?: "未命名"} ${target.identifier.UUIDString}（代次 $attemptGen）")
+                central.connectPeripheral(target, null)
+                owner
+            }
+            if (owner == null) {
+                delay(backoffMs(attempt))
+                continue
+            }
+            try {
+                val discovered = withTimeoutOrNull(CONNECT_TIMEOUT_MS) { owner.services.await() } != null
+                val outcome: Boolean? = if (!discovered) null else {
+                    withTimeoutOrNull(PROBE_BUDGET_MS) { owner.ready.await() }
                 }
-            } else {
-                closePeripheral()
-                _connectHint.value = if (outcome == null) "连接超时，正在重试…" else "连接失败，正在重试…"
+                if (outcome == true) {
+                    // 等待方不再次发布 Connected，ready 后立即 drop 也不会复活链路。
+                    val connectedAt = epochMillisNow()
+                    owner.dropped.await()
+                    val livedMs = epochMillisNow() - connectedAt
+                    logW("链路断开：就绪后存活 ${livedMs}ms")
+                    if (manualStop || !currentCoroutineContext().isActive) break
+                    if (livedMs < 5_000) {
+                        _connectHint.value = "连接建立后很快断开，正在重试…"
+                    } else {
+                        attempt = 0
+                        _connectHint.value = "连接已断开，正在重连…"
+                    }
+                } else {
+                    _connectHint.value = if (outcome == null) "连接超时，正在重试…" else "连接失败，正在重试…"
+                }
+            } finally {
+                closePeripheral(owner)
             }
-            readySignal = null
-            servicesSignal = null
             if (manualStop || !currentCoroutineContext().isActive) break
             delay(backoffMs(attempt))
         }
@@ -732,12 +749,12 @@ class IosBleTransport : BmsTransport {
      * 连错了设备会把这些数据写到另一台设备的档案里（见 [acceptsPeripheralId]）。
      */
     private suspend fun findPeripheral(address: String?): CBPeripheral? {
-        val c = central
         val state = awaitState()
         if (state != CBManagerStatePoweredOn) {
             _connectHint.value = stateHint(state)
             return null
         }
+        val (c, epoch) = withLock(attemptLock) { central to managerEpochs.current }
         // 1) 回连：按标识从系统缓存直取（免扫描，不受广播抑制影响）
         if (!address.isNullOrBlank()) {
             // 构造失败会抛 NSException 而不是返回 null，Kotlin 侧用 runCatching 兜住。
@@ -762,34 +779,47 @@ class IosBleTransport : BmsTransport {
         c.scanForPeripheralsWithServices(null, null)
         // 等"找到目标"：didDiscoverPeripheral 置 pendingPeripheral，这里轮询感知
         var waited = 0L
-        while (waited < FIND_TIMEOUT_MS && pendingPeripheral == null && !manualStop) {
+        while (waited < FIND_TIMEOUT_MS && pendingPeripheral == null && !manualStop &&
+            withLock(attemptLock) { managerEpochs.accepts(epoch) }
+        ) {
             delay(100)
             waited += 100
         }
         runCatching { c.stopScan() }
-        return pendingPeripheral.also {
-            if (it == null) logW("未发现标识为 ${address ?: "-"} 的目标设备（本轮放弃，稍后重试）")
+        return withLock(attemptLock) {
+            if (!managerEpochs.accepts(epoch)) null else pendingPeripheral.also {
+                if (it == null) logW("未发现标识为 ${address ?: "-"} 的目标设备（本轮放弃，稍后重试）")
+            }
         }
     }
 
-    private fun closePeripheral() {
-        // 代次先 +1：不管有没有外设可收尾，本轮的所有迟到者（探测协程、订阅兜底）就此作废——
-        // 它们手里的 CBPeripheral 与下一轮是同一个对象，退订通知会打在活链路上
+    private fun closePeripheral(owner: ConnectionAttempt? = null, terminal: Boolean = false): Unit = withLock(attemptLock) {
+        if (owner != null && !attempts.owns(owner)) return@withLock
+        // null 外设也必须清状态、失效异步工作。旧 attempt 的 finally 不得清新 attempt。
         attemptGen++
-        val p = peripheral ?: return
+        val current = attempts.current
+        val p = peripheral
+        val probe = probeSignal
         peripheral = null
         writeChar = null
         notifyChar = null
         probeSignal = null
-        servicesSignal = null
         probeStarted = false
         candidates = emptyList()
         candidateIndex = 0
         _activeChannel.value = null
-        p.delegate = null
-        // 注意：cancelPeripheralConnection 是异步的，返回不等于已断开。这里靠调用方的退避
-        // （≥1s）等它落地；若日志里出现「刚就绪就被正常断开」，先怀疑它落在了新链路上
-        runCatching { central.cancelPeripheralConnection(p) }
+        _linkState.value = LinkState.Disconnected
+        if (current != null) attempts.finish(current)
+        probe?.complete(false)
+        if (p != null) {
+            p.delegate = null
+            if (!terminal && managerEpochs.accepts(managerEpochs.current)) {
+                // 只给仍有效的 manager 挂取消屏障；manager loss 走 epoch 终止出口。
+                terminations.begin(p.identifier.UUIDString, managerEpochs.current)
+                runCatching { central.cancelPeripheralConnection(p) }
+                    .onFailure { logW("取消连接失败，保留终止屏障：${it.message}") }
+            }
+        }
     }
 
     // ---------------- 写入 ----------------
@@ -819,7 +849,7 @@ class IosBleTransport : BmsTransport {
     override suspend fun disconnect() {
         manualStop = true
         desiredAddress = null
-        loopJob?.cancel()
+        loopJob?.cancelAndJoin()
         loopJob = null
         scanHandler = null
         runCatching { central.stopScan() }

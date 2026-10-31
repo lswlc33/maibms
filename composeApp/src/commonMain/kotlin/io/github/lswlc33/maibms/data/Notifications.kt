@@ -1,6 +1,14 @@
 package io.github.lswlc33.maibms.data
 
 import kotlin.concurrent.Volatile
+import kotlinx.coroutines.flow.MutableStateFlow
+
+/** 平台回报的实际状态；用户的开关偏好仍由 AppStore 保存。 */
+data class MonitoringState(
+    val running: Boolean = false,
+    val notificationAllowed: Boolean = true,
+    val error: String? = null,
+)
 
 /**
  * 通知出口（可注入）。
@@ -29,12 +37,17 @@ interface Notifier {
      * 弹系统授权框就返回，界面不等结果；用户拒绝后由系统层面静默丢弃通知。
      */
     fun ensurePermission()
+
+    /** 回到前台或权限改变后重新读取平台状态，空实现无需处理。 */
+    fun refreshStatus() {}
 }
 
 /** 通知出口注册处：默认空实现（桌面/iOS/单测都走它） */
 object Notifications {
     @Volatile
     var impl: Notifier? = null
+
+    val monitoring = MutableStateFlow(MonitoringState())
 
     /** 当前平台是否支持后台监控与通知 */
     val supported: Boolean get() = impl != null
@@ -49,6 +62,10 @@ object Notifications {
 
     fun ensurePermission() {
         impl?.ensurePermission()
+    }
+
+    fun refreshStatus() {
+        impl?.refreshStatus()
     }
 
     /** 常驻监控通知 id */

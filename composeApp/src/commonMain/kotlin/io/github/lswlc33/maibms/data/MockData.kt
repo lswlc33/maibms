@@ -123,6 +123,12 @@ object MockBms {
     val connected = MutableStateFlow(false)
     val usingRealBle = MutableStateFlow(false)
     var savedAddress: String? = null
+    /** 修改事务忙碌（含排队中的 write/control/save），只由仓库按会话维护。 */
+    val modifying = MutableStateFlow(false)
+    private val _unsavedWriteError = MutableStateFlow<String?>(null)
+    /** 临时区存在未完整确认的 u32：持久显示保存阻止原因，普通刷新不会解除。 */
+    val unsavedWriteError: StateFlow<String?> = _unsavedWriteError
+    internal fun setUnsavedWriteError(error: String?) { _unsavedWriteError.value = error }
     val lastWriteResult = MutableStateFlow(-1)      // 写参数结果码（0xFF 附加段，-1=尚无）
     /** 写参数失败时设备附带的信息（参数地址 + 限值） */
     val lastWriteDetail = MutableStateFlow<String?>(null)
@@ -242,6 +248,13 @@ object MockBms {
      * 退出快照预览也走这里：连预览里回填的设备名一起清，否则大卡仍显示快照设备。
      */
     fun clearForRealDevice() {
+        chargeSwitch.value = false
+        dischargeSwitch.value = false
+        balanceSwitch.value = false
+        lastWriteResult.value = -1
+        lastWriteDetail.value = null
+        lastControlResult.value = null
+        setUnsavedWriteError(null)
         liveParams.value = emptyMap()
         identity.value = emptyMap()
         paramsFromCache.value = false   // 会话数据已清空，「缓存」标记自然也不成立
@@ -377,7 +390,7 @@ object MockBms {
 
     /** 开关状态（跟从 0x61 控制命令与实时帧的 MOS 位） */
     val chargeSwitch = MutableStateFlow(false)
-    val dischargeSwitch = MutableStateFlow(true)
+    val dischargeSwitch = MutableStateFlow(false)
     val balanceSwitch = MutableStateFlow(false)
 
     /** 当前设备能力位（电量计/保护板不同）；首页按它显隐卡片 */

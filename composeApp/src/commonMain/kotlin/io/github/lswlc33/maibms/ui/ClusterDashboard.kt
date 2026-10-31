@@ -333,9 +333,10 @@ private fun ClusterLed(label: String, u: Dp, color: Color, on: Boolean) {
 private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: Dp, voltsDecimals: Int = 2) {
     val textMeasurer = rememberTextMeasurer()
     val hasData = status.hasData
-    val cellCount = status.cells.size.coerceAtLeast(1)
-    val range = ClusterMath.voltageRange(cellCount)
+    val cellCount = status.cells.size
     val fillV = status.totalVoltage.toFloat()
+    val spec = ClusterMath.voltageSpec(cellCount, fillV)
+    val range = spec.range
     Canvas(modifier) {
         val cx = size.width / 2f
         val cy = size.height / 2f
@@ -344,11 +345,15 @@ private fun ClusterGaugeV(status: BmsStatus, modifier: Modifier = Modifier, u: D
         val r = min(size.width / 2f, size.height / 1.707f) * 0.97f
         val stroke = r * 0.133f
         dialTrack(cx, cy, r, stroke)
-        // 琥珀（过放侧）/ 红（过充侧）警示带
-        val amberSweep = ClusterMath.sweepAngle(range.start, range.endInclusive, ClusterMath.vAmberTo(cellCount)) - ClusterMath.START_ANGLE
-        dialArc(cx, cy, r, stroke, ClusterAmber.copy(alpha = 0.5f), ClusterMath.START_ANGLE, amberSweep, glow = false, cap = StrokeCap.Butt)
-        val redStart = ClusterMath.sweepAngle(range.start, range.endInclusive, ClusterMath.vRedFrom(cellCount))
-        dialArc(cx, cy, r, stroke, ClusterRed.copy(alpha = 0.5f), redStart, ClusterMath.END_ANGLE - redStart, glow = false, cap = StrokeCap.Butt)
+        // 没有真实串数时不画保护带，避免把中性展示量程误认为设备安全阈值。
+        spec.amberTo?.let { amber ->
+            val amberSweep = ClusterMath.sweepAngle(range.start, range.endInclusive, amber) - ClusterMath.START_ANGLE
+            dialArc(cx, cy, r, stroke, ClusterAmber.copy(alpha = 0.5f), ClusterMath.START_ANGLE, amberSweep, glow = false, cap = StrokeCap.Butt)
+        }
+        spec.redFrom?.let { red ->
+            val redStart = ClusterMath.sweepAngle(range.start, range.endInclusive, red)
+            dialArc(cx, cy, r, stroke, ClusterRed.copy(alpha = 0.5f), redStart, ClusterMath.END_ANGLE - redStart, glow = false, cap = StrokeCap.Butt)
+        }
         // 值弧（teal 发光 + 绿填充）
         if (hasData) {
             val sweep = ClusterMath.sweepAngle(range.start, range.endInclusive, fillV) - ClusterMath.START_ANGLE

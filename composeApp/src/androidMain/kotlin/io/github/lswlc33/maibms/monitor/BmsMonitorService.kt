@@ -5,6 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
@@ -30,17 +33,54 @@ class BmsMonitorService : Service() {
         ensureChannels(this)
         return try {
             startForeground(io.github.lswlc33.maibms.data.Notifications.ID_MONITOR, monitorNotification(this, text))
+            running = true
+            starting = false
+            publishStatus(this)
+            onStarted?.invoke()
             START_NOT_STICKY
         } catch (e: Exception) {
             // 极少数机型/权限策略下 startForeground 会抛（如通知被完全禁用）：
             // 不能因为一条通知把监控整个搞崩，让用户看得见原因更重要
             android.util.Log.w(TAG, "startForeground 失败：${e.message}")
+            running = false
+            starting = false
+            publishStatus(this, "后台监控启动失败，请回到前台重试")
+            onFailed?.invoke()
             stopSelf()
             START_NOT_STICKY
         }
     }
 
+    override fun onDestroy() {
+        running = false
+        starting = false
+        publishStatus(this, io.github.lswlc33.maibms.data.Notifications.monitoring.value.error)
+        super.onDestroy()
+        onStopped?.invoke()
+    }
+
     companion object {
+        @Volatile
+        internal var running = false
+        @Volatile
+        internal var starting = false
+        internal var onStarted: (() -> Unit)? = null
+        internal var onStopped: (() -> Unit)? = null
+        internal var onFailed: (() -> Unit)? = null
+
+        internal fun publishStatus(context: Context, error: String? = null) {
+            val nm = context.getSystemService(NotificationManager::class.java)
+            val permission = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                    context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            val channelAllowed = nm?.getNotificationChannel(CHANNEL_MONITOR)?.importance != NotificationManager.IMPORTANCE_NONE
+            io.github.lswlc33.maibms.data.Notifications.monitoring.value =
+                io.github.lswlc33.maibms.data.MonitoringState(
+                    running = running,
+                    notificationAllowed = permission && nm?.areNotificationsEnabled() == true && channelAllowed,
+                    error = error,
+                )
+        }
+
         const val TAG = "ANTBMS"
         const val EXTRA_TEXT = "text"
 

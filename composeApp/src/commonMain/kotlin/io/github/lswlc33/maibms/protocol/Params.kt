@@ -1,6 +1,18 @@
 package io.github.lswlc33.maibms.protocol
 
 import io.github.lswlc33.maibms.data.fmt
+import kotlin.math.abs
+import kotlin.math.round
+
+/** 参数区编码（附录 A）：温度 s16、容量双字 u32，其余单字 u16。 */
+enum class ParamEncoding { S16, U16, U32 }
+
+data class ParamParseResult(
+    val rawValue: Int? = null,
+    val error: String? = null,
+    /** 将实际送给设备的整数换回工程量，不沿用可能已舍入的列表文案。 */
+    val actualValue: String? = null,
+)
 
 /**
  * 结果码两套表，别混用（docs/06 §6.5、附录B B.2/B.3）：
@@ -10,6 +22,13 @@ import io.github.lswlc33.maibms.data.fmt
 object ResultCodes {
     /** 0xFF 附加段结果码（写参数/读写状态） */
     fun writeResult(code: Int): String = when (code) {
+        -7 -> "参数未完整确认，保存已阻止"
+        -6 -> "参数输入不合法"
+        -5 -> "设备会话已结束"
+        -4 -> "保存失败或未确认"
+        -3 -> "回读值不一致"
+        -2 -> "传输失败或设备未应答"
+        -1 -> "等待设备确认"
         0 -> "正常"
         1 -> "权限不够"
         2 -> "数据小于最小值"
@@ -28,7 +47,8 @@ object ResultCodes {
 
     /** 0x61 控制应答结果码 */
     fun controlResult(code: Int): String = when (code) {
-        0 -> "无提示"
+        -7 -> "参数未完整确认，保存已阻止"
+        0 -> "设备未确认，请检查连接后重试"
         1 -> "成功"
         2 -> "失败"
         3 -> "权限不足"
@@ -160,6 +180,11 @@ class ParamDef(
     val readOnly: Boolean = false,
     /** 只读原因（编辑弹窗里展示给用户） */
     val note: String? = null,
+    val encoding: ParamEncoding = when (addr) {
+        in 56..98 -> ParamEncoding.S16
+        162, 166, 170 -> ParamEncoding.U32
+        else -> ParamEncoding.U16
+    },
 )
 
 object ParamTable {
@@ -330,31 +355,105 @@ object ParamTable {
         ParamDef("ANT通信地址", 706, 1.0, "", 0.0, 65535.0),
     )
 
-    fun byAddr(addr: Int): ParamDef? = defs.firstOrNull { it.addr == addr }
+    private val addrIndex = defs.associateBy { it.addr }
+    fun byAddr(addr: Int): ParamDef? = addrIndex[addr]
 
-    /** 跨两个寄存器（低字 @addr、高字 @addr+2）的 u32 参数：容量类倍率 1e6，单寄存器放不下 */
-    val u32Addrs: Set<Int> = setOf(162, 166, 170)
+    /** 跨两个寄存器（低字 @addr、高字 @addr+2）的 u32 参数。 */
+    val u32Addrs: Set<Int> = defs.filter { it.encoding == ParamEncoding.U32 }.map { it.addr }.toSet()
 
-    /** 参数区原始值 → 工程量显示；未读到返回 "--" */
-    fun format(params: Map<Int, Int>, def: ParamDef): String {
-        // 真机实测：权限不足时整块返回 0xFFFF（未披露）。只有**整块**都是 0xFFFF 才按未披露处理；
-        // 否则温度类参数的 0xFFFF 是合法的 -1℃（s16），不能被哨兵吃掉。
-        // 注意：u32 容量参数也必须先吃这一条——两个 0xFFFF 拼起来是 0xFFFFFFFF，
-        // 不拦会在权限不足时显示成 4295.0 Ah（而且会被写进配置缓存）。
-        val blockUnread = params.isNotEmpty() && params.values.all { it == 0xFFFF }
-        if (blockUnread) return "--"
-        val raw: Long = if (def.addr in u32Addrs) {
-            val lo = params[def.addr]?.toLong() ?: return "--"
-            val hi = params[def.addr + 2]?.toLong() ?: 0L
-            (hi shl 16) or (lo and 0xFFFF)
-        } else {
-            val v = params[def.addr]?.toLong() ?: return "--"
-            if (v == 0xFFFFL && def.min >= 0) return "--"
-            // 温度类参数允许负值，寄存器按 s16 存（真机实测 -2℃ = FE FF）
-            if (def.min < 0) (v and 0xFFFF).let { if (it >= 0x8000) it - 0x10000 else it } else v
+    // 容差只吸收 IEEE Double 运算的几个 ULP，不允许半个寄存器/半个步长被悄悄取整。
+    private fun tolerance(value: Double): Double =
+        (abs(value).coerceAtLeast(1.0) * 8.0 * 2.220446049250313e-16).coerceAtMost(1e-5)
+
+    private fun rawLong(rawValue: Int, def: ParamDef): Long? = when (def.encoding) {
+        ParamEncoding.U32 -> rawValue.toLong() and 0xFFFFFFFFL
+        ParamEncoding.U16 -> rawValue.toLong().takeIf { it in 0L..0xFFFFL }
+        ParamEncoding.S16 -> when (rawValue) {
+            in -32768..32767 -> rawValue.toLong()
+            in 32768..65535 -> rawValue.toLong() - 65536L
+            else -> null
         }
-        val v = raw / def.scale
+    }
+
+    private fun validateValue(def: ParamDef, value: Double, raw: Long): String? {
+        if (def.readOnly) return def.note ?: "该参数由设备维护，只能读取"
+        if (!value.isFinite()) return "请输入有限数字"
+        val eps = tolerance(value)
+        if (value < def.min - eps || value > def.max + eps)
+            return "超出允许范围（${rangeText(def)}）"
+        if (def.dict != null && raw !in def.dict) return "请选择已知的参数取值"
+        if (def.step > 0.0) {
+            val steps = (value - def.min) / def.step
+            if (abs(steps - round(steps)) > tolerance(steps) + tolerance(value) / def.step)
+                return "取值需按 ${def.step} ${def.unit} 步长调整"
+        }
+        return null
+    }
+
+    /** 核心与 UI 共用的直接写入校验；u32 的 Int 是完整 32 位无符号位模式。 */
+    fun validateRaw(addr: Int, rawValue: Int): String? {
+        val def = byAddr(addr) ?: return "未知参数地址，不能直接写入"
+        val raw = rawLong(rawValue, def) ?: return "超出 ${def.encoding.name.lowercase()} 可表示范围"
+        return validateValue(def, raw / def.scale, raw)
+    }
+
+    /** 工程量文本 → 校验 → round → 原始整数。绝不从 range 显示文案反解析边界。 */
+    fun parseInput(addr: Int, text: String): ParamParseResult {
+        val def = byAddr(addr) ?: return ParamParseResult(error = "未知参数地址，不能直接写入")
+        if (def.readOnly) return ParamParseResult(error = def.note ?: "该参数由设备维护，只能读取")
+        val value = text.trim().replace(',', '.').toDoubleOrNull()
+            ?: return ParamParseResult(error = "请输入数字")
+        if (!value.isFinite()) return ParamParseResult(error = "请输入有限数字")
+        val scaled = value * def.scale
+        if (!scaled.isFinite()) return ParamParseResult(error = "超出参数可表示范围")
+        val rounded = round(scaled)
+        val rawBounds = when (def.encoding) {
+            ParamEncoding.S16 -> -32768.0..32767.0
+            ParamEncoding.U16 -> 0.0..65535.0
+            ParamEncoding.U32 -> 0.0..4294967295.0
+        }
+        if (rounded !in rawBounds) return ParamParseResult(error = "超出 ${def.encoding.name.lowercase()} 可表示范围")
+        if (abs(scaled - rounded) > tolerance(scaled))
+            return ParamParseResult(error = "精度过高：最小可写单位为 ${1.0 / def.scale} ${def.unit}")
+        val raw = rounded.toLong()
+        val error = validateValue(def, value, raw)
+        if (error != null) return ParamParseResult(error = error)
+        val bits = raw.toInt()
+        return ParamParseResult(rawValue = bits, actualValue = formatRaw(bits, def))
+    }
+
+    /** 保留既有未披露哨兵规则；容量必须低/高字齐全才是一个读数。 */
+    fun rawFromParams(params: Map<Int, Int>, def: ParamDef): Long? {
+        if (params.isNotEmpty() && params.values.all { it == 0xFFFF }) return null
+        val lo = params[def.addr] ?: return null
+        return when (def.encoding) {
+            ParamEncoding.U32 -> {
+                val hi = params[def.addr + 2] ?: return null
+                ((hi.toLong() and 0xFFFFL) shl 16) or (lo.toLong() and 0xFFFFL)
+            }
+            ParamEncoding.S16 -> (lo and 0xFFFF).let { if (it >= 0x8000) it.toLong() - 65536 else it.toLong() }
+            ParamEncoding.U16 -> if (lo == 0xFFFF) null else (lo and 0xFFFF).toLong()
+        }
+    }
+
+    /** 编辑器精确显示实际将写出的值，容量六位小数而非列表的一位小数。 */
+    fun formatRaw(rawValue: Int, def: ParamDef): String {
+        val raw = rawLong(rawValue, def) ?: return "--"
         def.dict?.get(raw)?.let { return it }
+        val decimals = when {
+            def.scale >= 1_000_000 -> 6
+            def.scale >= 1000 -> 3
+            def.scale >= 10 -> 1
+            else -> 0
+        }
+        return "%.${decimals}f".fmt(raw / def.scale)
+    }
+
+    /** 参数区原始值 → 工程量列表显示；未读到返回 "--"。 */
+    fun format(params: Map<Int, Int>, def: ParamDef): String {
+        val raw = rawFromParams(params, def) ?: return "--"
+        def.dict?.get(raw)?.let { return it }
+        val v = raw / def.scale
         return when {
             def.scale >= 1_000_000 -> "%.1f".fmt(v)
             def.scale >= 1000 -> "%.3f".fmt(v)

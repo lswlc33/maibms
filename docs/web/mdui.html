@@ -38,7 +38,7 @@
   与其赌 CDN，不如把用到的十来个图标直接写成 SVG path——离线可用、零依赖。
 -->
 
-<link rel="stylesheet" href="theme-mdui.css?v=5d85d3a2d6">
+<link rel="stylesheet" href="theme-mdui.css?v=615c324765">
 </head>
 <body class="mdui-theme-auto">
 <div id="app">
@@ -49,12 +49,12 @@
 </div>
 
 <!-- 数据层：BLE + 协议 + 状态桥（Kotlin/JS 产物，与默认主题共用同一个文件） -->
-<script src="maibms-host.js?v=5d85d3a2d6"></script>
-<script src="../maibms-data.js?v=5d85d3a2d6"></script>
+<script src="maibms-host.js?v=615c324765"></script>
+<script src="../maibms-data.js?v=615c324765"></script>
 <script>
 /* 启动数据层：bundle 以 UMD 输出，main() 不会自动跑，必须显式调用（幂等） */
 if (window.MaibmsBoot) window.MaibmsBoot();
 </script>
-<script src="theme-mdui.js?v=5d85d3a2d6"></script>
+<script src="theme-mdui.js?v=615c324765"></script>
 </body>
 </html>

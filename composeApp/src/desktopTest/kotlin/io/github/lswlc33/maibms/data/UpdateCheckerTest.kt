@@ -1,6 +1,15 @@
 package io.github.lswlc33.maibms.data
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 import kotlin.test.Test
+import kotlin.test.assertIs
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -63,17 +72,79 @@ class UpdateCheckerTest {
         assertFalse(UpdateChecker.isNewer("0.1", "0.1.0"))
     }
 
-    @Test fun prereleaseSupersededBeatsUpdate() {
-        // 装着 0.1.9-beta.60 的用户在稳定版渠道检查：远端同号正式版 0.1.9 按 semver
-        // 比 beta 大，旧逻辑报「发现新版 0.1.9」看着像误报——应走 PrereleaseSuperseded
-        val latest = UpdateChecker.versionFromTag("10-0.1.9")   // 真实线上 tag 形态
-        assertEquals("0.1.9", latest)
-        val local = "0.1.9-beta.60"
-        val sameCore = latest == local.substringBefore('-') && local.contains('-')
-        assertTrue(sameCore, "同号 beta vs 正式版应命中 PrereleaseSuperseded 分支")
-        // 跨号的正式版（0.1.10）仍是正常 Update，不进这个分支
-        assertFalse("0.1.10" == local.substringBefore('-'))
-        assertTrue(UpdateChecker.isNewer("0.1.10", local))
+    @Test fun prereleaseSupersededBeatsUpdate() = runBlocking {
+        val result = UpdateChecker.check(UpdateChecker.UpdateChannel.STABLE, "0.1.9-beta.60") {
+            """{"tag_name":"10-0.1.9","html_url":"${UpdateChecker.REPO_URL}/releases/tag/10-0.1.9"}"""
+        }
+        assertEquals("0.1.9", assertIs<UpdateChecker.Result.PrereleaseSuperseded>(result).official)
+        val newer = UpdateChecker.check(UpdateChecker.UpdateChannel.STABLE, "0.1.9-beta.60") {
+            """{"tag_name":"11-0.1.10"}"""
+        }
+        assertEquals("0.1.10", assertIs<UpdateChecker.Result.Update>(newer).latest)
+    }
+
+    @Test fun cancellationPropagatesWithoutMirrorFallback() = runBlocking {
+        val cancellation = CancellationException("cancel old channel")
+        var calls = 0
+        val thrown = try {
+            UpdateChecker.check(UpdateChecker.UpdateChannel.STABLE, "0.1.9") {
+                calls++
+                throw cancellation
+            }
+            null
+        } catch (e: CancellationException) {
+            e
+        }
+        assertIs<CancellationException>(thrown, "广捕 Exception 不得把取消改成 Failed")
+        assertEquals(1, calls, "取消后不得继续访问镜像")
+    }
+
+    @Test fun cancelledUncancellableIoDoesNotTryNextMirror() = runBlocking {
+        withTimeout(5_000) {
+            val entered = CompletableDeferred<Unit>()
+            lateinit var io: Continuation<String?>
+            var calls = 0
+            val request = async {
+                UpdateChecker.check(UpdateChecker.UpdateChannel.STABLE, "0.1.9") {
+                    calls++
+                    suspendCoroutine<String?> { io = it; entered.complete(Unit) }
+                }
+            }
+            entered.await()
+            request.cancel()
+            // 平台 IO 迟到的空响应不能触发下一个源。
+            io.resume(null)
+            request.join()
+            assertTrue(request.isCancelled)
+            assertEquals(1, calls)
+        }
+    }
+
+    @Test fun ordinaryFailureStillFallsBackAndUsesOfficialDecoder() = runBlocking {
+        val urls = mutableListOf<String>()
+        val result = UpdateChecker.check(UpdateChecker.UpdateChannel.PREVIEW, "0.1.9-beta.9") { url ->
+            urls += url
+            if (urls.size == 1) throw IllegalStateException("mirror unavailable")
+            """[{"tag_name":"v0.1.9-beta.20","html_url":"https://evil.example/download","prerelease":true}]"""
+        }
+        val update = assertIs<UpdateChecker.Result.Update>(result)
+        assertEquals("0.1.9-beta.20", update.latest)
+        assertTrue(update.info.prerelease)
+        assertEquals("${UpdateChecker.REPO_URL}/releases", update.info.htmlUrl)
+        assertEquals(2, urls.size)
+        assertTrue(urls.all { it.endsWith(UpdateChecker.apiUrlFor(UpdateChecker.UpdateChannel.PREVIEW)) })
+    }
+
+    @Test fun allOrdinaryFailuresReturnFailed() = runBlocking {
+        var calls = 0
+        val result = UpdateChecker.check(UpdateChecker.UpdateChannel.STABLE, "0.1.9") {
+            calls++
+            throw IllegalStateException("unavailable-$calls")
+        }
+        assertEquals(3, calls)
+        val failure = assertIs<UpdateChecker.Result.Failed>(result)
+        assertTrue(failure.reason.contains("unavailable-1"))
+        assertTrue(failure.reason.contains("unavailable-3"))
     }
 
     @Test fun failedResultCarriesAllSources() {

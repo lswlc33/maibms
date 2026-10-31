@@ -28,11 +28,37 @@ class BmsRepository(
 
     private var realTransport: BmsTransport? = null
 
-    private class Session(val address: String?)
+    private class Session(val address: String?, val unconfirmedU32: MutableSet<Int>) {
+        var modifications = 0
+        var paramsRevision = 0L
+        var refreshAgain = false
+        var postConnectRunning = false
+        var postConnectStarted = false
+    }
     private val sessionLock = PlatformLock()
     private val connectionGuard = Mutex()
-    @Volatile private var session = Session(null)
-    private var acceptingFrames = false
+    // 设备临时区不会因 GATT 重连而回滚，不能用新 Session 绕过半写入保护。
+    private val unconfirmedU32ByDevice = mutableMapOf<String?, MutableSet<Int>>()
+    private fun unconfirmedU32Key(address: String?): String = "write.unconfirmedU32.${address ?: "unknown"}"
+    private fun newSession(address: String?): Session = Session(address,
+        unconfirmedU32ByDevice.getOrPut(address) {
+            AppStore.get(unconfirmedU32Key(address))?.split(',')?.mapNotNull { it.toIntOrNull() }
+                ?.toMutableSet() ?: mutableSetOf()
+        })
+
+    /** 先持久化再改内存，持久化失败时不发送写帧；回读确认但删除失败仍保持阻止。 */
+    private fun setUnconfirmedU32(expected: Session, addr: Int, pending: Boolean) {
+        checkSession(expected)
+        val updated = expected.unconfirmedU32.toMutableSet()
+        if (pending) updated += addr else updated -= addr
+        AppStore.store.put(unconfirmedU32Key(expected.address),
+            updated.takeIf { it.isNotEmpty() }?.sorted()?.joinToString(","))
+        expected.unconfirmedU32.clear()
+        expected.unconfirmedU32.addAll(updated)
+        MockBms.setUnsavedWriteError(unsavedWriteError(expected))
+    }
+    @Volatile private var session = newSession(null)
+    @Volatile private var acceptingFrames = false
 
     private fun checkSession(expected: Session) {
         if (session !== expected || !acceptingFrames || previewActive.value || manualDisconnect.value) {
@@ -43,12 +69,16 @@ class BmsRepository(
     /** 会话失效先于取消任务，已排队的旧命令与迟到结果也必须停用。 */
     private fun invalidateSession(stopPolling: Boolean): List<Job> = withLock(sessionLock) {
         acceptingFrames = false
-        session = Session(MockBms.savedAddress)
+        session = newSession(MockBms.savedAddress)
+        MockBms.setUnsavedWriteError(unsavedWriteError(session))
         awaiting?.cancel(CancellationException("设备会话已结束"))
         awaiting = null
         expectFunc = -1
         expectReg = null
         activeWrite = null
+        eventLogToken = null
+        MockBms.eventLogLoading.value = false
+        MockBms.modifying.value = false
         val jobs = listOfNotNull(postConnectJob, readJob, reAuthJob, if (stopPolling) pollJob else null)
         jobs.forEach { it.cancel() }
         postConnectJob = null
@@ -66,7 +96,8 @@ class BmsRepository(
     }
 
     private suspend fun stopSessionWork() {
-        invalidateSession(stopPolling = true).forEach { it.join() }
+        // 连接守卫内不能 join 旧任务：旧任务可能正等待同一个守卫（通道轮切）。
+        invalidateSession(stopPolling = true)
         cmdMutex.withLock { }
     }
 
@@ -105,6 +136,9 @@ class BmsRepository(
 
     /** 用户主动断开（区别于掉线）：置位后不再自动重连，界面也不再显示「正在重连」 */
     val manualDisconnect = MutableStateFlow(false)
+    private val _connectionIntentActive = MutableStateFlow(false)
+    /** 已发起连接且未主动结束；掉线重试仍为 true，冷启 Idle 不算连接意图。 */
+    val connectionIntentActive: StateFlow<Boolean> = _connectionIntentActive
 
     // ---- 通信通道（docs/02 §2.2）：传输层探测结果镜像 + 手动切换 ----
 
@@ -144,6 +178,8 @@ class BmsRepository(
     suspend fun enterPreview(s: BmsSnapshot) = connectionGuard.withLock {
         BmsLog.i("SNAP", "进入快照预览：${s.deviceName}（${s.timeLabel}），自动连接停用直到重启")
         previewActive.value = true   // 先置位再动手，挡住断开过程中的一切回灌
+        _connectionIntentActive.value = false
+        refreshMonitorNotification(force = true)
         previewLabel.value = s.deviceName.ifBlank { null }?.let { "$it · ${s.timeLabel}" } ?: s.timeLabel
         stopSessionWork()
         transport.disconnect()
@@ -252,12 +288,8 @@ class BmsRepository(
                     _linkState.value = st
                     if (st == LinkState.Connected && acceptingFrames && !previewActive.value && !manualDisconnect.value) {
                         DeviceProfiles.touch(MockBms.savedAddress)
-                        if (meter == null) {
-                            firstFrameSignal = CompletableDeferred()
-                            postConnectJob?.cancel()
-                            val expected = session
-                            postConnectJob = scope.launch { postConnectFlow(expected) }
-                        }
+                        linkWindowAt = epochMillisNow()
+                        if (meter == null) startPostConnect(session)
                         pollWake.trySend(Unit)
                     } else if (st != LinkState.Connected) {
                         if (st == LinkState.Disconnected || st == LinkState.Idle) {
@@ -268,7 +300,7 @@ class BmsRepository(
                         if (!previewActive.value) MockBms.markDisconnected()
                     }
                 }
-                // 链路态一变就立刻反映到常驻监控通知（连上才显示，断开要马上撤掉）
+                // 自动重连期间也保持监控通知，只有主动结束连接意图才撤掉。
                 refreshMonitorNotification(force = true)
             }
         }
@@ -282,13 +314,14 @@ class BmsRepository(
         collectorJob = scope.launch {
             real.incoming.collect { bytes ->
                 withLock(sessionLock) {
-                    if (previewActive.value || manualDisconnect.value || !acceptingFrames) return@withLock
+                    if (previewActive.value || manualDisconnect.value || !acceptingFrames ||
+                        _linkState.value != LinkState.Connected) return@withLock
                     val m = meter
                     if (m != null) {
                         val readings = runCatching { m.onNotification(bytes) }.getOrElse { emptyList() }
                         for (rd in readings) {
                             if (rd.isEmpty) continue
-                            lastFrameAt = epochMillisNow()
+                            noteValidFrame()
                             if (meterFirstReadingAt == 0L) meterFirstReadingAt = lastFrameAt
                             MockBms.applyMeterReading(rd)
                             // 设备信息（蓝宝表2 的序列号/版本/电池类型/串数）走身份区，与读数分开合并
@@ -386,15 +419,25 @@ class BmsRepository(
      * 已经触发了一轮 force 重读，这里再调一次会被 refreshParams 里的 readJob.isActive
      * 去重挡掉（不是靠运气，是那次调用的显式守卫）。
      */
-    /** 连后序列进行中标志：Connected 事件重复触发时不重入（升权/读参数各只跑一套） */
-    @Volatile private var postConnectRunning = false
+    /** 在 sessionLock 下按会话幂等装配，不依赖 StateFlow 必定交付中间断线状态。 */
+    private fun startPostConnect(expected: Session) {
+        checkSession(expected)
+        if (expected.postConnectStarted) return
+        expected.postConnectStarted = true
+        firstFrameSignal = CompletableDeferred()
+        postConnectJob = scope.launch { postConnectFlow(expected) }
+    }
 
+    /** 连后序列的运行标记归属会话，旧 finally 不影响新会话。 */
     private suspend fun postConnectFlow(expected: Session) {
-        if (postConnectRunning) return
-        postConnectRunning = true
-        try {
+        val firstFrame = withLock(sessionLock) {
             checkSession(expected)
-            val firstFrame = firstFrameSignal ?: return
+            if (expected.postConnectRunning) return
+            expected.postConnectRunning = true
+            firstFrameSignal
+        }
+        try {
+            if (firstFrame == null) return
             if (withTimeoutOrNull(FIRST_FRAME_WAIT_MS) { firstFrame.await() } == null) {
                 BmsLog.w("CONN", "首个实时帧 ${FIRST_FRAME_WAIT_MS}ms 未到，跳过升权与参数区读回")
                 return
@@ -404,9 +447,12 @@ class BmsRepository(
             autoUpgradePermission(expected)
             checkSession(expected)
             if (_linkState.value != LinkState.Connected) return
-            refreshParams(force = true)
+            withLock(sessionLock) {
+                checkSession(expected)
+                refreshParams(force = true)
+            }
         } finally {
-            postConnectRunning = false
+            withLock(sessionLock) { expected.postConnectRunning = false }
         }
     }
 
@@ -626,17 +672,22 @@ class BmsRepository(
         BmsLog.i("CONN", "发起连接" + (targetAddr?.let { " → $it" } ?: "") + if (AppStore.autoReconnect) "（自动重连）" else "（手动）")
         withLock(sessionLock) {
             manualDisconnect.value = false
+            _connectionIntentActive.value = true
             AppStore.autoReconnect = true
             MockBms.savedAddress = targetAddr
-            session = Session(targetAddr)
+            session = newSession(targetAddr)
             resetSessionState()
+            MockBms.setUnsavedWriteError(unsavedWriteError(session))
             MockBms.connectedDeviceName.value = DeviceProfiles.find(targetAddr)?.displayName
                 ?: AppStore.savedDeviceName?.takeIf { AppStore.savedAddress == targetAddr }
             restorePasswords(targetAddr)
             loadParamsCacheIntoSession(targetAddr)
             lastFrameAt = 0L
+            linkWindowAt = epochMillisNow()
             _stalled.value = false
             stallRotations = 0
+            triedChannels.clear()
+            channelRotationToken = null
             transport.preferChannel(AppStore.channelFor(targetAddr))
             val family = _scanResults.value.firstOrNull { it.address == targetAddr }?.family
                 ?: DeviceProfiles.find(targetAddr)?.family ?: DeviceFamily.Ant
@@ -647,6 +698,7 @@ class BmsRepository(
             MockBms.caps.value = meter?.caps ?: DeviceCapabilities.forFamily(family)
             acceptingFrames = true
         }
+        refreshMonitorNotification(force = true)
         transport.connect(targetAddr)
         pollGuard.withLock {
             if (pollJob?.isActive != true) pollJob = scope.launch { pollLoop() }
@@ -670,6 +722,7 @@ class BmsRepository(
         // 否则会拿暂停前的时间戳误判（电量计轮询是 fire-and-forget，写完立刻会查 since）
         var wasPaused = false
         while (currentCoroutineContext().isActive) {
+            val expected = session
             if (_linkState.value == LinkState.Connected) {
                 // 后台策略：没开「后台监控」时，退到后台**整段跳过**（请求不发、失联检测也不做）。
                 // 只停请求不停链路：回前台立刻继续，不必重连；失联判定跟着停是因为
@@ -679,8 +732,7 @@ class BmsRepository(
                 if (wasPaused) {
                     // 回到前台：给第一帧一个完整的失联窗口（电量计的应答是异步通知，
                     // 这一拍查 since 时第一帧还没到，不能拿暂停前的 lastFrameAt 判）
-                    lastFrameAt = epochMillisNow()
-                    BmsLog.i("LINK", "从后台恢复：重置失联计时")
+                    withLock(sessionLock) { if (session === expected) linkWindowAt = epochMillisNow() }
                 }
                 val m = meter
                 if (m != null) {
@@ -688,11 +740,12 @@ class BmsRepository(
                     if (!meterProbeActive) {
                         try {
                             if (!meterInitSent) {
-                                m.initialFrames().forEach { transport.write(it) }
-                                meterInitSent = true
+                                m.initialFrames().forEach { checkSession(expected); transport.write(it) }
+                                withLock(sessionLock) { if (session === expected) meterInitSent = true }
                             }
-                            m.nextPollFrames().forEach { transport.write(it) }
+                            m.nextPollFrames().forEach { checkSession(expected); transport.write(it) }
                         } catch (e: Exception) {
+                            currentCoroutineContext().ensureActive()
                             BmsLog.d("POLL", "电量计轮询写入失败：${e.message ?: e::class.simpleName}")
                         }
                     }
@@ -700,29 +753,31 @@ class BmsRepository(
                     try {
                         // 往返耗时埋点：这条统计是"轮询档/通道/信号好坏"的唯一客观依据
                         val t0 = epochMillisNow()
-                        val r = requestAndAwait(realtimeRequest, Proto.RSP_REALTIME, expectedFunc = Proto.RSP_REALTIME, expectedReg = 0, timeoutMs = 700, fromPoll = true)
+                        val r = requestInSession(realtimeRequest, Proto.RSP_REALTIME, expectedReg = 0,
+                            timeoutMs = 700, fromPoll = true, expectedSession = expected)
                         val t1 = epochMillisNow()
-                        LinkStats.notePoll((t1 - t0).toInt(), r != null, t1)
+                        withLock(sessionLock) {
+                            if (session === expected) LinkStats.notePoll((t1 - t0).toInt(), r != null, t1)
+                        }
                     } catch (e: Exception) {
                         // 每拍都有超时是常态，只有连续异常才有意义，所以只记 DEBUG
-                        LinkStats.notePoll(0, ok = false, nowMs = epochMillisNow())
+                        currentCoroutineContext().ensureActive()
+                        withLock(sessionLock) {
+                            if (session === expected) LinkStats.notePoll(0, ok = false, nowMs = epochMillisNow())
+                        }
                         BmsLog.d("POLL", "实时轮询超时：${e.message ?: e::class.simpleName}")
                     }
                 }
-                // 失联检测：GATT 还在但连续多拍收不到实时帧（设备休眠/走远/干扰）
-                val since = epochMillisNow() - lastFrameAt
-                if (MockBms.connected.value && lastFrameAt > 0 && since > STALL_MS) {
-                    if (!_stalled.value) {
-                        _stalled.value = true
-                        BmsLog.w("LINK", "实时帧停流 ${since}ms，判定失联（尝试轮切其它通道）")
-                        rotateChannelOnStall()
-                        notifyLinkLost(since)
+                // 首帧为零也按本轮窗口判失联；只有有效实时帧能清掉轮切进度。
+                withLock(sessionLock) {
+                    if (session === expected && acceptingFrames && _linkState.value == LinkState.Connected) {
+                        val since = epochMillisNow() - maxOf(lastFrameAt, linkWindowAt)
+                        if (since > STALL_MS) {
+                            _stalled.value = true
+                            rotateChannelOnStall(expected)
+                            notifyLinkLost(since)
+                        }
                     }
-                } else if (_stalled.value) {
-                    _stalled.value = false
-                    stallRotations = 0
-                    linkAlerted = false
-                    BmsLog.i("LINK", "实时帧恢复")
                 }
                 }
                 wasPaused = paused
@@ -741,9 +796,11 @@ class BmsRepository(
         withLock(sessionLock) {
             if (lastFrameAt > 0 && sessionSnapshotId == 0L) recordSnapshot()
             manualDisconnect.value = true
+            _connectionIntentActive.value = false
             AppStore.autoReconnect = false
         }
         BmsLog.i("CONN", "主动断开连接")
+        refreshMonitorNotification(force = true)
         stopSessionWork()
         transport.disconnect()
         _connectHint.value = null
@@ -751,34 +808,48 @@ class BmsRepository(
         MockBms.markDisconnected()
     }
 
-    /** 失联轮切：本会话已轮切次数（实时帧恢复即清零） */
+    /** 失联轮切进度跨自动重连保留，真实有效帧恢复才清零。 */
     private var stallRotations = 0
+    private val triedChannels = mutableSetOf<BleChannel>()
+    private var channelRotationToken: Any? = null
+    private var linkWindowAt = 0L
 
-    /**
-     * 失联时按顺序试其它通道（对应官方的「通道轮切」，docs/02 §2.2）：
-     * 全部候选都试过仍不通就只提示重启蓝牙，不再无限轮切。
-     */
-    private fun rotateChannelOnStall() {
-        if (!supportsChannelSwitch) return
-        val avail = _availableChannels.value
-        if (avail.size <= 1) {
-            _connectHint.value = "设备无应答，且只提供默认通道：请断电重启蓝牙后重试"
-            return
-        }
-        if (stallRotations >= avail.size) {
-            _connectHint.value = "所有通道都试过仍无应答：请断电重启蓝牙后重试"
-            return
-        }
-        val cur = _activeChannel.value
-        val next = avail.firstOrNull { it != cur } ?: return
-        stallRotations++
-        // 给新通道一个完整的失联窗口：切完就重连，不能让旧的时间戳立刻再触发一次轮切
+    private fun noteValidFrame() {
         lastFrameAt = epochMillisNow()
         _stalled.value = false
+        stallRotations = 0
+        triedChannels.clear()
+        linkAlerted = false
+    }
+
+    /** 在 sessionLock 下选候选；等待传输切换时绝不占它。 */
+    private fun rotateChannelOnStall(expected: Session) {
+        if (channelRotationToken != null || !supportsChannelSwitch) return
+        val avail = _availableChannels.value.distinct()
+        _activeChannel.value?.let { triedChannels += it }
+        val next = avail.firstOrNull { it !in triedChannels }
+        if (next == null || avail.size <= 1) {
+            _connectHint.value = "所有可用通道都试过仍无应答：请断电重启蓝牙后重试"
+            return
+        }
+        triedChannels += next
+        stallRotations++
+        val token = Any()
+        channelRotationToken = token
+        linkWindowAt = epochMillisNow()
         BmsLog.w("LINK", "失联 → 轮切到${next.label}（第 $stallRotations 次）")
         scope.launch {
-            transport.preferChannel(next)
-            transport.switchChannel(next)
+            try {
+                connectionGuard.withLock {
+                    withLock(sessionLock) { checkSession(expected) }
+                    transport.preferChannel(next)
+                    transport.switchChannel(next)
+                }
+            } catch (e: CancellationException) {
+                currentCoroutineContext().ensureActive()
+            } finally {
+                withLock(sessionLock) { if (channelRotationToken === token) channelRotationToken = null }
+            }
         }
     }
 
@@ -786,16 +857,24 @@ class BmsRepository(
      * 手动切换通道（设置 → 通信通道）：按设备记住选择，再断开重连到目标通道。
      * 未连接时只记偏好，下次连接生效；切换过程会短暂中断通信（随后自动重连 + 重新升权）。
      */
-    suspend fun switchChannel(channel: BleChannel) {
+    suspend fun switchChannel(channel: BleChannel) = connectionGuard.withLock {
         if (previewActive.value) {
             _connectHint.value = "正在预览快照，通道切换已停用（重启应用恢复）"
-            return
+            return@withLock
         }
-        val addr = MockBms.savedAddress
+        val expected = session
+        val addr = expected.address
         AppStore.setChannelFor(addr, channel)
         BmsLog.i("CONN", "手动切换通道 → ${channel.label}（${channel.id}）")
-        _connectHint.value = "正在切换到${channel.label}…"
         transport.preferChannel(channel)
+        if (!_connectionIntentActive.value || manualDisconnect.value) return@withLock
+        withLock(sessionLock) {
+            checkSession(expected)
+            triedChannels.clear()
+            stallRotations = 0
+            linkWindowAt = epochMillisNow()
+        }
+        _connectHint.value = "正在切换到${channel.label}…"
         transport.switchChannel(channel)
     }
 
@@ -905,6 +984,10 @@ class BmsRepository(
         const val WRITE_SAVE_FAILED = -4
         /** 操作期间设备会话结束，后续帧不得发送到新设备。 */
         const val WRITE_SESSION_ENDED = -5
+        /** 原始参数值未通过协议表校验，不发任何写帧。 */
+        const val WRITE_INVALID_RAW = -6
+        /** 临时区存在未确认的 u32，拒绝发送保存命令，避免固化半写值。 */
+        const val WRITE_SAVE_BLOCKED = -7
         /** 日志翻页大小：官方也是每批 10 条（`bmsLog.js` 的 `10 * logIndex`） */
         const val EVENT_LOG_PAGE = 10
         /** 读一条日志的等待上限：比轮询宽松（要读设备存储），但别让界面干等 */
@@ -920,8 +1003,9 @@ class BmsRepository(
         }
         when (f.func) {
             Proto.RSP_REALTIME -> {
+                if (f.reg != 0) return
                 runCatching { RealtimeDecoder.decode(f.data) }.onSuccess { r ->
-                    lastFrameAt = epochMillisNow()
+                    noteValidFrame()
                     MockBms.updateFromRealtime(r)
                     MockBms.connected.value = true
                     // 保护/告警的上升沿 → 后台时发通知（前台不发，界面本身有横幅）
@@ -929,12 +1013,16 @@ class BmsRepository(
                     // 首帧到达：唤醒连后序列（升权 → 参数区读回排在它后面）。
                     // 这里以前直接 refreshParams()，导致"等级 0 先读一遍、升权后再读一遍"，
                     // 而且 14 条参数命令会跟升权抢应答槽，把首帧之后的刷新拖成一顿一顿
+                    // 快速换设备的中间断线可能被 StateFlow 合并，Connected 事件不保证重发。
+                    // 真实首帧也幂等装配本会话任务，且不在 transport.connect 之前提前计时。
+                    startPostConnect(session)
                     firstFrameSignal?.complete(Unit)
                     // 设备闲置会把权限退回低等级（实测约 5 分钟）：掉下来就静默重升
                     ensurePermission(r.permission)
                 }.onFailure { BmsLog.e("RX", "实时帧解码失败：$it") }
             }
             Proto.RSP_AUTH -> {
+                if (awaiting == null || expectFunc != f.func || expectReg != f.reg) return
                 if (f.data.size >= 2) {
                     val level = (f.data[0].toInt() and 0xFF) or ((f.data[1].toInt() and 0xFF) shl 8)
                     BmsLog.i("AUTH", "设备应答当前权限 $level 级")
@@ -944,7 +1032,8 @@ class BmsRepository(
                 }
             }
             Proto.RSP_WRITE -> {
-                activeWrite?.takeIf { it.session === session && it.address == f.reg }?.echoReceived = true
+                val write = activeWrite?.takeIf { it.session === session && it.address == f.reg } ?: return
+                write.echoReceived = true
                 // 0x42 的数据区是参数块回显（与 0x12 同布局），**不是结果码**：
                 // 见 docs/06 §6.4，写进本地缓存即可，结果看同帧追加的 0xFF 段
                 var k = 0
@@ -959,17 +1048,8 @@ class BmsRepository(
                 }
             }
             Proto.RSP_CONTROL -> {
-                if (f.data.isNotEmpty()) {
-                    val code = f.data[0].toInt() and 0xFF
-                    MockBms.lastControlResult.value = f.reg to code
-                    val cmdName = ControlCmd.name(f.reg)
-                    if (code == 1) {
-                        BmsLog.i("CTRL", "控制命令成功：$cmdName")
-                        applyControlToUi(f.reg)
-                    } else {
-                        BmsLog.e("CTRL", "控制命令被拒：$cmdName（结果码 $code）")
-                    }
-                }
+                // 发布和参数重读由 controlInSession 在 captured Session 下完成。
+                BmsLog.d("CTRL", "控制应答 reg=${f.reg}")
             }
             Proto.FC_WRITE_STATUS -> {
                 val code = f.reg and 0xFF
@@ -1189,63 +1269,90 @@ class BmsRepository(
     /** 本次连接是否已尝试读参数（失败不重复打，权限升级后再强制重读） */
     private var paramsAttempted = false
 
-    /** 读全部参数块 + 身份区（连接成功/权限升级后调用）。串行发，避免与轮询抢应答 */
+    /** 强制刷新合并为后续一轮；修订号挡住读到一半时被写入淘汰的累积结果。 */
     fun refreshParams(force: Boolean = false) = withLock(sessionLock) {
         if (realTransport == null || meter != null || previewActive.value || manualDisconnect.value || !acceptingFrames) return@withLock
-        if (readJob?.isActive == true) return@withLock
-        if (!force && paramsAttempted) return@withLock
         val expected = session
-        paramsAttempted = true
-        readJob = scope.launch {
-            withLock(sessionLock) {
-                checkSession(expected)
-                MockBms.paramsReading.value = true
+        if (readJob?.isActive == true) {
+            if (force) {
+                expected.paramsRevision++
+                expected.refreshAgain = true
             }
+            return@withLock
+        }
+        if (!force && paramsAttempted) return@withLock
+        paramsAttempted = true
+        MockBms.paramsReading.value = true
+        // LAZY 先登记 Job 再启动，避免快速完成的 finally 与登记顺序竞争。
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            val owner = currentCoroutineContext()[Job]
             try {
-                val acc = HashMap<Int, Int>()
-                for ((start, bytes) in paramBlocks) {
-                    val r = requestInSession(Frame.readParam(start, bytes), Proto.RSP_PARAM, expectedReg = start,
-                        timeoutMs = 1500, expectedSession = expected)
-                    if (r != null && r.func == Proto.RSP_PARAM) {
-                        var k = 0
-                        while (k + 1 < r.data.size) {
-                            acc[start + k] = (r.data[k].toInt() and 0xFF) or ((r.data[k + 1].toInt() and 0xFF) shl 8)
-                            k += 2
+                var repeat: Boolean
+                do {
+                    while (withLock(sessionLock) {
+                        checkSession(expected)
+                        expected.modifications > 0
+                    }) delay(40)
+                    val revision = withLock(sessionLock) {
+                        checkSession(expected)
+                        expected.refreshAgain = false
+                        expected.paramsRevision
+                    }
+                    val acc = HashMap<Int, Int>()
+                    val id = HashMap<String, String>()
+                    for ((start, bytes) in paramBlocks) {
+                        if (withLock(sessionLock) { expected.paramsRevision != revision }) break
+                        val r = requestInSession(Frame.readParam(start, bytes), Proto.RSP_PARAM, expectedReg = start,
+                            timeoutMs = 1500, expectedSession = expected)
+                        if (r != null) {
+                            var k = 0
+                            while (k + 1 < r.data.size) {
+                                acc[start + k] = (r.data[k].toInt() and 0xFF) or ((r.data[k + 1].toInt() and 0xFF) shl 8)
+                                k += 2
+                            }
+                        }
+                        delay(120)
+                    }
+                    for ((key, spec) in identityBlocks) {
+                        if (withLock(sessionLock) { expected.paramsRevision != revision }) break
+                        val (addr, len) = spec
+                        val r = requestInSession(Frame.readParam(addr, len), Proto.RSP_PARAM, expectedReg = addr,
+                            timeoutMs = 1500, expectedSession = expected)
+                        if (r != null && r.data.isNotEmpty()) id[key] = ascii(r.data)
+                        delay(120)
+                    }
+                    repeat = withLock(sessionLock) {
+                        checkSession(expected)
+                        if (expected.paramsRevision != revision || expected.modifications > 0 || expected.refreshAgain) {
+                            true
+                        } else {
+                            val paramsRead = acc.isNotEmpty() && !acc.values.all { it == 0xFFFF }
+                            if (paramsRead) MockBms.liveParams.value = acc
+                            if (id.isNotEmpty()) MockBms.identity.value = id
+                            BmsLog.i("PARAM", "参数区读回 ${acc.size} 项（有效 ${if (paramsRead) "是" else "否"}），身份区 ${id.size} 项")
+                            if (paramsRead) {
+                                recordSnapshot()
+                                MockBms.paramsFromCache.value = false
+                                persistParamsCache()
+                            }
+                            // 完成登记也在锁内；此后 force 不会落进已经退出的活跃 Job。
+                            if (readJob === owner) readJob = null
+                            MockBms.paramsReading.value = false
+                            false
                         }
                     }
-                    delay(120)
-                }
-                val id = HashMap<String, String>()
-                for ((key, spec) in identityBlocks) {
-                    val (addr, len) = spec
-                    val r = requestInSession(Frame.readParam(addr, len), Proto.RSP_PARAM, expectedReg = addr,
-                        timeoutMs = 1500, expectedSession = expected)
-                    if (r != null && r.func == Proto.RSP_PARAM && r.data.isNotEmpty()) id[key] = ascii(r.data)
-                    delay(120)
-                }
-                withLock(sessionLock) {
-                    checkSession(expected)
-                    // 权限不足时设备会把整块参数回成 0xFFFF（未披露）。这种结果既不能展示，
-                    // 也不能写进配置缓存——否则下次未连接时配置页会拿它当真实值。
-                    val paramsRead = acc.isNotEmpty() && !acc.values.all { it == 0xFFFF }
-                    if (paramsRead) MockBms.liveParams.value = acc
-                    if (id.isNotEmpty()) MockBms.identity.value = id
-                    BmsLog.i("PARAM", "参数区读回 ${acc.size} 项（有效 ${if (paramsRead) "是" else "否"}），身份区 ${id.size} 项")
-                    if (!paramsRead && acc.isNotEmpty()) {
-                        BmsLog.w("PARAM", "参数区整块 0xFFFF（权限不足/未披露），本次不展示也不落缓存")
-                    }
-                    if (paramsRead) {
-                        recordSnapshot()
-                        MockBms.paramsFromCache.value = false
-                        persistParamsCache()
-                    }
-                }
+                } while (repeat)
             } finally {
                 withLock(sessionLock) {
-                    if (session === expected) MockBms.paramsReading.value = false
+                    if (session === expected && readJob === owner) {
+                        readJob = null
+                        MockBms.paramsReading.value = false
+                    }
                 }
             }
         }
+        readJob = job
+        job.start()
     }
 
     /** 身份区字符串：去掉 0 终止符与不可见字符 */
@@ -1289,14 +1396,14 @@ class BmsRepository(
     }
 
     /**
-     * 常驻监控通知：**开关 + 平台支持 + 链路就绪**三者都满足才显示。
+     * 常驻监控通知：开关 + 平台支持 + 活跃连接意图；掉线重试不撤掉 FGS。
      *
      * 内容每 [MONITOR_REFRESH_MS] 最多刷一次：实时数据 600ms 一拍，逐拍推给系统会把通知栏刷爆。
      */
     private fun refreshMonitorNotification(force: Boolean = false) {
         withLock(monitorLock) {
             val on = AppStore.backgroundMonitor && Notifications.supported &&
-                    _linkState.value == LinkState.Connected
+                    _connectionIntentActive.value && !manualDisconnect.value && !previewActive.value
             if (!on) {
                 if (monitorText != null) {
                     monitorText = null
@@ -1310,7 +1417,9 @@ class BmsRepository(
             val st = MockBms.status.value
             val text = buildString {
                 append(MockBms.deviceLabel)
-                if (st.hasData) {
+                if (_linkState.value != LinkState.Connected) {
+                    append(" · 正在重连")
+                } else if (st.hasData) {
                     append(" · ")
                     append(st.soc)
                     append("% · %.1fV".fmt(st.totalVoltage))
@@ -1372,27 +1481,44 @@ class BmsRepository(
         val failed: Boolean,
     )
 
-    /**
-     * 读一批历史日志。
-     *
-     * 请求序号 = 已取到的条数（官方做法：`logList.length`），一条一条回；空记录即到底。
-     * 走 [requestInSession]，与实时轮询共用 `cmdMutex` 天然互斥——**不暂停轮询**（官方文档
-     * §8.7 也确认了 `0x13` 与轮询可共存），所以不会影响失联判定。
-     *
-     * `expectedReg = null`：序号取帧头回显，但「设备是否回显」文档与源码两说，
-     * 只按功能码匹配更稳（同序号迟到的应答也不会被误杀）。
-     */
-    suspend fun readEventLog(fromIndex: Int, batch: Int = EVENT_LOG_PAGE): EventLogPage {
-        val expected = session
+    private class EventLogToken(val session: Session)
+    private var eventLogToken: EventLogToken? = null
+
+    private fun checkEventLog(token: EventLogToken) {
+        checkSession(token.session)
+        if (eventLogToken !== token) throw CancellationException("日志读取已结束")
+    }
+
+    private fun beginEventLog(more: Boolean): EventLogToken? = withLock(sessionLock) {
+        if (eventLogToken != null || (more && MockBms.eventLogAtEnd.value)) return@withLock null
+        checkSession(session)
+        EventLogToken(session).also {
+            eventLogToken = it
+            MockBms.eventLogLoading.value = true
+            MockBms.eventLogError.value = null
+        }
+    }
+
+    /** 序号必须严格回显，迟到的前一条记录不能满足下一条请求。 */
+    suspend fun readEventLog(fromIndex: Int, batch: Int = EVENT_LOG_PAGE): EventLogPage =
+        readEventLogInSession(fromIndex, batch, session)
+
+    private suspend fun readEventLogInSession(
+        fromIndex: Int, batch: Int, expected: Session, token: EventLogToken? = null,
+    ): EventLogPage {
         val out = ArrayList<io.github.lswlc33.maibms.protocol.EventLogRecord>(batch)
         var idx = fromIndex
         var atEnd = false
         var failed = false
         try {
             while (out.size < batch) {
+                withLock(sessionLock) {
+                    checkSession(expected)
+                    if (token != null) checkEventLog(token)
+                }
                 val r = requestInSession(
                     io.github.lswlc33.maibms.protocol.EventLogCodec.request(idx), Proto.RSP_LOG,
-                    expectedReg = null, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = expected,
+                    expectedReg = idx, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = expected,
                 )
                 if (r == null) {
                     // 无应答：可能是设备不支持/到边界后不回空记录。不推进序号，下次可原样重试
@@ -1410,23 +1536,26 @@ class BmsRepository(
                 idx++
             }
         } catch (e: CancellationException) {
-            // 会话结束（换设备/断开/进入预览）走这里：把已拿到的吐出去，界面不至于一片空白
-            currentCoroutineContext().ensureActive()
-            failed = true
+            // 会话结束不能把旧会话的部分记录交给当前页面。
+            throw e
         }
         return EventLogPage(out, idx, atEnd, failed)
     }
 
     /** 读 20 个保护动作计数；设备无应答返回 null */
     suspend fun readProtectCounters(): List<Int>? = try {
-        val r = requestInSession(
-            io.github.lswlc33.maibms.protocol.EventLogCodec.countersRequest(), Proto.RSP_PROTECT_NUM,
-            expectedReg = null, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = session,
-        )
-        r?.let { io.github.lswlc33.maibms.protocol.EventLogCodec.parseCounters(it.data) }?.takeIf { it.isNotEmpty() }
+        readProtectCountersInSession(session)
     } catch (e: CancellationException) {
         currentCoroutineContext().ensureActive()
         null
+    }
+
+    private suspend fun readProtectCountersInSession(expected: Session): List<Int>? {
+        val r = requestInSession(
+            io.github.lswlc33.maibms.protocol.EventLogCodec.countersRequest(), Proto.RSP_PROTECT_NUM,
+            expectedReg = 0, timeoutMs = EVENT_LOG_TIMEOUT_MS, expectedSession = expected,
+        )
+        return r?.let { io.github.lswlc33.maibms.protocol.EventLogCodec.parseCounters(it.data) }?.takeIf { it.isNotEmpty() }
     }
 
     /**
@@ -1434,73 +1563,129 @@ class BmsRepository(
      *
      * @return 成功条数；-1 = 失败（原因写在 [MockBms.eventLogError]）
      */
-    suspend fun refreshEventLog(): Int {
-        if (MockBms.eventLogLoading.value) return -1
-        MockBms.eventLogLoading.value = true
-        MockBms.eventLogError.value = null
-        return try {
-            val page = readEventLog(0)
-            // 读取失败时**保留已显示的那一份**（只挂横幅说明），不要把用户正在看的历史清空——
-            // 已读到的记录仍然有效，清空只会让人觉得"设备日志没了"
-            if (page.records.isNotEmpty() || !page.failed) {
-                MockBms.eventLog.value = page.records
-                MockBms.eventLogAtEnd.value = page.atEnd
+    suspend fun refreshEventLog(): Int = updateEventLog(more = false)
+
+    /** 追加按唯一序号去重，并从最后一条的下一序号继续。 */
+    suspend fun loadMoreEventLog(): Int = updateEventLog(more = true)
+
+    private suspend fun updateEventLog(more: Boolean): Int {
+        var token: EventLogToken? = null
+        try {
+            val active = beginEventLog(more) ?: return -1
+            token = active
+            val have = withLock(sessionLock) {
+                checkEventLog(active)
+                if (more) MockBms.eventLog.value else emptyList()
             }
-            if (page.failed) MockBms.eventLogError.value = "读取中断：设备未应答（已取到 ${page.records.size} 条）"
-            readProtectCounters()?.let { MockBms.protectCounters.value = it }
-            page.records.size
+            val next = have.maxOfOrNull { it.index }?.plus(1) ?: 0
+            val page = readEventLogInSession(next, EVENT_LOG_PAGE, active.session, active)
+            withLock(sessionLock) { checkEventLog(active) }
+            // 页与计数器从入口到发布使用同一个 Session，绝不重新捕获当前会话。
+            val counters = if (!more) readProtectCountersInSession(active.session) else null
+            return withLock(sessionLock) {
+                checkEventLog(active)
+                if (page.records.isNotEmpty() || !page.failed) {
+                    MockBms.eventLog.value = (have + page.records).distinctBy { it.index }.sortedBy { it.index }
+                    MockBms.eventLogAtEnd.value = page.atEnd
+                }
+                if (page.failed) MockBms.eventLogError.value = "读取中断：设备未应答（已取到 ${page.records.size} 条）"
+                if (counters != null) MockBms.protectCounters.value = counters
+                page.records.size
+            }
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
-            -1
+            return -1
         } finally {
-            MockBms.eventLogLoading.value = false
+            val finishing = token
+            withLock(sessionLock) {
+                if (finishing != null && eventLogToken === finishing && session === finishing.session) {
+                    eventLogToken = null
+                    MockBms.eventLogLoading.value = false
+                }
+            }
         }
     }
 
-    /** 继续往后取一批（按序号追加，不去重——序号本身唯一） */
-    suspend fun loadMoreEventLog(): Int {
-        if (MockBms.eventLogLoading.value || MockBms.eventLogAtEnd.value) return -1
-        MockBms.eventLogLoading.value = true
-        MockBms.eventLogError.value = null
+    /** 修改队列与执行共享一把锁；计数在入队前登记，等待时不占 sessionLock。 */
+    private suspend fun <T> modifyingInSession(expected: Session, block: suspend () -> T): T {
+        withLock(sessionLock) {
+            checkSession(expected)
+            expected.modifications++
+            expected.paramsRevision++
+            MockBms.modifying.value = true
+        }
+        try {
+            return writeMutex.withLock {
+                withLock(sessionLock) { checkSession(expected) }
+                block()
+            }
+        } finally {
+            withLock(sessionLock) {
+                expected.modifications--
+                expected.paramsRevision++
+                if (session === expected) MockBms.modifying.value = expected.modifications > 0
+            }
+        }
+    }
+
+    /** 控制命令（返回结果码，1=成功）；会话在入队前捕获。 */
+    suspend fun control(cmd: Int): Int {
+        val expected = session
         return try {
-            val have = MockBms.eventLog.value
-            val page = readEventLog(have.size)
-            MockBms.eventLog.value = have + page.records
-            MockBms.eventLogAtEnd.value = page.atEnd
-            if (page.failed) MockBms.eventLogError.value = "读取中断：设备未应答"
-            page.records.size
+            modifyingInSession(expected) { controlInSession(cmd, expected) }
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
-            -1
-        } finally {
-            MockBms.eventLogLoading.value = false
+            0
         }
     }
 
-    /** 控制命令（返回结果码，1=成功） */
-    suspend fun control(cmd: Int): Int = try {
-        controlInSession(cmd, session)
-    } catch (e: CancellationException) {
-        currentCoroutineContext().ensureActive()
-        0
+    /** 必须在 sessionLock 下读取；普通参数刷新无权清除用户尚未确认的写入意图。 */
+    private fun unsavedWriteError(expected: Session): String? {
+        if (expected.unconfirmedU32.isEmpty()) return null
+        val params = expected.unconfirmedU32.sorted().joinToString("、") { addr ->
+            "0x%X".fmt(addr) + (ParamTable.byAddr(addr)?.let { "（${it.name}）" } ?: "")
+        }
+        return "已阻止保存：$params 的完整写入未确认，临时区可能只有半值；请重新写入这些 u32 参数的完整期望值并回读确认，再保存。仅刷新参数不会解除。"
     }
 
     private suspend fun controlInSession(cmd: Int, expected: Session): Int {
-        BmsLog.i("CTRL", "发送控制命令：${ControlCmd.name(cmd)}（0x%02X）".fmt(cmd))
-        val r = requestInSession(Frame.control(cmd), Proto.RSP_CONTROL, expectedReg = cmd, expectedSession = expected)
-        if (r == null) {
-            BmsLog.e("CTRL", "控制命令无应答：${ControlCmd.name(cmd)}")
-            return 0
+        withLock(sessionLock) {
+            checkSession(expected)
+            if (cmd == ControlCmd.SAVE_PARAMS) {
+                unsavedWriteError(expected)?.let { reason ->
+                    MockBms.setUnsavedWriteError(reason)
+                    MockBms.lastControlResult.value = cmd to WRITE_SAVE_BLOCKED
+                    publishWriteResult(expected, WRITE_SAVE_BLOCKED, reason)
+                    return WRITE_SAVE_BLOCKED
+                }
+            }
         }
-        return r.data.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+        BmsLog.i("CTRL", "发送控制命令：${ControlCmd.name(cmd)}（0x%02X）".fmt(cmd))
+        var failure: String? = null
+        val r = try {
+            requestInSession(Frame.control(cmd), Proto.RSP_CONTROL, expectedReg = cmd, expectedSession = expected)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            currentCoroutineContext().ensureActive()
+            failure = "${ControlCmd.name(cmd)}传输失败：${e.message ?: e::class.simpleName}"
+            null
+        }
+        val code = r?.data?.firstOrNull()?.toInt()?.and(0xFF) ?: 0
+        return withLock(sessionLock) {
+            checkSession(expected)
+            MockBms.lastControlResult.value = cmd to code
+            if (code == 1) applyControlToUi(cmd)
+            else if (failure != null) publishWriteResult(expected,
+                if (cmd == ControlCmd.SAVE_PARAMS) WRITE_SAVE_FAILED else -2, failure)
+            code
+        }
     }
 
     /** 保存应用参数（0x51/07）：把临时区固化到 flash，结果码进 lastControlResult 供界面回显 */
     suspend fun saveAllParams(): Int {
         BmsLog.i("PARAM", "保存应用参数（0x51/07）")
-        val code = control(ControlCmd.SAVE_PARAMS)
-        MockBms.lastControlResult.value = ControlCmd.SAVE_PARAMS to code
-        return code
+        return control(ControlCmd.SAVE_PARAMS)
     }
 
     /**
@@ -1517,7 +1702,20 @@ class BmsRepository(
     suspend fun writeParam(addr: Int, rawValue: Int): Int {
         val expected = session
         return try {
-            writeMutex.withLock { writeParamInSession(addr, rawValue, expected) }
+            modifyingInSession(expected) {
+                ParamTable.validateRaw(addr, rawValue)?.let {
+                    return@modifyingInSession publishWriteResult(expected, WRITE_INVALID_RAW, it)
+                }
+                try {
+                    writeParamInSession(addr, rawValue, expected)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    currentCoroutineContext().ensureActive()
+                    publishWriteResult(expected, -2,
+                        "写入或回读传输失败：${e.message ?: e::class.simpleName}；写入未确认，本次未保存")
+                }
+            }
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
             BmsLog.w("WRITE", "写参数中止：设备会话已结束，未向新设备继续写入")
@@ -1530,6 +1728,9 @@ class BmsRepository(
         val label = "0x${"%X".fmt(addr)}" + (def?.let { "（${it.name}）" } ?: "")
         withLock(sessionLock) {
             checkSession(expected)
+            // 第一半发出前就 fail-closed，超时/拒绝/取消/异常均保留，不在 finally 清理。
+            if (addr in ParamTable.u32Addrs) setUnconfirmedU32(expected, addr, pending = true)
+            MockBms.setUnsavedWriteError(unsavedWriteError(expected))
             MockBms.lastWriteResult.value = -1
             MockBms.lastWriteDetail.value = null
         }
@@ -1543,14 +1744,14 @@ class BmsRepository(
 
         var code = -1
         var needsReadback = addr in ParamTable.u32Addrs
-        for ((a, frame) in writes) {
-            val result = cmdMutex.withLock {
+        cmdMutex.withLock {
+            for ((a, frame) in writes) {
                 val attempt = WriteAttempt(expected, a)
                 withLock(sessionLock) {
                     checkSession(expected)
                     activeWrite = attempt
                 }
-                try {
+                val result = try {
                     val r = requestInSessionLocked(frame, Proto.RSP_WRITE, expectedReg = a,
                         timeoutMs = 2500, expectedSession = expected)
                     if (r == null) null else {
@@ -1563,13 +1764,13 @@ class BmsRepository(
                 } finally {
                     withLock(sessionLock) { if (activeWrite === attempt) activeWrite = null }
                 }
+                if (result == null) {
+                    return publishWriteResult(expected, -2, "设备未应答（链路差或参数不可写），本次未保存")
+                }
+                code = result.first
+                if (code == -1) needsReadback = true
+                else if (!ResultCodes.writeOk(code)) return publishWriteResult(expected, code, result.second)
             }
-            if (result == null) {
-                return publishWriteResult(expected, -2, "设备未应答（链路差或参数不可写），本次未保存")
-            }
-            code = result.first
-            if (code == -1) needsReadback = true
-            else if (!ResultCodes.writeOk(code)) return publishWriteResult(expected, code, result.second)
         }
 
         if (needsReadback) {
@@ -1580,18 +1781,26 @@ class BmsRepository(
                     else "回读值不一致（期望 $want / 实际 $actual）：写入未完整生效，本次未保存"
                 return publishWriteResult(expected, -3, detail)
             }
+            withLock(sessionLock) {
+                checkSession(expected)
+                // 仅本次完整写入的期望值被四字节回读证实后，解除该地址的保存阻止。
+                if (addr in ParamTable.u32Addrs) setUnconfirmedU32(expected, addr, pending = false)
+            }
             code = 10
             publishWriteResult(expected, code, "已回读确认写入（$label）")
         } else publishWriteResult(expected, code, null)
 
         BmsLog.i("WRITE", "写参数 $label 已确认，自动保存（51/07）")
-        val saved = requestInSession(Frame.saveParams(), Proto.RSP_CONTROL, expectedReg = ControlCmd.SAVE_PARAMS,
-            expectedSession = expected)
-        val saveCode = saved?.data?.firstOrNull()?.toInt()?.and(0xFF)
+        val saveCode = controlInSession(ControlCmd.SAVE_PARAMS, expected)
+        if (saveCode == WRITE_SAVE_BLOCKED) return WRITE_SAVE_BLOCKED
         if (saveCode != 1) {
-            val reason = if (saveCode == null) "设备未确认保存" else ResultCodes.controlResult(saveCode)
+            val reason = if (saveCode == 0) "设备未确认保存" else ResultCodes.controlResult(saveCode)
+            val transferFailure = withLock(sessionLock) {
+                checkSession(expected)
+                MockBms.lastWriteDetail.value?.takeIf { MockBms.lastWriteResult.value == WRITE_SAVE_FAILED }
+            }
             return publishWriteResult(expected, WRITE_SAVE_FAILED,
-                "参数已写入临时区，但保存失败或未确认（$reason）；掉电可能丢失，请重读并重新保存")
+                "参数已写入临时区，但保存失败或未确认（$reason${transferFailure?.let { " · $it" } ?: ""}）；掉电可能丢失，请重读并重新保存")
         }
         withLock(sessionLock) {
             checkSession(expected)
@@ -1603,7 +1812,10 @@ class BmsRepository(
     private fun publishWriteResult(expected: Session, code: Int, detail: String?): Int = withLock(sessionLock) {
         checkSession(expected)
         MockBms.lastWriteResult.value = code
-        MockBms.lastWriteDetail.value = detail
+        val pending = unsavedWriteError(expected)
+        MockBms.setUnsavedWriteError(pending)
+        MockBms.lastWriteDetail.value = if (pending == null) detail
+            else listOfNotNull(detail?.takeUnless { it == pending }, pending).joinToString("；")
         if (!ResultCodes.writeOk(code)) BmsLog.e("WRITE", "写参数失败或未确认：${detail ?: ResultCodes.writeResult(code)}")
         code
     }
@@ -1619,9 +1831,13 @@ class BmsRepository(
             timeoutMs = 1500, expectedSession = expected)
         if (r == null || r.func != Proto.RSP_PARAM || r.data.size < bytes) return null
         val lo = (r.data[0].toInt() and 0xFF) or ((r.data[1].toInt() and 0xFF) shl 8)
-        if (bytes == 2) return lo.toLong()
-        val hi = (r.data[2].toInt() and 0xFF) or ((r.data[3].toInt() and 0xFF) shl 8)
-        return ((hi.toLong() shl 16) or lo.toLong()) and 0xFFFFFFFFL
+        val hi = if (bytes == 4) (r.data[2].toInt() and 0xFF) or ((r.data[3].toInt() and 0xFF) shl 8) else 0
+        return withLock(sessionLock) {
+            checkSession(expected)
+            val patch = if (bytes == 2) mapOf(addr to lo) else mapOf(addr to lo, addr + 2 to hi)
+            MockBms.liveParams.value = MockBms.liveParams.value + patch
+            if (bytes == 2) lo.toLong() else ((hi.toLong() shl 16) or lo.toLong()) and 0xFFFFFFFFL
+        }
     }
 
     private fun applyControlToUi(cmd: Int) {

@@ -151,6 +151,8 @@ val syncWebToDocs by tasks.registering(Copy::class) {
         // 内容不变则哈希不变（git 无噪音），变了则所有引用同步更新。
         // 剥旧再加，反复执行结果稳定（幂等）。
         var digest = MessageDigest.getInstance("SHA-256")
+        // 版本来自 composeApp 构建脚本，不在下方源码树中；版本更新也必须推进缓存键。
+        digest.update("$webBuildVersionName/$webBuildVersionCode".toByteArray())
         // 只哈希**会被浏览器缓存的 JS/CSS/数据文件**；
         // 主题 HTML 本身带版本号，若也参与哈希就会"哈希依赖上一次的哈希"，永远不收敛
         // 哈希**源文件**（引擎三个包 + 主题手写源码），不哈希 minified 产物——

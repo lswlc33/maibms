@@ -24,32 +24,71 @@ import io.github.lswlc33.maibms.data.Notifier
  */
 class AndroidNotifier(private val context: Context) : Notifier {
 
-    /** 前台服务是否在跑（没有公开 API 可查，只能自己记）。进程被杀会一并复位 */
-    @Volatile
-    private var serviceRunning = false
+    private val lifecycle = io.github.lswlc33.maibms.data.MonitorLifecycle()
 
+    init {
+        BmsMonitorService.onStarted = { serviceStarted() }
+        BmsMonitorService.onStopped = { serviceStopped() }
+        BmsMonitorService.onFailed = { serviceFailed() }
+    }
+
+    @Synchronized
     override fun updateMonitoring(text: String?) {
+        perform(lifecycle.request(text))
+    }
+
+    @Synchronized
+    private fun serviceStarted() { perform(lifecycle.started()) }
+
+    @Synchronized
+    private fun serviceStopped() { perform(lifecycle.stopped()) }
+
+    @Synchronized
+    private fun serviceFailed() { lifecycle.failed() }
+
+    private fun perform(action: io.github.lswlc33.maibms.data.MonitorLifecycle.Action) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
         BmsMonitorService.ensureChannels(context)
-        if (text == null) {
-            if (serviceRunning) {
-                serviceRunning = false
-                runCatching { context.stopService(Intent(context, BmsMonitorService::class.java)) }
+        when (action) {
+            is io.github.lswlc33.maibms.data.MonitorLifecycle.Action.Start -> {
+                BmsMonitorService.starting = true
+                runCatching { context.startForegroundService(BmsMonitorService.intent(context, action.text)) }
+                    .onFailure {
+                        BmsMonitorService.starting = false
+                        lifecycle.failed()
+                        BmsMonitorService.publishStatus(context, "后台监控启动失败，请回到前台重试")
+                        android.util.Log.w(BmsMonitorService.TAG, "启动后台监控服务失败：${it.message}")
+                    }
             }
-            nm.cancel(Notifications.ID_MONITOR)
-            return
+            is io.github.lswlc33.maibms.data.MonitorLifecycle.Action.Update -> {
+                runCatching { nm.notify(Notifications.ID_MONITOR, BmsMonitorService.monitorNotification(context, action.text)) }
+                    .onFailure { BmsMonitorService.publishStatus(context, "通知更新失败，请检查系统通知权限") }
+                    .onSuccess { BmsMonitorService.publishStatus(context) }
+            }
+            io.github.lswlc33.maibms.data.MonitorLifecycle.Action.Stop -> {
+                runCatching { context.stopService(Intent(context, BmsMonitorService::class.java)) }
+                    .onSuccess {
+                        if (!it && !BmsMonitorService.starting && !BmsMonitorService.running) {
+                            perform(lifecycle.stopped())
+                        }
+                    }
+                    .onFailure {
+                        lifecycle.failed()
+                        BmsMonitorService.publishStatus(context, "后台监控停止未确认，请回到前台检查")
+                    }
+                nm.cancel(Notifications.ID_MONITOR)
+                BmsMonitorService.publishStatus(context, Notifications.monitoring.value.error)
+            }
+            io.github.lswlc33.maibms.data.MonitorLifecycle.Action.None -> Unit
         }
-        if (serviceRunning) {
-            // 已在跑：直接用同 id 更新，**不能**再 startForegroundService——
-            // Android 12+ 从后台启动前台服务会抛 ForegroundServiceStartNotAllowedException
-            runCatching { nm.notify(Notifications.ID_MONITOR, BmsMonitorService.monitorNotification(context, text)) }
-        } else {
-            serviceRunning = true
-            runCatching { context.startForegroundService(BmsMonitorService.intent(context, text)) }
-                .onFailure {
-                    serviceRunning = false
-                    android.util.Log.w(BmsMonitorService.TAG, "启动后台监控服务失败：${it.message}")
-                }
+    }
+
+    @Synchronized
+    override fun refreshStatus() {
+        BmsMonitorService.ensureChannels(context)
+        BmsMonitorService.publishStatus(context, Notifications.monitoring.value.error)
+        if (io.github.lswlc33.maibms.data.AppForeground.active.value) {
+            lifecycle.requestedText?.let { updateMonitoring(it) }
         }
     }
 
@@ -60,6 +99,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
     }
 
     override fun ensurePermission() {
+        refreshStatus()
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
         val activity = AndroidApp.activity ?: return
         activity.runOnUiThread {

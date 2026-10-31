@@ -52,12 +52,10 @@ fun SnapshotScreen(onBack: () -> Unit, onPreviewed: () -> Unit) {
     ScreenScaffold(title = "快照", subtitle = "连接完成全量同步后自动记录 · 未连接时可回看", onBack = onBack) {
         SectionCard {
             SectionHeader("自动记录", tail = if (snapEnabled) "开" else "关")
-            SettingRow(
-                title = "连接后自动记录快照",
-                inlineValue = if (snapEnabled) "开启" else "关闭",
-                trailing = { AppSwitch(snapEnabled) { snapEnabled = it; AppStore.snapshotEnabled = it } },
-                onClick = { snapEnabled = !snapEnabled; AppStore.snapshotEnabled = snapEnabled },
-            )
+            SwitchSettingRow(title = "连接后自动记录快照", checked = snapEnabled) {
+                snapEnabled = it
+                AppStore.snapshotEnabled = it
+            }
             InfoBanner(
                 if (snapEnabled) "每次连接完成参数区同步后记录一张（同一连接只保留最新），最多 ${20} 张"
                 else "已关闭：不再自动记录，已保存的快照仍可预览",
