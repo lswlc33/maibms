@@ -84,20 +84,21 @@ fun SettingsHomeScreen(
                 inlineValue = UI_SCALE_PRESETS.firstOrNull { it.first == uiScale }?.second,
             )
             Row(
+                // 分段按钮 28dp 高（不是 38dp 行高）：它是排在一起的控件组，行高由上下两张文字行照顾，
+                // 按钮自己再撑到 38dp 会让这一块比「跟随系统/UI 预览」两条都厚一圈
                 Modifier.fillMaxWidth().padding(top = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 UI_SCALE_PRESETS.forEach { (scale, label) ->
                     val selected = uiScale == scale
                     Box(
-                        Modifier.weight(1f)
+                        Modifier.weight(1f).heightIn(min = 28.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(
                                 if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .18f)
                                 else MaterialTheme.colorScheme.surfaceVariant
                             )
-                            .clickable { setUiScale(scale) }
-                            .padding(vertical = 7.dp),
+                            .clickable { setUiScale(scale) },
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(label, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
@@ -108,7 +109,7 @@ fun SettingsHomeScreen(
             }
             Text("整体缩放：文字、间距、图标、卡片高度一起变（不是只改字号）",
                 fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp))
+                modifier = Modifier.padding(top = 4.dp))
             // UI 预览：内置一张 72114 锂电池的静态快照（特殊快照，不入库），没接板子也能看真实排版
             val previewing by io.github.lswlc33.maibms.data.Bms.repository.previewActive.collectAsState()
             SettingRow(

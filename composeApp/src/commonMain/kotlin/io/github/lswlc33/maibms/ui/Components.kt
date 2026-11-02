@@ -102,6 +102,17 @@ fun StatusDot(color: Color, size: Dp = 7.dp) {
 /** 卡片内边距：左右与上下统一用同一个值（12dp），四边一致 */
 val CardPadding: Dp = 12.dp
 
+/**
+ * 设置/列表单行的统一高度（38dp，与设计蓝图 `.it{min-height:38px}` 一致）。
+ *
+ * 此前行高按「能不能点」分成两档——可点击行 48dp（点击区下限）、纯展示行 30dp（文字自然高），
+ * 于是同一张卡里「跟随系统」这种能点的行比「数据源」这种只读行整整高出一截，
+ * 一页滑下去就是一行高一行低。现在**所有行同一高度**：可点击与否、带不带开关、带不带单选点
+ * 都用这个值，行距才成节奏。48dp 是 Material 的默认点击区下限，在这一页偏松，
+ * 收回到蓝图的 38dp 后整页密度与只读区的观感一致（只比原先 30dp 松 8dp）。
+ */
+val SettingRowMinHeight: Dp = 38.dp
+
 @Composable
 fun SectionCard(
     modifier: Modifier = Modifier,
@@ -149,7 +160,9 @@ fun SettingRow(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = if (onClick != null) 48.dp else verticalPadding * 2 + 20.dp)
+            // 行高与「能否点击」无关：整页所有行同高（见 SettingRowMinHeight），
+            // 否则可点击行 48dp、只读行 30dp，一行高一行低
+            .heightIn(min = maxOf(SettingRowMinHeight, verticalPadding * 2 + 20.dp))
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(vertical = verticalPadding)
     ) {
@@ -210,7 +223,9 @@ fun SwitchSettingRow(
 ) {
     val actionable = enabled && !unknown
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp)
+        // 与 SettingRow 同高：开关行的行高不能再被右侧 48dp 热区顶出去，
+        // 否则「后台监控」（开关行）比「监控状态」（文字行）高一截
+        Modifier.fillMaxWidth().heightIn(min = SettingRowMinHeight)
             .triStateToggleable(state = switchState(checked, unknown), enabled = actionable, role = Role.Switch,
                 onClick = { onChange(!checked) })
             .semantics(mergeDescendants = true) { stateDescription = switchStateText(checked, unknown) },
@@ -222,7 +237,10 @@ fun SwitchSettingRow(
         // 旁文字由父层统一播报，不制造第二份状态语义。
         if (unknown) Text("未知", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.clearAndSetSemantics {})
-        Box(Modifier.size(48.dp).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+        // 只在行内占位、不撑高行（整行本身就是开关热区，见上面的 triStateToggleable）：
+        // 盒子限高到行高，宽度保留 48dp 触控宽度
+        Box(Modifier.width(48.dp).heightIn(max = SettingRowMinHeight).clearAndSetSemantics {},
+            contentAlignment = Alignment.Center) {
             SwitchTrack(checked && !unknown, actionable)
         }
     }
@@ -347,17 +365,21 @@ fun InfoBanner(text: String, kind: String = "info", action: String? = null, onAc
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(bg).padding(horizontal = 12.dp, vertical = 6.dp)
+        // 横幅与设置行同高：此前行尾动作文字带 48dp 最小高度，有「去下载/了解」按钮的横幅
+        // 会比纯文字横幅高出一整圈。现在横幅统一 38dp 起，动作按钮跟着横幅高度走
+        modifier = Modifier.fillMaxWidth().heightIn(min = SettingRowMinHeight)
+            .clip(RoundedCornerShape(14.dp)).background(bg).padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Text(text, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = fg, modifier = Modifier.weight(1f))
         if (action != null) {
             Text(action, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = fg,
                 textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
-                modifier = Modifier.padding(start = 8.dp).heightIn(min = 48.dp).wrapContentHeight().clickable {
-                    if (onAction != null) onAction() else dismissed = true
-                    // 「了解/知道了」类动作（无自定义回调）且调用方给了 rememberKey：落盘，不再弹
-                    if (onAction == null && dismissedKey != null) AppStore.put(dismissedKey, "1")
-                })
+                modifier = Modifier.padding(start = 8.dp).heightIn(min = 28.dp)
+                    .wrapContentHeight(Alignment.CenterVertically).clickable {
+                        if (onAction != null) onAction() else dismissed = true
+                        // 「了解/知道了」类动作（无自定义回调）且调用方给了 rememberKey：落盘，不再弹
+                        if (onAction == null && dismissedKey != null) AppStore.put(dismissedKey, "1")
+                    })
         }
     }
 }
