@@ -28,6 +28,13 @@ object BmsColors {
     val WarnBg = Color(0xFFFFE7C2)
     val BadRed = Color(0xFFD23B36)
     val BadBg = Color(0xFFFFDCD9)
+    // 保护/告警条目圆点：对齐官方小程序的圆点素材（unpack 逐像素解码）——
+    // 保护=绿 #58CA76（rounddot_ProtectMack.png）、告警=橙 #FCB74B（rounddot_WarningMack.png）；
+    // 深色卡面上各自提亮一档保证 ≥3:1（2026-11-04 复核 E.14）
+    val ProtectDot = Color(0xFF58CA76)
+    val ProtectDotDark = Color(0xFF6FE08C)
+    val WarnDot = Color(0xFFFCB74B)
+    val WarnDotDark = Color(0xFFFFC86E)
     val OffGray = Color(0xFF8A8A8E)
     val OffBg = Color(0xFFE9E9EB)
     // 单体最高/最低的描边与趋势曲线：浅色卡底上要 ≥3.0
@@ -80,8 +87,9 @@ private val DarkScheme = darkColorScheme(
     secondary = Color(0xFFB6C9B8),
     secondaryContainer = Color(0xFF1E3A21),
     onSecondaryContainer = Color(0xFFD5EFD8),
-    // 深色按截图：纯黑底 + 深灰卡
-    background = Color(0xFF000000),
+    // 深色底：曾按截图用纯黑，2026-11-04 用户反馈观感过沉，改为与卡面同一灰阶系的深灰；
+    // 卡面/分层整体上移一档维持「底暗卡亮」的明度差（扁卡无描边，全靠明度差分层）
+    background = Color(0xFF121214),
     onBackground = Color(0xFFECECEC),
     surface = Color(0xFF1C1C1E),
     onSurface = Color(0xFFECECEC),
@@ -89,11 +97,11 @@ private val DarkScheme = darkColorScheme(
     onSurfaceVariant = Color(0xFF9A9A9E),
     outline = Color(0xFF6E6E73),
     outlineVariant = Color(0xFF2E2E30),
-    surfaceContainerLowest = Color(0xFF0E0E10),
-    surfaceContainerLow = Color(0xFF161618),
-    surfaceContainer = Color(0xFF1C1C1E),
-    surfaceContainerHigh = Color(0xFF252527),
-    surfaceContainerHighest = Color(0xFF2C2C2E),
+    surfaceContainerLowest = Color(0xFF17171A),
+    surfaceContainerLow = Color(0xFF1E1E21),
+    surfaceContainer = Color(0xFF242427),
+    surfaceContainerHigh = Color(0xFF2C2C2F),
+    surfaceContainerHighest = Color(0xFF333336),
     error = Color(0xFFFF6B62),
     errorContainer = Color(0xFF4A1210),
     onError = Color(0xFF2A0706),

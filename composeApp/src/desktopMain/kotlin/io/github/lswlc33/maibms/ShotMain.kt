@@ -42,6 +42,8 @@ private fun seedFrame(
     chMosCode: Int = 1,
     /** 均衡状态码（0=关闭、4=自动均衡…） */
     balState: Int = 0,
+    /** 均衡位图（位 i = 第 i+1 串均衡中）：截图里带几串均衡，看单体网格右上角的绿点 */
+    balBits: Long = 0L,
     /** 告警位域（u64 低 32 位）：用来在截图里带上运行状态位（bit19 放电中 / bit24 放电MOS开） */
     warnBits: Int = 0x0001,
 ): ByteArray {
@@ -74,7 +76,7 @@ private fun seedFrame(
     u32(t0 + 24, 4_644_008L)                        // 累计循环容量（/1000 => 4644Ah）
     u32(t0 + 28, powerW.toLong())                   // 功率（W）
     u32(t0 + 32, 35_520_078L)                       // 运行时间 9:52
-    u32(t0 + 36, 0L)                                // 均衡位图
+    u32(t0 + 36, balBits)                           // 均衡位图
     // 最高/最低/压差/平均按上面生成的单体算，图里高亮格才与数值自洽
     val maxIdx = cellMv.indices.maxByOrNull { cellMv[it] }!! + 1
     val minIdx = cellMv.indices.minByOrNull { cellMv[it] }!! + 1
@@ -156,12 +158,14 @@ private fun seedUi() {
     // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子。
     // 剩余时间同样按当拍电流换算：待机拍放真机实测值（10584min），放电拍 113Ah÷17.6A≈384min。
     // 这一拍同时带上⑤的样例：充电 MOS 状态码 2（单体过压 → 卡2 显示「关闭·单体过压」）、
-    // 均衡 4（自动均衡）、告警位域加 bit19/24（运行状态位的样例，详情弹窗要看得到）
+    // 均衡 4（自动均衡）、均衡位图 5/12 两串（单体网格绿点样例，与 UI 预览快照同款）、
+    // 告警位域加 bit19/24（运行状态位的样例，详情弹窗要看得到）
     listOf(
         seedFrame(0, 0, lastGapSec = 5037, remainDisMin = 10584) to 0,
         seedFrame(
             1, 175, powerW = 1500, lastGapSec = 5037, remainDisMin = 384,
-            chMosCode = 2, balState = 4, warnBits = 0x0001 or 0x00080000 or 0x01000000,
+            chMosCode = 2, balState = 4, balBits = (1L shl 4) or (1L shl 11),
+            warnBits = 0x0001 or 0x00080000 or 0x01000000,
         ) to 1,
     ).forEach { (bytes, _) ->
         FrameParser().feed(bytes).filter { it.func == Proto.RSP_REALTIME }

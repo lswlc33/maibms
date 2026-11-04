@@ -757,6 +757,47 @@ cd unpack
 `ui/EventLogScreen.kt`。单测见 `EventLogTest`（请求帧与官方字节逐字节比对、§8.6 样例、
 空记录到底、未知项不错位、有符号项、截断帧、两张表逐项）。
 
+## E.14 保护/告警文案与颜色对齐官方界面层（定向复核，2026-11-04）
+
+用户反馈「保护和警告信息弹窗的安全检查颜色、文字不对」。复核发现两件事：
+
+**官方存在两层文案，此前项目抄的是 SDK 数组层，用户看到的是界面层。**
+新版小程序的位域文案在两处：SDK 解码数组（`sdk/api/custom_analyze/bms_0x11_1.0.0.js`
+的 `n`/`r` 数组）与界面实际显示的 locale 层（`mp-main-locales/index.js` 的
+`proN/warnN`，**键为 1 基**，bit = N-1）。两层在官方源码里本来就不同（例如 SDK 写
+「电池充电高温」，界面显示「电池高温充电告警」）。此前项目与 docs/13 对齐的是 SDK
+数组层；本次逐位对照旧版 AntDict（0 基数组）+ 新版 locale + SDK 数组三方，取**两版
+界面一致**的文案为口径，共改 34 处（保护域 12、告警域 22），全部在 `BitDict.kt` 与
+docs/13 §13.1/§13.2 落地。代表差异：告警 bit5~8「电池高温充电告警」型（原「电池充电
+高温」）、bit18/19「电池充电中/放电中标志」、bit43「晶振异常」（原「时钟异常」）、
+bit49「低压关机」（原「即将低压关机」）、保护 bit2/5/8~15 带「保护」后缀、bit45/46
+「预放电/预充电MOS异常」、bit47「负载短路锁定开启」、bit48「采集处于接收模式」。
+
+**bit51/54（locale「加热异常保护/告警」）不启用**：新版 `proAndWarn.js` 组件里
+这两槽位显示的是占位数字（51/54），locale 键定义了却未接线——官方界面不会显示
+这两条文案，故本项目的字典也不补（SDK 数组层同样没有）。
+
+**颜色**：官方两版都用「圆点 PNG」标注条目，逐像素解码（旧版 Assets，
+128×128 RGBA 实色）得：保护条目 `rounddot_ProtectMack.png` = **#58CA76（绿）**、
+告警条目 `rounddot_WarningMack.png` = **#FCB74B（橙）**（新版 `proAndWarn.wxss`
+条目统一 #333 文字、仅 bit23/24 微信绿高亮，无红/琥珀语义色）。此前 app 用红点
+（`BadRed`）画保护、深琥珀（`WarnAmber`）画告警——「保护=红」是设计蓝图的
+自创决策，官方语境里红色只用于参数写入失败的错误弹窗（`errorPop.js` #FF2B2B）。
+现在 `BmsColors` 新增 `ProtectDot/WarnDot`（浅色用官方原色）与深色提亮档
+`ProtectDotDark #6FE08C / WarnDotDark #FFC86E`，首页双卡与详情弹窗共用；
+「安全排查」段标题补显式 `onSurfaceVariant` 色（原先未写色，继承了错误的
+LocalContentColor——即用户看到的「颜色不对」）。
+
+**官方自身的两处不一致，按多数口径取**：旧版弹窗「告警信息」列表误用绿点图
+（`BatteryStatus.wxml:455`，页内双栏正确用橙点）；新版把 bit23/24（MOS 开）当
+告警条目绿色高亮置顶，本项目维持既有决策（MOS 开=常态不上屏、关=合成提示），
+不受影响。
+
+**依据本复核落地的实现**：`protocol/BitDict.kt`（两张字典表）、
+`ui/Theme.kt`（BmsColors 圆点色）、`ui/Components.kt`（ProtectAlarmCards 圆点）、
+`ui/DashboardScreen.kt`（弹窗条目圆点 + 安全排查段标题色）。单测同步：
+`BitDictTest`（告警 bit18/19、高位文案、状态位文案 4 处断言）。
+
 ---
 
 **上一章** ← [附录 D 样例报文](附录D-样例报文.md)　|　**返回目录** → [README](README.md)

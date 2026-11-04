@@ -110,8 +110,12 @@ val CardPadding: Dp = 12.dp
  * 一页滑下去就是一行高一行低。现在**所有行同一高度**：可点击与否、带不带开关、带不带单选点
  * 都用这个值，行距才成节奏。48dp 是 Material 的默认点击区下限，在这一页偏松，
  * 收回到蓝图的 38dp 后整页密度与只读区的观感一致（只比原先 30dp 松 8dp）。
+ *
+ * 2026-11-04 用户实测仍嫌行距大，整体收紧到 34dp：行内上下留白同步 5→3dp，
+ * 图标行（28dp 图标盒 + 2×3dp）正好也是 34dp——图标盒 28dp + 2×verticalPadding
+ * 不许超过本值，否则图标行与文字行再次分叉（d22ba06 修掉的问题）。
  */
-val SettingRowMinHeight: Dp = 38.dp
+val SettingRowMinHeight: Dp = 34.dp
 
 @Composable
 fun SectionCard(
@@ -152,7 +156,7 @@ fun SettingRow(
     inlineValue: String? = null,
     danger: Boolean = false,
     /** 行内上下留白：条目少的页面调大一点把内容摊开 */
-    verticalPadding: Dp = 5.dp,
+    verticalPadding: Dp = 3.dp,
     trailing: @Composable (() -> Unit)? = null,
     onClick: (() -> Unit)? = null,
 ) {
@@ -782,9 +786,11 @@ fun MetricGridCard(
     // 立牌「到顶」左右轻摇：只在 overTop 时才挂载无限动画——常驻的无限动画会让
     // 仪表盘永不空闲、一直满帧刷新（纯耗电）；未到顶时角度恒 0，视觉完全一致
     val shakeDeg = rememberTopShakeDeg(overTop)
-    /** 状态立牌（充电/一档/二档/三档各一张）：表关了或未连接时不占位 */
+    /** 状态立牌（充电/一档/二档/三档各一张）：只随开表/关表切换——无数据时按默认第 1 档
+     *  展示表盘外观（空条 + 一档立牌），双击立刻换布局、不等数据帧（2026-11-04 反馈：
+     *  快照预览/未连接下双击只有背景变色，要等数据来了立牌才出现） */
     val sticker: DrawableResource? = when {
-        !gaugeActive || !hasData -> null
+        !gaugeActive -> null
         barIdx == 0 -> Res.drawable.power_charging
         barIdx == 1 -> Res.drawable.power_gear1
         barIdx == 2 -> Res.drawable.power_gear2
@@ -796,8 +802,7 @@ fun MetricGridCard(
             .background(MaterialTheme.colorScheme.surface)   // 底色：进度条未覆盖时的轨道区
             .then(cardClickable)
     ) {
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val roomy = cardColumnCount(maxWidth.value, LocalDensity.current.fontScale, 190f, 2) == 2
+        Box(Modifier.fillMaxWidth()) {
             if (bgOn) PowerGaugeBackground(powerW, stages, hasData, Modifier.matchParentSize())
             // 关闭态提示点：卡片被双击关掉后右上角留一个小圆点（再次双击即恢复）
             if (!gaugeOn) Box(
@@ -842,8 +847,10 @@ fun MetricGridCard(
                     )
                 }
                 // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）；
-                // 顶破末档时左右轻摇表示到顶
-                sticker?.takeIf { roomy }?.let { res ->
+                // 顶破末档时左右轻摇表示到顶。开表即占位、关表才收起——它是表盘规格的一部分，
+                // 不再按卡片宽度取舍（原先 190dp×2 的门槛把标准手机全挡掉了，双击只见背景变色）；
+                // 窄屏下读数网格自动竖排让位
+                sticker?.let { res ->
                     Image(
                         painterResource(res),
                         contentDescription = null,
@@ -1032,9 +1039,12 @@ fun ProtectAlarmCards(status: BmsStatus, onSeeAll: () -> Unit, modifier: Modifie
         modifier.fillMaxWidth().height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        PwCard("保护信息", if (status.hasData) status.protectList.size else null, BmsColors.BadRed,
+        // 条目圆点对齐官方小程序：保护=绿、告警=橙（官方圆点素材色，2026-11-04 复核）
+        PwCard("保护信息", if (status.hasData) status.protectList.size else null,
+               if (isDarkScheme()) BmsColors.ProtectDotDark else BmsColors.ProtectDot,
                status.protectList, status.hasData, onSeeAll, Modifier.weight(1f))
-        PwCard("告警信息", if (status.hasData) status.alarmList.size else null, BmsColors.WarnAmber,
+        PwCard("告警信息", if (status.hasData) status.alarmList.size else null,
+               if (isDarkScheme()) BmsColors.WarnDotDark else BmsColors.WarnDot,
                status.alarmList, status.hasData, onSeeAll, Modifier.weight(1f))
     }
 }
@@ -1136,7 +1146,7 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
         // 正常档最多五列；窄窗/特大字体按有效宽度减列，读数不能逐字竖排。
         AdaptiveCardGrid(cells, minWidth = 64.dp, maxColumns = 5, spacing = 4.dp) { cell, mod -> CellBox(cell, mod) }
         Text(
-            "最高/最低以文字标注 · 均衡显示「均」",
+            "最高/最低以颜色区分 · 均衡带绿点",
             fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 3.dp),
         )
@@ -1179,12 +1189,19 @@ private fun CellBox(c: CellV, modifier: Modifier = Modifier) {
         contentAlignment = Alignment.Center
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("${c.index}" + (if (!c.missing && c.balancing) " 均" else ""), fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
+            Text("${c.index}", fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             Text(if (c.missing) "--" else "%.3f".fmt(c.volt), fontSize = 9.5.sp, fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace, color = valueColor, maxLines = 1, softWrap = false)
-            val limits = cellStateLabels(c).filter { it == "最高" || it == "最低" }
-            if (limits.isNotEmpty()) Text(limits.joinToString("/"), fontSize = 8.sp, color = valueColor)
+            // 最高/最低不再写字：格子淡底 + 数值着色已经表意（2026-11-04 反馈），
+            // 状态语义仍由 stateDescription 提供给读屏
         }
+        // 均衡中的电芯右上角一枚绿点（与网页版 .cell .bal 同款）：
+        // 「均」字挤在串号边上既不美观也难分辨；读屏仍由 stateDescription 朗读「均衡」
+        if (!c.missing && c.balancing) Box(
+            Modifier.align(Alignment.TopEnd).padding(top = 4.dp, end = 4.dp)
+                .size(5.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary)
+        )
     }
 }
 

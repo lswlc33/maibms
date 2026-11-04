@@ -75,7 +75,7 @@ fun SettingsHomeScreen(
                     onClick = { onDarkOverrideChange(themeValue) },
                 )
             }
-            // 深色恒为纯黑（原来的 AMOLED 开关已去掉，默认即纯黑）
+            // 深色底曾恒为纯黑（AMOLED 开关已去掉），2026-11-04 按反馈改为深灰（见 Theme.kt）
             // 界面大小：整体缩放（dp 与 sp 同乘，文字/间距/图标/卡高一起变），不是只改字号——
             // 实现是覆盖 LocalDensity（ui/UiScale.kt），选完立刻全界面生效
             val uiScale = uiScaleState.value
@@ -394,25 +394,26 @@ private fun AboutAppCard() {
                     "发现新版本 v${r.latest}（当前 v${io.github.lswlc33.maibms.data.AppVersion.name}）· 点这里去下载",
                 kind = "info",
                 action = "去下载",
-                onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
+                // 一律跳官网下载区（镜像直链 + 正式/测试切换），不跳 GitHub——国内直连经常打不开
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.DOWNLOAD_PAGE_URL) } },
             )
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.PrereleaseSuperseded -> InfoBanner(
                 "当前测试版 v${io.github.lswlc33.maibms.data.AppVersion.name} 已有对应的正式版 v${r.official}" +
                     "· 稳定版渠道只提示正式版，要继续收测试版请切回预览版渠道",
                 kind = "info",
                 action = "装正式版",
-                onAction = { runCatching { uriHandler.openUri(r.info.htmlUrl.ifBlank { io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases" }) } },
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.DOWNLOAD_PAGE_URL) } },
             )
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Ahead -> InfoBanner(
                 "当前预览版 v${r.local} 比最新正式版 v${r.remote} 还新 · 预览版渠道才有更新的构建",
-                kind = "info", action = "去 Releases",
-                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases") } },
+                kind = "info", action = "去下载",
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.DOWNLOAD_PAGE_URL) } },
             )
             is io.github.lswlc33.maibms.data.UpdateChecker.Result.Failed -> InfoBanner(
-                "更新检查失败（网络不可达或被拦截）· 可直接到仓库 Releases 页查看",
+                "更新检查失败（网络不可达或被拦截）· 可到官网下载页直接取安装包",
                 kind = "warn",
-                action = "去 Releases",
-                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.REPO_URL + "/releases") } },
+                action = "去下载",
+                onAction = { runCatching { uriHandler.openUri(io.github.lswlc33.maibms.data.UpdateChecker.DOWNLOAD_PAGE_URL) } },
             )
             else -> {}
         }

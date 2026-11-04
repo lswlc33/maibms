@@ -11,14 +11,16 @@ import kotlin.test.assertTrue
  * - 告警 bit18/19 = 充电中/放电中（此前被错标成「充电/放电 MOS 开」，真位号是 23/24）；
  * - 旧版缺的高位保护（电流异常/预充失败/内部通信异常…）不得再被静默吞掉；
  * - MOS 开（bit23/24）是常态，告警卡不显示；MOS 关由状态字节合成提示补显（mosClosedHints）；
- * 期望值全部对照 docs/13 与旧版小程序 AntDict（unpack/ 本地资料）逐位核过。
+ * 期望值 2026-10-01 对照 docs/13 与旧版小程序 AntDict 逐位核过；
+ * 2026-11-04 文案整体改齐到两版小程序的**界面显示层**（附录E.14），告警 bit18/19
+ * 界面层是「电池充电中/放电中标志」，断言同步。
  */
 class BitDictTest {
 
     @Test fun warnBit18_19AreChargingFlags_notMosOpen() {
         val names = BitDict.warnNames
-        assertEquals("电池充电中", names[18])
-        assertEquals("电池放电中", names[19])
+        assertEquals("电池充电中标志", names[18])
+        assertEquals("电池放电中标志", names[19])
         assertEquals("充电MOS开", names[23])
         assertEquals("放电MOS开", names[24])
     }
@@ -35,9 +37,9 @@ class BitDictTest {
     @Test fun highWarnBitsArePresent() {
         assertEquals("预充失败", BitDict.warnNames[16])
         assertEquals("电压保护", BitDict.warnNames[31])
-        assertEquals("时钟异常", BitDict.warnNames[43])
-        assertEquals("即将低压关机", BitDict.warnNames[49])
-        assertEquals("内部通信不稳定", BitDict.warnNames[53])
+        assertEquals("晶振异常", BitDict.warnNames[43])
+        assertEquals("低压关机", BitDict.warnNames[49])
+        assertEquals("内部通讯不稳定", BitDict.warnNames[53])
     }
 
     @Test fun mosOpenBitsFiltered_closedHintsSynthesized() {
@@ -51,7 +53,7 @@ class BitDictTest {
             BitDict.decodeForDisplay(bits, BitDict.warnNames),
         )
         assertEquals(
-            listOf("单体过压告警", "充电MOS开", "放电MOS开", "待机中"),
+            listOf("单体过压告警", "充电MOS开", "放电MOS开", "待机状态"),
             BitDict.decodePairs(bits, BitDict.warnNames).map { it.second },
         )
         // MOS 全开 → 无提示；只关放电 → 只提示放电
@@ -74,7 +76,7 @@ class BitDictTest {
         val bits = (1UL shl 24) or (1UL shl 2) or (1UL shl 49)
         val pairs = BitDict.decodeForDisplayPairs(bits, BitDict.warnNames)
         assertEquals(listOf(2, 49), pairs.map { it.first })
-        assertEquals(listOf("单体欠压告警", "即将低压关机"), pairs.map { it.second })
+        assertEquals(listOf("单体欠压告警", "低压关机"), pairs.map { it.second })
     }
 
     @Test fun stagePairsAreTheComplementOfDisplayPairs() {
@@ -88,9 +90,9 @@ class BitDictTest {
         val states = BitDict.statePairs(bits, BitDict.warnNames)
         val all = BitDict.decodePairs(bits, BitDict.warnNames)
         assertEquals(all.map { it.first }, (shown + states).map { it.first }.sorted())
-        // 此前两处都看不到的位（充电器接入 20 / 加热 36 / 调试模式 45 / 防打火 48）现在有出口
+        // 此前两处都看不到的位（充电器接入 20 / 加热 36 / 调试 45 / 防打火 48）现在有出口
         assertEquals(
-            listOf(20 to "CAN充电连接", 36 to "电加热开启", 45 to "调试模式", 48 to "防打火中"),
+            listOf(20 to "充电器连接CAN", 36 to "电加热开启", 45 to "调试模式指示灯", 48 to "防打火工作"),
             states.filter { it.first in setOf(20, 36, 45, 48) },
         )
         // 真告警（bit0/11）与「内部通信不稳定」（bit53，不在状态位集合里）仍走告警列表
@@ -100,6 +102,6 @@ class BitDictTest {
     @Test fun protectBits64bitSafe() {
         // bit49 是保留位（无条目）；bit50 超出 Int/Long 常见位宽，验证 ULong 解码不截断
         assertTrue(BitDict.decodePairs(1UL shl 49, BitDict.protectNames).isEmpty())
-        assertEquals(listOf(50 to "采集Boot模式"), BitDict.decodePairs(1UL shl 50, BitDict.protectNames))
+        assertEquals(listOf(50 to "采集芯片处于Boot模式"), BitDict.decodePairs(1UL shl 50, BitDict.protectNames))
     }
 }

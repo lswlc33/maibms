@@ -73,7 +73,7 @@ class AlarmNotifierTest {
         val n = AlarmNotifier()
         val bits = (1UL shl 16) or (1UL shl 2) or protectOvp     // 短路保护 / 单体2级过压 / 单体过压保护
         assertEquals(
-            listOf("单体过压保护", "单体2级过压", "短路保护"),
+            listOf("单体过压保护", "单体2级过压保护", "短路保护"),
             n.onFrame(bits, 0UL, 0).map { it.name },
         )
     }

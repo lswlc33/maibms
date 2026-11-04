@@ -505,7 +505,8 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
                 fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             status.alarmPairs.forEach { (bit, a) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    StatusDot(BmsColors.WarnAmber)
+                    // 告警条目圆点对齐官方：橙 #FCB74B（官方 rounddot_WarningMack 素材色）
+                    StatusDot(if (isDarkScheme()) BmsColors.WarnDotDark else BmsColors.WarnDot)
                     Text(a, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f).padding(start = 9.dp))
                     Text("bit $bit", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -525,7 +526,9 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
             }
             status.protectPairs.forEach { (bit, p) ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    StatusDot(BmsColors.BadRed)
+                    // 保护条目圆点对齐官方：绿 #58CA76（官方 rounddot_ProtectMack 素材色，
+                    // 红色留给错误/故障语义——保护动作是设备自身的处置，不是系统报错）
+                    StatusDot(if (isDarkScheme()) BmsColors.ProtectDotDark else BmsColors.ProtectDot)
                     Text(p, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f).padding(start = 9.dp))
                     Text("bit $bit", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -577,7 +580,10 @@ fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) 
                 }
             }
             if (status.hasData) {
-                Text("安全排查", fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 10.dp))
+                // 段落标题给显式色：与「普通告警/保护动作/运行状态」各段同款（不写颜色会继承
+                // 调用处的 LocalContentColor，弹窗里曾显出错误颜色——2026-11-04 反馈）
+                Text("安全排查", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 10.dp))
                 safetyChecks(status).forEach { tip ->
                     Text("• $tip", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 5.dp))
