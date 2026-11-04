@@ -632,9 +632,17 @@
 
   /* 上次成功拉到的数据缓存到本地：回访时先拿它渲染，不用干等接口（实测国内会到 10 秒级） */
   var CACHE_KEY = "mai-releases";
+  /* 缓存/重拉的新鲜度阈值：缓存超过 1 小时不再直接当「离线数据」上屏（标注为缓存并立即校验）；
+     页面重新可见/获得焦点时距上次成功拉取超过 5 分钟就重查一次——手机上切走再切回来，
+     版本号就能自己跟上（用户反馈：上次点开过的页面回来后版本可能停在旧的） */
+  var CACHE_STALE_MS = 60 * 60 * 1000;
+  var REFOCUS_RECHECK_MS = 5 * 60 * 1000;
 
   /* src：loading = 正在拉接口 / live = 接口数据 / cache = 本地缓存 / fallback = 内置兜底 */
   var state = { ver:"stable", node:0, releases:JSON.parse(JSON.stringify(FALLBACK)), src:"loading", ipaFallback:FALLBACK_IPA };
+  var lastFetchOkAt = 0;   /* 上次成功拉到接口的时间戳（自校验/重试的节拍基准） */
+  var retryTimer = null;   /* 失败退避重试的句柄 */
+  var retryDelays = [15000, 30000, 60000];   /* 一次会话内最多退避三次，之后交给「重新可见时重查」 */
 
   function $(s){ return document.querySelector(s); }
   function all(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); }
@@ -676,7 +684,7 @@
 
     var srcNote = "";
     if(state.src === "loading")      srcNote = " <span style='color:var(--faint)'>· 正在获取最新版本…</span>";
-    else if(state.src === "cache")   srcNote = " <span style='color:var(--faint)'>· 离线数据</span>";
+    else if(state.src === "cache")   srcNote = " <span style='color:var(--faint)'>· " + (cacheIsStale() ? "缓存数据 · 正在校验…" : "离线数据") + "</span>";
     else if(state.src === "fallback")srcNote = " <span style='color:var(--faint)'>· 离线数据，可能不是最新</span>";
 
     $("#verInfo").innerHTML = (isBeta ? "测试版" : "正式版") + " · <b>v" + rel.ver + "</b>" + srcNote;
@@ -805,8 +813,39 @@
     }catch(e){ return null; }
   }
 
+  /* 缓存是否已不可信（超过新鲜度阈值）：陈旧缓存只作占位并立即后台校验，不再标成「离线数据」 */
+  function cacheIsStale(){
+    try{
+      var ts = parseInt(window.localStorage.getItem(CACHE_KEY + ":ts"), 10);
+      return !ts || (Date.now() - ts) > CACHE_STALE_MS;
+    }catch(e){ return true; }
+  }
+
   function writeCache(d){
-    try{ window.localStorage.setItem(CACHE_KEY, JSON.stringify(d)); }catch(e){}
+    try{
+      window.localStorage.setItem(CACHE_KEY, JSON.stringify(d));
+      window.localStorage.setItem(CACHE_KEY + ":ts", String(Date.now()));
+    }catch(e){}
+  }
+
+  /* 版本是否比当前页面上显示的更新（自校验用）：正式/测试任一渠道变新就算 */
+  function newerThan(received, rendered){
+    function key(r){ return (r && r.stable ? r.stable.ver : "") + "/" + (r && r.beta ? r.beta.ver : ""); }
+    function split(v){ var m = /^(\d+)\.(\d+)\.(\d+)(?:-(.*))?$/.exec(v || ""); return m ? [+m[1], +m[2], +m[3], m[4] || ""] : null; }
+    function isNewer(a, b){
+      var pa = split(a), pb = split(b);
+      if(!pa || !pb) return a !== b;
+      for(var i = 0; i < 3; i++){ if(pa[i] !== pb[i]) return pa[i] > pb[i]; }
+      var ra = pa[3], rb = pb[3];
+      if(ra === rb) return false;
+      if(!ra) return true;      /* 无后缀 = 正式版，比同号 beta 新 */
+      if(!rb) return false;
+      var na = /^(\d+)\./.exec(ra), nb = /^(\d+)\./.exec(rb);
+      return na && nb ? +na[1] > +nb[1] : ra > rb;
+    }
+    return key(received) !== key(rendered) &&
+           (isNewer(received.stable && received.stable.ver, rendered.stable && rendered.stable.ver) ||
+            isNewer(received.beta && received.beta.ver, rendered.beta && rendered.beta.ver));
   }
 
   function loadReleases(){
@@ -824,25 +863,63 @@
         var betaRel   = pub.filter(function(r){ return r.prerelease; })[0];
         var data = {
           stable: stableRel ? parseRelease(stableRel) : state.releases.stable,
-          beta:   betaRel   ? parseRelease(betaRel)   : state.releases.beta,
+          beta:   betaRel ? parseRelease(betaRel) : state.releases.beta,
           ipaFallback: newestIpa(pub)
         };
         if(timer) window.clearTimeout(timer);
+        lastFetchOkAt = Date.now();
+        cancelRetry();
         writeCache(data);
+        // 自校验：接口拿到的比屏上显示的新（比如回到页面时 HTTP 缓存/旧缓存刚被覆盖），
+        // 换上数据并把下载卡片闪一次，让「版本变了」看得见
+        var updated = newerThan(data, state.releases);
         applyData(data, "live");
+        if(updated) flashDownload();
       })
       .catch(function(){
         if(timer) window.clearTimeout(timer);
-        // 拉不到就保留现有数据（本地缓存或内置兜底），只把来源标出来
+        // 拉不到就保留现有数据（本地缓存或内置兜底），只把来源标出来，并退避重试——
+        // 一次失败就躺平的话，国内弱网下页面会一直停在旧缓存上（用户反馈的「不及时刷新」）
         state.src = (state.src === "cache") ? "cache" : "fallback";
         render();
+        scheduleRetry();
       });
+  }
+
+  /* 失败退避重试：15s → 30s → 60s 各试一次；成功或页面关闭为止 */
+  function scheduleRetry(){
+    if(retryTimer || !retryDelays.length || !window.fetch) return;
+    var delay = retryDelays.shift();
+    retryTimer = window.setTimeout(function(){
+      retryTimer = null;
+      loadReleases();
+    }, delay);
+  }
+
+  function cancelRetry(){
+    if(retryTimer){ window.clearTimeout(retryTimer); retryTimer = null; }
+    retryDelays = [15000, 30000, 60000];
+  }
+
+  /* 页面重新可见/获得焦点时的自检：距上次成功拉取超过阈值就重查一次。
+     手机上「切到别的应用再切回来」、桌面上「切走标签页再回来」都会走到这里，
+     版本号因此能自己跟上，不用用户手动刷新 */
+  function bindRecheck(){
+    if(!window.fetch || !document.addEventListener) return;
+    function recheck(){
+      if(document.hidden) return;
+      if(Date.now() - lastFetchOkAt >= REFOCUS_RECHECK_MS) loadReleases();
+    }
+    document.addEventListener("visibilitychange", recheck);
+    window.addEventListener("focus", recheck);
+    window.addEventListener("pageshow", recheck);
   }
 
   buildChips();
   bindSeg();
   bindCopy();
   bindTheme();
+  bindRecheck();
   var cached = readCache();
   if(cached) applyData(cached, "cache"); else render();
   loadReleases();

@@ -77,6 +77,9 @@ internal class LatestRequest<K> {
 object UpdateChecker {
 
     const val REPO_URL = "https://github.com/lswlc33/maibms"
+    /** 「去下载」统一跳官网下载区（镜像直链 + 版本切换都在这页），不跳 GitHub Releases——
+     *  国内直连 GitHub 经常打不开，官网还自带加速节点（2026-11-04 反馈） */
+    const val DOWNLOAD_PAGE_URL = "https://lswlc33.github.io/maibms/#download"
     private const val API_LATEST = "https://api.github.com/repos/lswlc33/maibms/releases/latest"
     private const val API_LIST = "https://api.github.com/repos/lswlc33/maibms/releases?per_page=10"
 
@@ -109,6 +112,7 @@ object UpdateChecker {
     data class ReleaseInfo(
         /** GitHub API 是 snake_case：tag_name / html_url，必须用 @SerialName 显式映射 */
         @kotlinx.serialization.SerialName("tag_name") val tagName: String = "",
+        /** release 页链接（仅供日志/调试；UI 的「去下载」固定跳 [DOWNLOAD_PAGE_URL] 官网） */
         @kotlinx.serialization.SerialName("html_url") val htmlUrl: String = "",
         val body: String? = null,
         val prerelease: Boolean = false,
