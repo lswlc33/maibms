@@ -5,13 +5,17 @@
  *   node webApp/tests/verify-connect.mjs
  *   node webApp/tests/verify-connect.mjs --bundle /absolute/path/maibms-data.js
  *   node webApp/tests/verify-connect.mjs --case LuXing
+ *   node webApp/tests/verify-connect.mjs --case Jbd
+ *   node webApp/tests/verify-connect.mjs --case YanYang
  *
  * Never patch/evaluate extracted transport functions: execute the complete bundle
  * and drive only its public Maibms API. Failures are real failures, including on
  * a stale bundle. Rebuild separately after changing Kotlin; this script does not.
- * Fixture layouts come from Frame.kt, RealtimeDecoder.kt, LuXingProtocol.kt and
- * LanBaoProtocol.kt. Meter initialFrames() is empty: their handshake is polling.
- * Meters deliberately IGNORE ANT 7E/A1/01 probes and never emit ANT replies.
+ * Fixture layouts come from Frame.kt, RealtimeDecoder.kt, LuXingProtocol.kt,
+ * LanBaoProtocol.kt and ReadOnlyBoardProtocol/JbdProtocol/YanYangProtocol.kt.
+ * Meter initialFrames() is empty: their handshake is polling. Meters deliberately
+ * IGNORE ANT 7E/A1/01 probes and never emit ANT replies. New board fixtures reject
+ * every uplink outside their read-only whitelist, including during connection.
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -33,6 +37,8 @@ const hostPath = fileURLToPath(new URL('../../docs/web/maibms-host.js', import.m
 const hostSource = readFileSync(hostPath, 'utf8');
 const uuid = (short) => `0000${short.toLowerCase()}-0000-1000-8000-00805f9b34fb`;
 const FFE0 = uuid('ffe0'), FFE1 = uuid('ffe1'), FFE2 = uuid('ffe2');
+const FF00 = uuid('ff00'), FF01 = uuid('ff01'), FF02 = uuid('ff02');
+const isReadOnlyBoard = (family) => family === 'Jbd' || family === 'YanYang';
 const hex = (bytes) => Buffer.from(bytes).toString('hex');
 
 function crc16(bytes, polynomial = 0xa001) {
@@ -124,6 +130,83 @@ function lanbaoResponse(table) {
   return Buffer.concat([withCrc(Buffer.concat([header, data]), 49960, true), Buffer.from([0xe5])]);
 }
 
+// JBD 03/04 are the supplied golden responses, unchanged. Only the 05 model
+// and the explicitly requested second reading below are synthetic.
+const JBD_GOLDEN = new Map([
+  [3, Buffer.from('dd03001d0618fee101f201f4002a2c7c00000000000080640304030b8b0b8a0b84f88477', 'hex')],
+  [4, Buffer.from('dd0400080d660d610d680d59fe3c77', 'hex')],
+]);
+const JBD_READS = new Map([
+  [3, 'dda50300fffd77'], [4, 'dda50400fffc77'], [5, 'dda50500fffb77'],
+]);
+function jbdResponse(command, revision = 0) {
+  if (revision === 0 && JBD_GOLDEN.has(command)) return JBD_GOLDEN.get(command);
+  const data = command === 5 ? Buffer.from('JBD-VM-4S', 'ascii') : Buffer.from(JBD_GOLDEN.get(command).subarray(4, -3));
+  if (command === 3) {
+    data.writeUInt16BE(1600, 0); data.writeInt16BE(-250, 2); data[19] = 90;
+  } else if (command === 4) {
+    [3440, 3430, 3450, 3420].forEach((v, i) => data.writeUInt16BE(v, i * 2));
+  }
+  // A response checksum covers ONLY status + length + data, never command.
+  const body = Buffer.concat([Buffer.from([0, data.length]), data]);
+  const checksum = (-body.reduce((sum, b) => sum + b, 0)) & 0xffff;
+  return Buffer.concat([Buffer.from([0xdd, command]), body,
+    Buffer.from([checksum >>> 8, checksum & 255, 0x77])]);
+}
+const YANYANG_READS = new Map([[63, 4], [1, 79], [80, 80], [160, 81], [240, 20]]);
+const YANYANG_MAGIC = 0x4d444253;
+function yanYangRequest(register) {
+  const count = YANYANG_READS.get(register);
+  return withCrc(Buffer.from([1, 3, register >>> 8, register & 255, count >>> 8, count & 255]));
+}
+function syntheticYanYangResponse(register, revision = 0) {
+  // SYNTHETIC YYBMS B fixture, NOT a hardware capture. Payload offsets/lengths
+  // follow NiuHelper@6ebda686 docs/yybms-bms-ble-protocol.md and YanYangProtocol:
+  // profile 8 B, summary 158 B, status 160 B, settings 162 B, identity 40 B.
+  const count = YANYANG_READS.get(register);
+  assert.ok(count, `Unexpected synthetic YY register ${register}`);
+  const data = Buffer.alloc(count * 2);
+  if (register === 63) data.writeUInt32LE(YANYANG_MAGIC, 0);
+  else if (register === 1) {
+    data.set([0x59, 0x11, 0x20, 0x26, 1, 2, 3, 4], 2); // supported 5911 serial prefix
+    data.write('SYNTHETIC-YY-4S', 12, 'ascii'); data.write('SYNTHETIC YYBMS B', 38, 'ascii');
+    data.writeUInt16LE(123, 74); data.write('YY-VM-4S', 80, 'ascii');
+    data.set([2, 1, 1], 103); data[122] = 100; data[123] = 123;
+    data.writeUInt32LE(YANYANG_MAGIC, 124); data.writeUInt32LE(3600, 140);
+    data[148] = 4; data[149] = 1;
+    data.writeInt32LE(revision ? 13600 : 13380, 150); data.writeInt32LE(revision ? -300 : -250, 154);
+  } else if (register === 80) {
+    (revision ? [3410, 3400, 3390, 3400] : [3350, 3340, 3360, 3330])
+      .forEach((v, i) => data.writeUInt16LE(v, 2 + i * 2));
+    data.set([68, 69, 64, 65], 64); // MOS/balance/T1/T2: 28/29/24/25 C
+    data.writeUInt16LE(1000, 76); data.writeUInt16LE(revision ? 750 : 800, 78);
+    data[80] = revision ? 75 : 80; data[81] = 98;
+    data.writeUInt16LE(30, 86); data.writeUInt16LE(120, 88); data[95] = 42;
+    data.writeUInt32LE(5, 118); data.writeInt16LE(3400, 122); data.writeInt16LE(20, 124);
+    data.writeUInt32LE((1 << 26) | 3, 144); // charging, charge/discharge MOS on
+    data.writeUInt32LE((1 << 0) | (1 << 14), 152); // protection + low-SOC alarm
+  } else if (register === 160) {
+    [[18, 3550], [20, 3450], [24, 2800], [26, 2900], [36, 1440], [38, 1400],
+      [42, 1000], [44, 1100], [62, 1000], [68, 5000]]
+      .forEach(([offset, value]) => data.writeUInt16LE(value, offset));
+    data.set([95, 90, 40, 45, 100, 95, 30, 35], 80); data.write('SYN-4S01', 94, 'ascii');
+  } else if (register === 240) data.write('SYNTHETIC-YYBMS', 20, 'ascii');
+  return withCrc(Buffer.concat([Buffer.from([1, 3, data.length]), data]));
+}
+function assertBoardRead(family, bytes) {
+  if (family === 'Jbd') {
+    assert.equal(bytes.length, 7, 'JBD permits only complete 03/04/05 read requests');
+    assert.equal(hex(bytes), JBD_READS.get(bytes[2]), 'JBD read-only whitelist/header/checksum');
+    return bytes[2];
+  }
+  assert.equal(family, 'YanYang');
+  assert.equal(bytes.length, 8, 'YY permits only complete FC03 read requests');
+  const register = bytes.readUInt16BE(2);
+  assert.ok(YANYANG_READS.has(register), `YY register ${register} is outside read-only whitelist`);
+  assert.equal(hex(bytes), hex(yanYangRequest(register)), 'YY read-only whitelist/count/Modbus CRC');
+  return register;
+}
+
 class Events {
   listeners = new Map();
   maxListeners = new Map();
@@ -194,10 +277,12 @@ class FakeGatt {
   dropInjected = false;
   constructor(clock, family, options = {}) {
     this.clock = clock; this.family = family; this.options = options;
-    this.replyEnabled = family === 'Ant';
+    this.replyEnabled = family === 'Ant' || isReadOnlyBoard(family);
+    this.boardRevision = 0;
     this.device = new Events();
     this.device.id = options.id ?? `vm-${family}`;
-    this.device.name = options.name ?? { Ant: 'ANT-B2A20', LuXing: 'EM2APP-A581', LanBao: 'BlueBabe-METER' }[family];
+    this.device.name = options.name ?? { Ant: 'ANT-B2A20', LuXing: 'EM2APP-A581', LanBao: 'BlueBabe-METER',
+      Jbd: 'JBD-SP04S034', YanYang: 'YY-NiuM-TEST' }[family];
     const characteristic = (short, properties) => {
       const c = Object.assign(new Events(), { uuid: uuid(short), properties, value: null, notifying: false });
       c.startNotifications = async () => {
@@ -215,12 +300,12 @@ class FakeGatt {
       c.writeValueWithoutResponse = (value) => this.write(c, value, 'without-response');
       return c;
     };
-    this.notify = characteristic('ffe1', { notify: true, write: family === 'Ant',
+    this.notify = characteristic(family === 'Jbd' ? 'ff01' : 'ffe1', { notify: true, write: family === 'Ant',
       writeWithoutResponse: family === 'Ant', read: false, indicate: false });
-    this.writer = family === 'Ant' ? this.notify : characteristic('ffe2',
+    this.writer = family === 'Ant' ? this.notify : characteristic(family === 'Jbd' ? 'ff02' : 'ffe2',
       { write: true, writeWithoutResponse: false, notify: false, read: false, indicate: false });
     this.service = {
-      uuid: FFE0,
+      uuid: family === 'Jbd' ? FF00 : FFE0,
       getCharacteristics: async () => {
         this.failAt('characteristics');
         this.injectDrop('characteristics');
@@ -242,7 +327,10 @@ class FakeGatt {
         this.drop();
       },
       getPrimaryService: async (wanted) => {
-        this.check(() => assert.equal(wanted.toLowerCase(), FFE0, 'Must discover FFE0'));
+        if (isReadOnlyBoard(family) && wanted.toLowerCase() !== this.service.uuid) {
+          const error = new Error('fixture service absent'); error.name = 'NotFoundError'; throw error;
+        }
+        this.check(() => assert.equal(wanted.toLowerCase(), this.service.uuid, 'Must discover the family service'));
         this.failAt('service');
         if (this.options.serviceDelay) await this.wait(this.options.serviceDelay);
         this.injectDrop('service');
@@ -307,7 +395,7 @@ class FakeGatt {
         ? Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
         : Buffer.from(new Uint8Array(value));
       assert.ok(bytes.length > 0 && bytes.length <= 20, 'BLE write chunks must be 1..20 bytes');
-      assert.equal(c.uuid, this.family === 'Ant' ? FFE1 : FFE2, 'Wrong write characteristic UUID');
+      assert.equal(c.uuid, this.family === 'Ant' ? FFE1 : this.family === 'Jbd' ? FF02 : FFE2, 'Wrong write characteristic UUID');
       assert.ok(this.server.connected, 'Write after GATT disconnect');
       assert.ok(this.notify.notifying, 'Subscribe before writing');
       assert.equal(this.writeInFlight, 0, 'Concurrent GATT writes');
@@ -331,6 +419,10 @@ class FakeGatt {
           assert.equal(hex(bytes.subarray(-2)), 'aa55');
           if (bytes[2] === 1) { assert.equal(hex(bytes), hex(ANT_PROBE)); response = antRealtime(); }
           else if (bytes[2] === 2) response = antFrame(0x12, bytes.readUInt16LE(3), Buffer.alloc(bytes[5]));
+        } else if (isReadOnlyBoard(this.family)) {
+          const command = assertBoardRead(this.family, bytes);
+          response = this.family === 'Jbd' ? jbdResponse(command, this.boardRevision)
+            : syntheticYanYangResponse(command, this.boardRevision);
         } else if (this.family === 'LuXing') {
           assert.equal(bytes.length, 8); const start = bytes.readUInt16BE(2);
           const read = LUXING_READS.get(start); assert.ok(read, `Unexpected EM02 register ${start}`);
@@ -781,6 +873,45 @@ test('Review suspended A Promise cannot block different B or tear B on late A su
     assert.equal(b.disconnectCalls, disconnects, 'Late A cleanup must never disconnect B');
     assertOneSession(h); assertLive(h, 'Ant');
   });
+
+for (const family of ['Jbd', 'YanYang']) {
+  test(`${family} manual family read-only telemetry keeps refreshing`, family, { name: 'custom-pack-name' }, async (h) => {
+    h.api.connect(family);
+    await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === 4,
+      `${family} real protocol did not produce dashboard readings`);
+    assert.equal(h.state.family, family);
+    assert.equal(h.state.caps.readOnly, true);
+    assert.equal(h.state.caps.permission, false);
+    assert.equal(h.state.caps.controlCharge, false);
+    assert.equal(h.state.relay.active, false);
+    assert.ok(h.state.availableFields.includes('voltage'));
+    assert.ok(h.state.temps.length > 0);
+    assert.equal(h.state.channel, family === 'Jbd' ? 'jbd' : 'yanyang');
+    const voltage = h.state.device.totalVoltage;
+    h.fake.boardRevision = 1;
+    await h.until(() => h.state.device.totalVoltage !== voltage, 'Polling did not refresh changed board data');
+    assert.equal(h.state.device.totalVoltage, family === 'Jbd' ? 16 : 13.6);
+    assert.ok((h.state.boardSettings || []).length > 0, 'Read-only settings were not published');
+    const write = await h.api.writeParam(0, 4300);
+    const control = await h.api.control(6);
+    const saved = await h.api.saveAllParams();
+    assert.equal(write.ok, false); assert.equal(control.ok, false); assert.equal(saved.ok, false);
+    assert.equal(write.code, -8); assert.equal(control.code, -8);
+    const calls = h.fake.connectCalls;
+    h.fake.drop();
+    await h.until(() => h.fake.connectCalls > calls && h.state.connected && h.fake.server.connected,
+      'Board reconnection did not recover');
+    await h.clock.advance(1500);
+    h.api.disconnect();
+    await h.until(() => !h.state.connected && !h.fake.server.connected, 'Manual disconnect failed');
+    h.api.connect(); // 广播名仍是 custom-pack-name，必须沿用档案的明确板型。
+    await h.until(() => h.state.connected && h.state.family === family && h.fake.server.connected,
+      'Unrecognized advertisement overwrote the remembered family');
+    await h.clock.advance(600);
+    assert.ok(h.fake.writes.every((w) => { assertBoardRead(family, Buffer.from(w.bytes, 'hex')); return true; }));
+    assert.ok(!h.fake.writes.some((w) => w.bytes.startsWith('7e')), 'New board received ANT frames');
+  });
+}
 
 const selected = tests.filter((t) => t.name.toLowerCase().includes(filter));
 assert.ok(selected.length, `No test matches --case ${filter}`);

@@ -9,12 +9,14 @@ internal class ConnectionAttempt internal constructor(val identifier: String, va
     val dropped = CompletableDeferred<Unit>()
     internal var valid = true
     internal var candidate: Any? = null
+    internal var subscribedCandidate: Any? = null
     var candidateCount: Int = 0
         internal set
 
     internal fun finish() {
         valid = false
         candidate = null
+        subscribedCandidate = null
         services.complete(Unit)
         ready.complete(false)
         dropped.complete(Unit)
@@ -49,11 +51,30 @@ internal class ConnectionAttempts {
     }
 
     fun selectCandidate(attempt: ConnectionAttempt, candidate: Any) {
-        if (owns(attempt)) attempt.candidate = candidate
+        if (owns(attempt)) {
+            attempt.candidate = candidate
+            attempt.subscribedCandidate = null
+        }
     }
+
+    /** A queued subscription or timeout does not prove that notifications are enabled. */
+    fun confirmSubscription(attempt: ConnectionAttempt, candidate: Any): Boolean {
+        if (!acceptsCandidate(attempt, candidate) || attempt.ready.isCompleted) return false
+        attempt.subscribedCandidate = candidate
+        return true
+    }
+
+    fun subscriptionConfirmed(attempt: ConnectionAttempt, candidate: Any): Boolean =
+        acceptsCandidate(attempt, candidate) && attempt.subscribedCandidate === candidate
 
     fun acceptsCandidate(attempt: ConnectionAttempt, candidate: Any): Boolean =
         owns(attempt) && attempt.candidate === candidate
+
+    /** Read-only boards have no transport probe; only a confirmed subscription can publish ready. */
+    fun publishSubscribedReady(attempt: ConnectionAttempt, candidate: Any, publish: () -> Unit): Boolean {
+        if (!subscriptionConfirmed(attempt, candidate)) return false
+        return publishReady(attempt, publish)
+    }
 
     fun publishReady(attempt: ConnectionAttempt, publish: () -> Unit): Boolean {
         if (!owns(attempt) || attempt.dropped.isCompleted || attempt.ready.isCompleted) return false

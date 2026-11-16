@@ -6,6 +6,8 @@ import io.github.lswlc33.maibms.data.withLock
 import io.github.lswlc33.maibms.data.epochMillisNow
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.protocol.Frame
+import io.github.lswlc33.maibms.protocol.board.boardFrameForLog
+import io.github.lswlc33.maibms.protocol.board.isSafeBoardRead
 import kotlin.concurrent.Volatile
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCSignatureOverride
@@ -26,6 +28,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import platform.CoreBluetooth.CBAdvertisementDataLocalNameKey
+import platform.CoreBluetooth.CBAdvertisementDataServiceUUIDsKey
 import platform.CoreBluetooth.CBCentralManager
 import platform.CoreBluetooth.CBCentralManagerDelegateProtocol
 import platform.CoreBluetooth.CBCharacteristic
@@ -36,6 +39,7 @@ import platform.CoreBluetooth.CBCharacteristicPropertyRead
 import platform.CoreBluetooth.CBCharacteristicPropertyWrite
 import platform.CoreBluetooth.CBCharacteristicPropertyWriteWithoutResponse
 import platform.CoreBluetooth.CBCharacteristicWriteWithoutResponse
+import platform.CoreBluetooth.CBCharacteristicWriteWithResponse
 import platform.CoreBluetooth.CBManagerState
 import platform.CoreBluetooth.CBManagerStatePoweredOff
 import platform.CoreBluetooth.CBManagerStatePoweredOn
@@ -97,6 +101,7 @@ class IosBleTransport : BmsTransport {
         const val CONNECT_TIMEOUT_MS = 20_000L
         /** 订阅确认兜底：个别固件不回调通知状态，超时按"订阅已发出"放行（与 Android 同款兜底） */
         const val READY_FALLBACK_MS = 800L
+        const val BOARD_SUBSCRIBE_TIMEOUT_MS = 4_000L
     }
 
     private val _linkState = MutableStateFlow(LinkState.Idle)
@@ -128,12 +133,43 @@ class IosBleTransport : BmsTransport {
         targetFamily = family
     }
 
-    /** 一组候选：通道定义 + 实际拿到的写/通知特征 */
+    /** 扫描时可选的手动板型；连接仍以 targetFamily 为准。 */
+    @Volatile private var scanFamily: DeviceFamily? = null
+
+    override fun setScanFamily(family: DeviceFamily?) {
+        scanFamily = family
+    }
+
     private data class Candidate(
         val channel: BleChannel,
         val write: CBCharacteristic,
         val notify: CBCharacteristic,
     )
+
+    private val pendingBoardServices = mutableSetOf<String>()
+
+    /** 新板按服务 UUID 与特征 UUID 配对，不回退到 ANT 通道。 */
+    private fun buildBoardCandidates(services: List<CBService>): List<Candidate> =
+        boardBleChannels(targetFamily).flatMap { channel ->
+            services.filter { sameBleUuid(it.UUID.UUIDString, channel.serviceUuid) }.flatMap { service ->
+                val chars = service.characteristics.orEmpty().mapNotNull { it as? CBCharacteristic }
+                val write = chars.firstOrNull { sameBleUuid(it.UUID.UUIDString, channel.writeUuid) }
+                val notify = chars.firstOrNull { sameBleUuid(it.UUID.UUIDString, channel.notifyUuid) }
+                if (write != null && notify != null && isWritable(write) && isNotifiable(notify)) {
+                    listOf(Candidate(channel, write, notify))
+                } else emptyList()
+            }
+        }
+
+    private fun isBoardService(service: CBService): Boolean =
+        boardBleChannels(targetFamily).any { sameBleUuid(service.UUID.UUIDString, it.serviceUuid) }
+
+    private fun isCurrentNotifyFor(c: CBCharacteristic): Boolean {
+        val expected = notifyChar ?: return false
+        val service = c.service?.UUID?.UUIDString ?: return false
+        val expectedService = expected.service?.UUID?.UUIDString ?: return false
+        return sameBleUuid(c.UUID.UUIDString, expected.UUID.UUIDString) && sameBleUuid(service, expectedService)
+    }
 
     // ---- 连接尝试的共享状态 ----
     // 通信字段由 delegate 与主队列协程使用；公共入口也用 attemptLock 串行核查所有权。
@@ -164,6 +200,7 @@ class IosBleTransport : BmsTransport {
     @Volatile private var peripheral: CBPeripheral? = null
     @Volatile private var writeChar: CBCharacteristic? = null
     @Volatile private var notifyChar: CBCharacteristic? = null
+    @Volatile private var pendingGattWrite: CompletableDeferred<Boolean>? = null
 
     /** 单次写上限（字节），由 maximumWriteValueLengthForType 更新 */
     @Volatile private var maxWriteLen: Int = 20
@@ -237,15 +274,20 @@ class IosBleTransport : BmsTransport {
             RSSI: NSNumber,
         ): Unit = withLock(attemptLock) {
             if (!acceptsEpoch()) return@withLock
-            val name = didDiscoverPeripheral.name
-                ?: (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
-                ?: return@withLock
-            // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
-            if (!DeviceFamily.isTarget(name)) return@withLock
-            val family = DeviceFamily.matchName(name) ?: return@withLock
+            val name = ((advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+                ?: didDiscoverPeripheral.name).orEmpty().trim()
+            val serviceUuids = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? List<*>)
+                .orEmpty().mapNotNull { (it as? platform.CoreBluetooth.CBUUID)?.UUIDString }
+            val detected = advertisedFamily(name, serviceUuids)
+            val family = scanFamily ?: detected
             val id = didDiscoverPeripheral.identifier.UUIDString
-            logD("scan 发现 $name $id rssi=${RSSI.intValue} → ${family.label}")
-            scanHandler?.invoke(ScanDevice(name, id, RSSI.intValue, family))
+            val wanted = desiredAddress?.equals(id, ignoreCase = true) == true
+            if (family == null && !wanted) return@withLock
+            if (scanFamily != null && name.isBlank() && detected == null && !wanted) return@withLock
+            val label = name.ifBlank { "未命名设备" }
+            val reportFamily = family ?: targetFamily
+            logD("scan 发现 $label $id rssi=${RSSI.intValue} → ${reportFamily.label}")
+            scanHandler?.invoke(ScanDevice(label, id, RSSI.intValue, reportFamily))
 
             if (pendingPeripheral != null) return@withLock
             val want = desiredAddress
@@ -312,6 +354,16 @@ class IosBleTransport : BmsTransport {
             // 原始 UUIDString 一并打出来：iOS 对 16 位 UUID 有时给短形态（"FFE0"）、有时给完整 128 位，
             // 日志里只留归一化后的短码会把这个问题掩盖掉（对照用的原始值就是这行的用途）
             logD("服务列表: " + services.joinToString { "${shortUuid(it.UUID.UUIDString)}(${it.UUID.UUIDString})" })
+            if (targetFamily.isReadOnlyBoard) {
+                val selected = services.filter(::isBoardService)
+                pendingBoardServices.clear()
+                pendingBoardServices.addAll(selected.map { bleUuid(it.UUID.UUIDString) })
+                if (selected.isEmpty()) {
+                    logE("${targetFamily.label}没有可用服务")
+                    owner.ready.complete(false)
+                } else selected.forEach { peripheral.discoverCharacteristics(null, forService = it) }
+                return@withLock
+            }
             val service = services.firstOrNull { shortUuid(it.UUID.UUIDString) == SERVICE_FFE0 }
             if (service == null) {
                 logE("设备没有 FFE0 服务（不是已知的保护板/电量计？）")
@@ -327,8 +379,27 @@ class IosBleTransport : BmsTransport {
             didDiscoverCharacteristicsForService: CBService,
             error: NSError?,
         ): Unit = withLock(attemptLock) {
-            if (!acceptsEpoch() || !accepts(peripheral) || shortUuid(didDiscoverCharacteristicsForService.UUID.UUIDString) != SERVICE_FFE0) return@withLock
+            if (!acceptsEpoch() || !accepts(peripheral)) return@withLock
             val owner = attempts.current ?: return@withLock
+            if (targetFamily.isReadOnlyBoard) {
+                if (!isBoardService(didDiscoverCharacteristicsForService)) return@withLock
+                pendingBoardServices.remove(bleUuid(didDiscoverCharacteristicsForService.UUID.UUIDString))
+                if (pendingBoardServices.isNotEmpty()) return@withLock
+                val found = buildBoardCandidates(peripheral.services.orEmpty().mapNotNull { it as? CBService })
+                _availableChannels.value = found.map { it.channel }
+                if (found.isEmpty()) {
+                    logE("${targetFamily.label}没有可用的写/通知特征")
+                    owner.ready.complete(false)
+                    return@withLock
+                }
+                val pref = preferred
+                candidates = listOfNotNull(found.firstOrNull { it.channel == pref }) + found.filter { it.channel != pref }
+                candidateIndex = 0
+                maxWriteLen = peripheral.maximumWriteValueLengthForType(CBCharacteristicWriteWithoutResponse).toInt()
+                probeNext(peripheral)
+                return@withLock
+            }
+            if (shortUuid(didDiscoverCharacteristicsForService.UUID.UUIDString) != SERVICE_FFE0) return@withLock
             if (error != null) {
                 logE("发现特征失败：${error.localizedDescription}")
                 owner.ready.complete(false)
@@ -390,6 +461,18 @@ class IosBleTransport : BmsTransport {
         ): Unit = withLock(attemptLock) {
             if (!acceptsEpoch() || !accepts(peripheral) || !isCurrentNotify(didUpdateNotificationStateForCharacteristic)) return@withLock
             val c = candidates.getOrNull(candidateIndex) ?: return@withLock
+            val owner = attempts.current ?: return@withLock
+            if (targetFamily.isReadOnlyBoard) {
+                if (owner.ready.isCompleted) return@withLock
+                if (error != null || !didUpdateNotificationStateForCharacteristic.isNotifying) {
+                    logE("新板通知订阅未成功，换下一个候选通道")
+                    candidateIndex++
+                    probeNext(peripheral)
+                } else if (attempts.confirmSubscription(owner, c)) {
+                    afterSubscribed(peripheral, c, attemptGen)
+                }
+                return@withLock
+            }
             if (error != null) {
                 logE("订阅通知失败：${error.localizedDescription}（换下一个候选通道）")
                 probeSignal?.complete(false)
@@ -405,6 +488,18 @@ class IosBleTransport : BmsTransport {
         @ObjCSignatureOverride
         override fun peripheral(
             peripheral: CBPeripheral,
+            didWriteValueForCharacteristic: CBCharacteristic,
+            error: NSError?,
+        ): Unit = withLock(attemptLock) {
+            if (!acceptsEpoch() || !accepts(peripheral)) return@withLock
+            val expected = writeChar ?: return@withLock
+            if (!sameBleUuid(expected.UUID.UUIDString, didWriteValueForCharacteristic.UUID.UUIDString)) return@withLock
+            pendingGattWrite?.complete(error == null)
+        }
+
+        @ObjCSignatureOverride
+        override fun peripheral(
+            peripheral: CBPeripheral,
             didUpdateValueForCharacteristic: CBCharacteristic,
             error: NSError?,
         ): Unit = withLock(attemptLock) {
@@ -415,7 +510,9 @@ class IosBleTransport : BmsTransport {
             }
             val data = didUpdateValueForCharacteristic.value ?: return@withLock
             val bytes = data.toByteArray()
-            logD("← ${hex(bytes)}")
+            BmsLog.frame("BLE", "←", bytes.size) {
+                if (targetFamily == DeviceFamily.Jbd) "[嘉佰达通知内容已隐藏]" else hex(bytes)
+            }
             noteProbeResponse(bytes)
             _incoming.tryEmit(bytes)
         }
@@ -442,8 +539,23 @@ class IosBleTransport : BmsTransport {
             _connectHint.value = "通道探测：${c.channel.label}…"
             // 先订阅通知（docs 硬性顺序）
             p.setNotifyValue(true, forCharacteristic = c.notify)
-            // 订阅确认个别固件不回调：超时也按「订阅已发出」进入探测，绝不把连接卡死
             val gen = attemptGen
+            if (targetFamily.isReadOnlyBoard) {
+                scope.launch {
+                    delay(BOARD_SUBSCRIBE_TIMEOUT_MS)
+                    withLock(attemptLock) {
+                        if (!acceptsEpoch() || gen != attemptGen || !accepts(p) ||
+                            !attempts.acceptsCandidate(owner, c) || owner.ready.isCompleted ||
+                            attempts.subscriptionConfirmed(owner, c)) return@launch
+                        logW("${c.channel.label}通知订阅确认超时，换下一个候选")
+                        runCatching { p.setNotifyValue(false, forCharacteristic = c.notify) }
+                        candidateIndex++
+                        probeNext(p)
+                    }
+                }
+                return@withLock
+            }
+            // 既有设备保留订阅兜底，新只读板在上方等待明确成功。
             scope.launch {
                 delay(READY_FALLBACK_MS)
                 withLock(attemptLock) {
@@ -460,7 +572,8 @@ class IosBleTransport : BmsTransport {
         private fun afterSubscribed(p: CBPeripheral, c: Candidate, gen: Int): Unit = withLock(attemptLock) {
             val owner = attempts.current ?: return@withLock
             if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c)) return@withLock
-            if (targetFamily.isMeter) {
+            if (targetFamily.isReadOnlyBoard && !attempts.subscriptionConfirmed(owner, c)) return@withLock
+            if (targetFamily.isMeter || targetFamily.isReadOnlyBoard) {
                 completeReady(p, owner, c, gen)
             } else {
                 startProbe(p, owner, c, gen)
@@ -511,13 +624,15 @@ class IosBleTransport : BmsTransport {
 
         private fun completeReady(p: CBPeripheral, owner: ConnectionAttempt, c: Candidate, gen: Int): Unit = withLock(attemptLock) {
             if (!acceptsEpoch() || gen != attemptGen || !accepts(p) || !attempts.acceptsCandidate(owner, c)) return@withLock
-            attempts.publishReady(owner) {
+            val publish: () -> Unit = {
                 _activeChannel.value = c.channel
                 _linkState.value = LinkState.Connected
                 _connectHint.value = null
                 logI(if (targetFamily.isMeter) "电量计通道就绪：${c.channel.id}（跳过保护板探测）"
                      else "通道就绪：${c.channel.label}（${c.channel.id}）")
             }
+            if (targetFamily.isReadOnlyBoard) attempts.publishSubscribedReady(owner, c, publish)
+            else attempts.publishReady(owner, publish)
         }
     }
 
@@ -575,11 +690,7 @@ class IosBleTransport : BmsTransport {
     private fun shortId(c: CBCharacteristic): String = shortUuid(c.UUID.UUIDString)
 
     /** 不比较 K/N wrapper 身份；只接受当前候选的服务 + 通知特征。 */
-    private fun isCurrentNotify(c: CBCharacteristic): Boolean {
-        val expected = notifyChar ?: return false
-        return shortId(c) == shortId(expected) &&
-            c.service?.UUID?.UUIDString?.let { shortUuid(it) } == SERVICE_FFE0
-    }
+    private fun isCurrentNotify(c: CBCharacteristic): Boolean = isCurrentNotifyFor(c)
 
     /** 写特征要可写（与 Android 的 isWritable 对齐）；`.toInt()` 是躲开 NS_OPTIONS 映射成 UInt/ULong 的差异 */
     private fun isWritable(c: CBCharacteristic): Boolean {
@@ -800,6 +911,8 @@ class IosBleTransport : BmsTransport {
         val current = attempts.current
         val p = peripheral
         val probe = probeSignal
+        pendingGattWrite?.complete(false)
+        pendingGattWrite = null
         peripheral = null
         writeChar = null
         notifyChar = null
@@ -825,21 +938,33 @@ class IosBleTransport : BmsTransport {
     // ---------------- 写入 ----------------
 
     override suspend fun write(frame: ByteArray) {
+        if (targetFamily.isReadOnlyBoard) require(isSafeBoardRead(targetFamily, frame)) { "只读板型拒绝修改命令" }
         val p = peripheral ?: run { logW("写入被丢弃：未连接"); return }
         val wc = writeChar ?: run { logW("写入被丢弃：无写通道"); return }
         if (_linkState.value != LinkState.Connected) { logW("写入被丢弃：链路未就绪"); return }
         // 帧日志统一走协议层的遮蔽版：0x23 密码帧的数据区不能被原样写进日志
-        logD("→ ${Frame.hexForLog(frame)}")
-        val chunk = minOf(maxWriteLen, MAX_CHUNK).coerceAtLeast(20)
+        logD("→ ${if (targetFamily.isReadOnlyBoard) boardFrameForLog(targetFamily, frame) else Frame.hexForLog(frame)}")
+        val writeType = if ((wc.properties and CBCharacteristicPropertyWriteWithoutResponse).toInt() != 0)
+            CBCharacteristicWriteWithoutResponse else CBCharacteristicWriteWithResponse
+        val chunk = minOf(p.maximumWriteValueLengthForType(writeType).toInt(), MAX_CHUNK).coerceAtLeast(1)
         var offset = 0
+        val generation = attemptGen
         while (offset < frame.size) {
+            if (generation != attemptGen || peripheral?.identifier?.UUIDString != p.identifier.UUIDString || _linkState.value != LinkState.Connected) return
             val len = minOf(chunk, frame.size - offset)
             val piece = frame.copyOfRange(offset, offset + len)
-            p.writeValue(
-                piece.toNSData(),
-                forCharacteristic = wc,
-                type = CBCharacteristicWriteWithoutResponse,
-            )
+            val response = if (writeType == CBCharacteristicWriteWithResponse)
+                CompletableDeferred<Boolean>().also { pendingGattWrite = it } else null
+            try {
+                p.writeValue(piece.toNSData(), forCharacteristic = wc, type = writeType)
+                if (response != null && withTimeoutOrNull(1_500) { response.await() } != true) {
+                    logW("蓝牙写入未确认")
+                    return
+                }
+            } finally {
+                if (pendingGattWrite === response) pendingGattWrite = null
+                response?.cancel()
+            }
             offset += len
             delay(WRITE_GAP_MS)
         }

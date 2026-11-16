@@ -118,13 +118,13 @@
     var soc = items[0];
     soc.innerHTML = '';
     var bar = h('span', 'bar');
-    var filled = asciiBar(d.hasData ? d.soc / 100 : 0, 18);
+    var filled = asciiBar(d.hasData && (!window.MaibmsBoards.supports(st) || window.MaibmsBoards.hasReading(st, 'soc')) ? d.soc / 100 : 0, 18);
     var onPart = h('span', 'on', filled.replace(/░+$/, ''));
     var offPart = h('span', 'off', filled.slice(filled.replace(/░+$/, '').length));
     bar.appendChild(onPart);
     bar.appendChild(offPart);
     soc.appendChild(bar);
-    soc.appendChild(document.createTextNode(' ' + (d.hasData ? d.soc : '--') + '%'));
+    soc.appendChild(document.createTextNode(' ' + (d.hasData && (!window.MaibmsBoards.supports(st) || window.MaibmsBoards.hasReading(st, 'soc')) ? d.soc : '--') + '%'));
 
     items[1].textContent = d.hasData ? num(d.totalVoltage, d.voltageDecimals) + 'V' : '--';
     items[2].textContent = d.hasData ? num(d.current, 2) + 'A' : '--';
@@ -164,7 +164,7 @@
     // 连接/断开命令
     var conn = h('button', 'cmd primary', '[C] 连接设备');
     conn.id = 'connCmd';
-    conn.addEventListener('click', function () { M.connect(); });
+    conn.addEventListener('click', function () { window.MaibmsBoards.connect(); });
     bar.appendChild(conn);
     var disc = h('button', 'cmd danger', '[X] 断开');
     disc.id = 'discCmd';
@@ -280,7 +280,7 @@
 
     if (!st.connected && !st.hasData) {
       var b = h('button', 'cmd primary', '[ 回车 ] 连接设备');
-      b.addEventListener('click', function () { M.connect(); });
+      b.addEventListener('click', function () { window.MaibmsBoards.connect(); });
       wrap.appendChild(panel('连接', (function () {
         var d = h('div');
         d.appendChild(h('div', null, st.scanning ? '正在等待浏览器设备选择器…' :
@@ -645,7 +645,7 @@
 
     var cmds = h('div', 'cmds');
     var cb = h('button', 'cmd primary', st.connected ? '[ 断开 ]' : '[ 连接设备 ]');
-    cb.addEventListener('click', function () { if (st.connected) M.disconnect(); else M.connect(); });
+    cb.addEventListener('click', function () { if (st.connected) M.disconnect(); else window.MaibmsBoards.connect(); });
     cmds.appendChild(cb);
     var th = h('button', 'cmd', '[ 切换主题 ]');
     th.addEventListener('click', function () {
@@ -925,12 +925,23 @@
     renderHud(st);
     renderTabs(st);
 
+    var content = document.getElementById('content');
+    if (!content) return;
+    var boardMode = window.MaibmsBoards.supports(st);
+    document.querySelectorAll('#tabs .tab').forEach(function (item) {
+      if (item.dataset.tab === 'control') item.style.display = boardMode ? 'none' : '';
+    });
+    if (boardMode) {
+      if (ui.tab === 'control') ui.tab = 'params';
+      var boardKey = window.MaibmsBoards.renderKey(st, ui.tab);
+      if (boardKey !== null && boardKey === ui.boardRenderKey) return;
+      ui.boardRenderKey = boardKey;
+      clear(content); content.appendChild(window.MaibmsBoards.render(st, ui.tab));
+      ui.lastRenderKey = null; return;
+    }
     var key = renderKey(st);
     if (key !== null && key === ui.lastRenderKey) return;
     ui.lastRenderKey = key;
-
-    var content = document.getElementById('content');
-    if (!content) return;
     var y = window.scrollY;
     clear(content);
 
@@ -959,11 +970,11 @@
         case '3': ui.tab = 'control'; renderAll(); break;
         case '4': ui.tab = 'settings'; renderAll(); break;
         case 'c': case 'C':
-          if (!st.connected) M.connect(); break;
+          if (!st.connected) window.MaibmsBoards.connect(); break;
         case 'x': case 'X':
           if (st.connected) M.disconnect(); break;
         case 'Enter':
-          if (!st.connected) M.connect(); break;
+          if (!st.connected) window.MaibmsBoards.connect(); break;
       }
     });
   }

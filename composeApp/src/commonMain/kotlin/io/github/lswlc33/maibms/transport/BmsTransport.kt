@@ -44,6 +44,7 @@ enum class BleChannel(
     val notifyUuid: String,
     /** 备用通道的代价（卡片警示语）；默认通道为 null */
     val warn: String? = null,
+    val serviceUuid: String = "FFE0",
 ) {
     Default("ffe1", "默认通道", "ffe1收发", "FFE1", "FFE1"),
     BackupA(
@@ -61,7 +62,14 @@ enum class BleChannel(
      */
     Meter(
         "meter", "电量计通道", "ffe2发-ffe1收", "FFE2", "FFE1",
-    );
+    ),
+    YanYang("yanyang", "彦阳通道", "ffe2发-ffe1收", "FFE2", "FFE1"),
+    YanYangFee9(
+        "yanyang-fee9", "彦阳备用模块", "fee9模块",
+        "D44BC439-ABFD-45A2-B575-925416129600", "FEE1", serviceUuid = "FEE9",
+    ),
+    Jbd("jbd", "嘉佰达通道", "ff02发-ff01收", "FF02", "FF01", serviceUuid = "FF00"),
+    JbdFfe0("jbd-ffe0", "嘉佰达串口模块", "ffe1收发", "FFE1", "FFE1");
 
     companion object {
         fun byId(id: String?): BleChannel? = values().firstOrNull { it.id == id }
@@ -99,6 +107,9 @@ interface BmsTransport {
 
     /** 当前连接设备的家族（未连接/未知 = Unknown）；用于界面按电量计/保护板分支 */
     val currentFamily: StateFlow<DeviceFamily> get() = DEFAULT_FAMILY
+
+    /** 手动指定扫描板型；null 为按名称与广播服务自动识别。 */
+    fun setScanFamily(family: DeviceFamily?) {}
 
     /** 扫描（虚拟设备返回内置假列表） */
     suspend fun scan(onFound: (ScanDevice) -> Unit) {}

@@ -30,7 +30,9 @@ import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.StartupTrace
 import io.github.lswlc33.maibms.data.fmt
+import io.github.lswlc33.maibms.data.hasReading
 import io.github.lswlc33.maibms.data.hasRelayInfo
+import io.github.lswlc33.maibms.transport.DeviceFamily
 import kotlinx.coroutines.launch
 
 /**
@@ -78,6 +80,7 @@ fun DashboardScreen(
     val previewing by repo.previewActive.collectAsState()
     val busy by MockBms.modifying.collectAsState()
     val previewLabel by repo.previewLabel.collectAsState()
+    val readError by MockBms.readError.collectAsState()
     val scope = rememberCoroutineScope()
     /** 权限不够时点控制按钮的一次性说明（点掉即清） */
     var permDenied by remember { mutableStateOf<String?>(null) }
@@ -156,6 +159,10 @@ fun DashboardScreen(
                     collapsedRelayHint = "中继信息".takeIf { relayFolded },
                     onClick = if (relayFolded) expandRelayCard else null,
                 )
+                readError?.takeIf { family.isReadOnlyBoard && !previewing }?.let { InfoBanner(it, kind = "warn") }
+                if (link == io.github.lswlc33.maibms.transport.LinkState.Connected && !status.hasData && readError == null) {
+                    InfoBanner("蓝牙已连接 · 等待设备返回仪表数据…", kind = "info")
+                }
                 // 链路状态横幅也跟着固定：它是卡1状态的直接延续，不该滚走
                 when {
                     previewing -> InfoBanner(
@@ -205,9 +212,9 @@ fun DashboardScreen(
                 // 保护/告警双卡
                 ProtectAlarmCards(status, onSeeAll = onOpenProtect)
                 // 温度
-                TempCard(status.temps)
+                if (caps.antDetails || presentTemperatures(status.temps).isNotEmpty()) TempCard(status.temps)
                 // 单体电压
-                CellGridCard(
+                if (caps.antDetails || status.cells.isNotEmpty() || status.maxCell != "--") CellGridCard(
                     status.cells, avgCell = status.avgCell, deltaCell = status.deltaCell,
                     maxCell = status.maxCell, minCell = status.minCell,
                 )
@@ -248,7 +255,7 @@ fun DashboardScreen(
                         enabled = link == io.github.lswlc33.maibms.transport.LinkState.Connected && status.hasData && !busy,
                     )
                     if (busy) InfoBanner("正在提交修改，请等待设备确认…", kind = "info")
-                    else if (!linkDown && !status.hasData) InfoBanner("尚未收到实时数据 · 开关状态未知", kind = "info")
+                    else if (!linkDown && !status.hasData && !caps.readOnly) InfoBanner("尚未收到实时数据 · 开关状态未知", kind = "info")
                     // 权限不够时点了不是没反应，而是当场说明原因（点横幅右侧可直接去校验）
                     permDenied?.let {
                         Spacer(Modifier.height(6.dp))
@@ -329,14 +336,18 @@ fun TrendLines(current: List<Float>, volt: List<Float>) {
 /* ---------- S01 扫描弹窗（真机 BLE 扫描 / 桌面端降级提示） ---------- */
 
 @Composable
-fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
+fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maibms.transport.DeviceFamily?) -> Unit) {
     val results by io.github.lswlc33.maibms.data.Bms.repository.scanResults.collectAsState()
     val scanning by io.github.lswlc33.maibms.data.Bms.repository.scanning.collectAsState()
     val scanError by io.github.lswlc33.maibms.data.Bms.repository.scanError.collectAsState()
     val canScan = io.github.lswlc33.maibms.data.Bms.repository.canScan
     var selected by remember { mutableStateOf<String?>(null) }
+    var selectedFamily by remember { mutableStateOf<io.github.lswlc33.maibms.transport.DeviceFamily?>(null) }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(Unit) { io.github.lswlc33.maibms.data.Bms.repository.startScan() }
+    LaunchedEffect(selectedFamily) {
+        selected = null
+        io.github.lswlc33.maibms.data.Bms.repository.startScan(selectedFamily)
+    }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
         Column(
@@ -345,6 +356,17 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
         ) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Text("附近的设备", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                listOf(null to "自动", io.github.lswlc33.maibms.transport.DeviceFamily.YanYang to "彦阳",
+                    io.github.lswlc33.maibms.transport.DeviceFamily.Jbd to "嘉佰达",
+                    io.github.lswlc33.maibms.transport.DeviceFamily.Ant to "蚂蚁").forEach { (family, title) ->
+                    TextButton(onClick = { selectedFamily = family }, modifier = Modifier.weight(1f)) {
+                        Text(title, fontSize = 11.sp, fontWeight = if (selectedFamily == family) FontWeight.ExtraBold else FontWeight.Normal)
+                    }
+                }
+            }
+            Text("广播名被改过或识别不准时，先选择对应板型再连接。", fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
                 when {
                     !canScan -> "当前平台没有蓝牙扫描（桌面端）"
@@ -375,7 +397,7 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
-                            .clickable { onConnect(p.address) }
+                            .clickable { onConnect(p.address, null) }
                             .padding(vertical = 6.dp)
                     ) {
                         Column(Modifier.weight(1f)) {
@@ -420,7 +442,7 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
             }
             Column(Modifier.fillMaxWidth().padding(top = 8.dp)) {
                 if (canScan && !scanning) TextButton(onClick = {
-                    scope.launch { io.github.lswlc33.maibms.data.Bms.repository.startScan() }
+                    scope.launch { io.github.lswlc33.maibms.data.Bms.repository.startScan(selectedFamily) }
                 }) { Text("重新扫描") }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically) {
@@ -428,7 +450,7 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String) -> Unit) {
                     Spacer(Modifier.width(8.dp))
                     // 高度给到 48dp：iOS 上 40dp 的默认按钮在弹窗底部不容易点中
                     Button(
-                        onClick = { selected?.let(onConnect) },
+                        onClick = { selected?.let { onConnect(it, selectedFamily) } },
                         enabled = selected != null,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) {
@@ -474,6 +496,26 @@ internal fun safetyChecks(status: io.github.lswlc33.maibms.data.BmsStatus): List
 @Composable
 fun ProtectDetailDialog(onDismiss: () -> Unit, onOpenLog: (() -> Unit)? = null) {
     val status by MockBms.status.collectAsState()
+    val caps by MockBms.caps.collectAsState()
+    if (!caps.antDetails) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("保护与运行状态") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("保护" to status.protectPairs, "告警" to status.alarmPairs, "运行状态" to status.statePairs)
+                        .filter { it.second.isNotEmpty() }.forEach { (title, pairs) ->
+                            Text(title, fontWeight = FontWeight.Bold)
+                            pairs.forEach { (_, text) -> Text(text, fontSize = 12.sp) }
+                        }
+                    if (status.protectPairs.isEmpty() && status.alarmPairs.isEmpty() && status.statePairs.isEmpty())
+                        Text("设备未报告保护或告警")
+                }
+            },
+            confirmButton = { TextButton(onClick = onDismiss) { Text("知道了") } },
+        )
+        return
+    }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
         Column(

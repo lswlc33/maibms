@@ -2,6 +2,8 @@ package io.github.lswlc33.maibms.data
 
 import kotlin.concurrent.Volatile
 import io.github.lswlc33.maibms.protocol.*
+import io.github.lswlc33.maibms.protocol.board.ReadOnlyBoardProtocol
+import io.github.lswlc33.maibms.protocol.board.isSafeBoardRead
 import io.github.lswlc33.maibms.protocol.meter.MeterProtocol
 import io.github.lswlc33.maibms.protocol.meter.modbusReadFrame
 import io.github.lswlc33.maibms.protocol.meter.LuXingProtocol
@@ -29,11 +31,14 @@ class BmsRepository(
     private var realTransport: BmsTransport? = null
 
     private class Session(val address: String?, val unconfirmedU32: MutableSet<Int>) {
+        var family = DeviceFamily.Unknown
         var modifications = 0
         var paramsRevision = 0L
         var refreshAgain = false
         var postConnectRunning = false
         var postConnectStarted = false
+        var boardSettingsCached: List<io.github.lswlc33.maibms.protocol.board.BoardSetting> = emptyList()
+        var boardIdentityCached: Map<String, String> = emptyMap()
     }
     private val sessionLock = PlatformLock()
     private val connectionGuard = Mutex()
@@ -69,7 +74,8 @@ class BmsRepository(
     /** 会话失效先于取消任务，已排队的旧命令与迟到结果也必须停用。 */
     private fun invalidateSession(stopPolling: Boolean): List<Job> = withLock(sessionLock) {
         acceptingFrames = false
-        session = newSession(MockBms.savedAddress)
+        val family = session.family
+        session = newSession(MockBms.savedAddress).also { it.family = family }
         MockBms.setUnsavedWriteError(unsavedWriteError(session))
         awaiting?.cancel(CancellationException("设备会话已结束"))
         awaiting = null
@@ -92,6 +98,7 @@ class BmsRepository(
         lastAuthAt = 0L
         parser = FrameParser()
         meter?.reset()
+        readOnlyBoard?.reset()
         jobs
     }
 
@@ -103,6 +110,7 @@ class BmsRepository(
 
     /** 电量计协议实现（家族为电量计时非空）；为空走保护板（ANT）协议栈 */
     @Volatile private var meter: MeterProtocol? = null
+    @Volatile private var readOnlyBoard: ReadOnlyBoardProtocol? = null
     @Volatile private var meterInitSent = false
     /** 寄存器探测进行中：暂停常规轮询，避免与探测帧抢应答 */
     @Volatile private var meterProbeActive = false
@@ -123,6 +131,8 @@ class BmsRepository(
     /** 真机扫描结果（按信号强度降序）与扫描中标志 */
     private val _scanResults = MutableStateFlow<List<ScanDevice>>(emptyList())
     val scanResults: StateFlow<List<ScanDevice>> = _scanResults
+    private val _scanFamily = MutableStateFlow<DeviceFamily?>(null)
+    val scanFamily: StateFlow<DeviceFamily?> = _scanFamily
     private val _scanning = MutableStateFlow(false)
     val scanning: StateFlow<Boolean> = _scanning
 
@@ -151,7 +161,7 @@ class BmsRepository(
     val availableChannels: StateFlow<List<BleChannel>> = _availableChannels
 
     /** 当前连接设备的家族（按广播名判定）：Unknown 视作保护板；电量计 = 中继器 */
-    private val _currentFamily = MutableStateFlow(DeviceFamily.Unknown)
+    private val _currentFamily = MockBms.family
     val currentFamily: StateFlow<DeviceFamily> = _currentFamily
 
     /** 是否支持手动切换通道（桌面/虚拟后端为 false，界面据此隐藏入口） */
@@ -267,6 +277,10 @@ class BmsRepository(
         val saved = AppStore.savedAddress
         MockBms.savedAddress = target
         val targetProfile = DeviceProfiles.find(target)
+        val initialFamily = targetProfile?.family?.takeIf { it != DeviceFamily.Unknown }
+            ?: DeviceFamily.matchName(targetProfile?.name ?: AppStore.savedDeviceName) ?: DeviceFamily.Unknown
+        MockBms.family.value = initialFamily
+        MockBms.caps.value = DeviceCapabilities.forFamily(initialFamily)
         MockBms.connectedDeviceName.value = targetProfile?.displayName ?: AppStore.savedDeviceName
         restorePasswords(target)
         loadParamsCacheIntoSession(target)   // 未连接/连接中时，配置页先显示该设备的配置缓存
@@ -289,7 +303,7 @@ class BmsRepository(
                     if (st == LinkState.Connected && acceptingFrames && !previewActive.value && !manualDisconnect.value) {
                         DeviceProfiles.touch(MockBms.savedAddress)
                         linkWindowAt = epochMillisNow()
-                        if (meter == null) startPostConnect(session)
+                        if (meter == null && readOnlyBoard == null) startPostConnect(session)
                         pollWake.trySend(Unit)
                     } else if (st != LinkState.Connected) {
                         if (st == LinkState.Disconnected || st == LinkState.Idle) {
@@ -316,8 +330,38 @@ class BmsRepository(
                 withLock(sessionLock) {
                     if (previewActive.value || manualDisconnect.value || !acceptingFrames ||
                         _linkState.value != LinkState.Connected) return@withLock
+                    val b = readOnlyBoard
                     val m = meter
-                    if (m != null) {
+                    if (b != null) {
+                        val readings = runCatching { b.onNotification(bytes, epochMillisNow()) }
+                            .getOrElse {
+                                BmsLog.w("BOARD", "${b.family.label}报文解析失败：${it.message}")
+                                emptyList()
+                            }
+                        MockBms.readError.value = b.error
+                        for (rd in readings) {
+                            MockBms.applyBoardReading(rd)
+                            if (MockBms.boardSettings.value != session.boardSettingsCached ||
+                                MockBms.identity.value != session.boardIdentityCached) {
+                                persistParamsCache()
+                                session.boardSettingsCached = MockBms.boardSettings.value
+                                session.boardIdentityCached = MockBms.identity.value
+                                MockBms.paramsFromCache.value = false
+                                meterSnapshotComplete = false
+                            }
+                            if (rd.hasLiveReading) {
+                                noteValidFrame()
+                                if (meterFirstReadingAt == 0L) meterFirstReadingAt = lastFrameAt
+                            }
+                        }
+                        if (!meterSnapshotComplete && MockBms.status.value.hasData &&
+                            (b.snapshotReady || (!meterSnapshotFallbackDone && meterFirstReadingAt > 0 &&
+                                epochMillisNow() - meterFirstReadingAt >= meterSnapshotFallbackMs))) {
+                            recordSnapshot()
+                            meterSnapshotComplete = b.snapshotReady && sessionSnapshotId != 0L
+                            meterSnapshotFallbackDone = sessionSnapshotId != 0L
+                        }
+                    } else if (m != null) {
                         val readings = runCatching { m.onNotification(bytes) }.getOrElse { emptyList() }
                         for (rd in readings) {
                             if (rd.isEmpty) continue
@@ -342,7 +386,7 @@ class BmsRepository(
         }
         scope.launch { real.activeChannel.collect { _activeChannel.value = it } }
         scope.launch { real.availableChannels.collect { _availableChannels.value = it } }
-        scope.launch { real.currentFamily.collect { _currentFamily.value = it } }
+        // 家族由连接会话和快照管理，不能让传输层的迟到状态覆盖预览板型。
         // 用户上次是主动断开的话，就别自作主张再连上（但记忆设备仍然保留）
         val wantAuto = target != null && AppStore.autoReconnect && !previewActive.value
         if (wantAuto && !canAutoConnect()) {
@@ -530,6 +574,10 @@ class BmsRepository(
     /** 未连接时把某设备的配置缓存灌进会话，配置页/关于页才有内容可看；无缓存则保持空态 */
     private fun loadParamsCacheIntoSession(address: String?) {
         val cache = address?.let { AppStore.loadParamsCache(it) } ?: return
+        val family = DeviceProfiles.find(address)?.family
+        if (family != null && !family.usesAntProtocol && cache.family == DeviceFamily.Unknown) return
+        if (family != null && family != DeviceFamily.Unknown && cache.family != DeviceFamily.Unknown &&
+            cache.family != family) return
         MockBms.loadParamsCache(cache)
         BmsLog.i("CACHE", "已载入配置缓存：${DeviceProfiles.find(address)?.displayName ?: address}（${cache.params.size} 项，记录于 ${timeLabel(cache.savedAt)}）")
     }
@@ -541,25 +589,31 @@ class BmsRepository(
     private fun persistParamsCache() {
         val addr = MockBms.savedAddress ?: return
         val params = MockBms.liveParams.value
-        if (params.isEmpty()) return
+        val settings = MockBms.boardSettings.value
+        if (params.isEmpty() && settings.isEmpty() && MockBms.identity.value.isEmpty()) return
         runCatching {
             AppStore.saveParamsCache(addr, AppStore.ParamsCache(
                 savedAt = epochMillisNow(),
                 params = params,
                 identity = MockBms.identity.value,
+                family = session.family,
+                boardSettings = settings,
             ))
         }.onSuccess { BmsLog.d("CACHE", "配置缓存已更新：$addr（${params.size} 项）") }
             .onFailure { BmsLog.e("CACHE", "配置缓存写入失败：$it") }
     }
 
     /** 扫描附近的真实 BMS */
-    suspend fun startScan() {
+    suspend fun startScan(family: DeviceFamily? = null) {
         val real = realTransport
         if (real == null || !real.supportsScan) {
             BmsLog.w("SCAN", "当前平台不支持真实扫描")
             _scanError.value = "当前平台没有蓝牙后端"
             return
         }
+        real.stopScan()
+        _scanFamily.value = family
+        real.setScanFamily(family)
         _scanResults.value = emptyList()
         _scanError.value = null
         _scanning.value = true
@@ -619,7 +673,7 @@ class BmsRepository(
      * 名称解析：先看本轮扫描结果，扫不到（如直接从历史列表回连）用档案里的显示名；
      * 同时把设备写进历史档案（新设备在此自动入列，已有设备刷新最近连接时间）。
      */
-    suspend fun connectTo(address: String) = connectionGuard.withLock {
+    suspend fun connectTo(address: String, familyOverride: DeviceFamily? = null) = connectionGuard.withLock {
         if (previewActive.value) {
             BmsLog.w("CONN", "快照预览中，连接请求被忽略（重启应用后才能重新连接）")
             _connectHint.value = "正在预览快照，自动连接已停用（重启应用恢复）"
@@ -636,8 +690,8 @@ class BmsRepository(
             AppStore.savedAddress = address
             AppStore.savedDeviceName = name
             val prev = DeviceProfiles.find(address)
-            val family = _scanResults.value.firstOrNull { it.address == address }?.family
-                ?: prev?.family ?: DeviceFamily.Unknown
+            val family = familyOverride ?: _scanResults.value.firstOrNull { it.address == address }
+                ?.family?.takeIf { it != DeviceFamily.Unknown } ?: prev?.family ?: DeviceFamily.Unknown
             DeviceProfiles.upsert(DeviceProfile(
                 address = address,
                 name = name ?: prev?.name.orEmpty(),
@@ -663,6 +717,7 @@ class BmsRepository(
         AppStore.deleteSnapshotsForDevice(address)
         AppStore.deleteParamsCache(address)   // 配置缓存也是该设备的数据，一并清除
         AppStore.saveChannel(address, null)   // 通道偏好同样跟设备走，删除即清除
+        AppStore.put("ble.jbd.mac.$address", null)
         if (AppStore.autoConnectAddress == address) AppStore.autoConnectAddress = null
         if (AppStore.savedAddress == address) {
             AppStore.savedAddress = null
@@ -704,13 +759,21 @@ class BmsRepository(
             triedChannels.clear()
             channelRotationToken = null
             transport.preferChannel(AppStore.channelFor(targetAddr))
-            val family = _scanResults.value.firstOrNull { it.address == targetAddr }?.family
-                ?: DeviceProfiles.find(targetAddr)?.family ?: DeviceFamily.Ant
+            val family = DeviceProfiles.find(targetAddr)?.family?.takeIf { it != DeviceFamily.Unknown }
+                ?: _scanResults.value.firstOrNull { it.address == targetAddr }?.family?.takeIf { it != DeviceFamily.Unknown }
+                ?: DeviceFamily.matchName(MockBms.connectedDeviceName.value) ?: DeviceFamily.Ant
+            session.family = family
+            _currentFamily.value = family
             transport.setTargetFamily(family)
             BmsLog.i("CONN", "目标家族：${family.label}（${family.kind}）")
             meter = MeterProtocol.forFamily(family, AppStore.loadPassword(targetAddr ?: "", 0))
+            readOnlyBoard = ReadOnlyBoardProtocol.forFamily(family)
+            if (family == DeviceFamily.Jbd) {
+                val access = boardAccessFor(targetAddr)
+                readOnlyBoard?.configureAccess(access.first.takeIf { it.isNotBlank() }, access.second.takeIf { it.isNotBlank() })
+            }
             meterInitSent = false
-            MockBms.caps.value = meter?.caps ?: DeviceCapabilities.forFamily(family)
+            MockBms.caps.value = readOnlyBoard?.caps ?: meter?.caps ?: DeviceCapabilities.forFamily(family)
             acceptingFrames = true
         }
         refreshMonitorNotification(force = true)
@@ -749,8 +812,24 @@ class BmsRepository(
                     // 这一拍查 since 时第一帧还没到，不能拿暂停前的 lastFrameAt 判）
                     withLock(sessionLock) { if (session === expected) linkWindowAt = epochMillisNow() }
                 }
+                val b = readOnlyBoard
                 val m = meter
-                if (m != null) {
+                if (b != null) {
+                    try {
+                        val frame = withLock(sessionLock) {
+                            checkSession(expected)
+                            b.nextRequest(epochMillisNow()).also { MockBms.readError.value = b.error }
+                        }
+                        if (frame != null) {
+                            checkSession(expected)
+                            check(isSafeBoardRead(expected.family, frame)) { "只读保护板拒绝非读取命令" }
+                            transport.write(frame)
+                        }
+                    } catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        BmsLog.d("POLL", "${b.family.label}读取失败：${e.message ?: e::class.simpleName}")
+                    }
+                } else if (m != null) {
                     // 电量计：写轮询帧（不等待应答，靠通知回调解码）；寄存器探测期间暂停
                     if (!meterProbeActive) {
                         try {
@@ -803,7 +882,7 @@ class BmsRepository(
                 wasPaused = false
             }
             // 正常按当前档位走（默认 600ms）；链路刚就绪会提前唤醒（见 pollWake）
-            withTimeoutOrNull(pollIntervalMs) { pollWake.receive() }
+            withTimeoutOrNull(if (readOnlyBoard != null) minOf(pollIntervalMs, 80L) else pollIntervalMs) { pollWake.receive() }
         }
     }
 
@@ -897,8 +976,32 @@ class BmsRepository(
     fun savedChannelFor(address: String? = MockBms.savedAddress): BleChannel? =
         AppStore.channelFor(address)
 
+    /** 凭据仅保存在本机；此入口不会修改模块或保护板的密码。 */
+    fun setBoardAccess(password: String, macAddress: String): Boolean = withLock(sessionLock) {
+        if (_currentFamily.value != DeviceFamily.Jbd || previewActive.value) return@withLock false
+        val addr = MockBms.savedAddress ?: return@withLock false
+        val mac = macAddress.trim().uppercase()
+        if (password.isNotEmpty() && (password.length != 6 || password.any { it.code !in 0x20..0x7E } ||
+                !Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}").matches(mac))) return@withLock false
+        if (password.isBlank()) AppStore.removePassword(addr, 0)
+        else AppStore.savePassword(addr, 0, password)
+        AppStore.put("ble.jbd.mac.$addr", mac.takeIf { password.isNotEmpty() })
+        readOnlyBoard?.configureAccess(password.takeIf { it.isNotEmpty() }, mac.takeIf { it.isNotEmpty() })
+        MockBms.readError.value = null
+        pollWake.trySend(Unit)
+        true
+    }
+
+    /** 浏览器 / iOS 的设备标识不是 MAC；只在值确为六字节地址时才预填。 */
+    fun boardAccessFor(address: String? = MockBms.savedAddress): Pair<String, String> {
+        val addr = address ?: return "" to ""
+        val mac = AppStore.get("ble.jbd.mac.$addr")
+            ?: addr.takeIf { Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}").matches(it) }.orEmpty()
+        return AppStore.loadPassword(addr, 0).orEmpty() to mac
+    }
+
     /**
-     * 记住某电量计的设备密码/匹配码（存 level 0），下次连接自动带上——
+     * 电量计密码/匹配码（存 level 0），下次连接自动带上——
      * 蓝宝=6 位匹配码、陆行=无。保护板不使用这一槽。
      */
     fun setMeterSecret(address: String, secret: String) {
@@ -1003,6 +1106,8 @@ class BmsRepository(
         const val WRITE_INVALID_RAW = -6
         /** 临时区存在未确认的 u32，拒绝发送保存命令，避免固化半写值。 */
         const val WRITE_SAVE_BLOCKED = -7
+        /** 该板型仅支持读取，未发送任何修改帧。 */
+        const val WRITE_READ_ONLY = -8
         /** 日志翻页大小：官方也是每批 10 条（`bmsLog.js` 的 `10 * logIndex`） */
         const val EVENT_LOG_PAGE = 10
         /** 读一条日志的等待上限：比轮询宽松（要读设备存储），但别让界面干等 */
@@ -1133,6 +1238,10 @@ class BmsRepository(
         expectedSession: Session,
     ): ParsedFrame? {
         currentCoroutineContext().ensureActive()
+        if (!expectedSession.family.usesAntProtocol) {
+            BmsLog.w("TX", "${expectedSession.family.label}拒绝蚂蚁专用命令")
+            return null
+        }
         val d = CompletableDeferred<ParsedFrame>()
         withLock(sessionLock) {
             checkSession(expectedSession)
@@ -1178,6 +1287,7 @@ class BmsRepository(
     }
 
     private suspend fun authInSession(level: Int, password: String, expected: Session): Int {
+        if (!expected.family.usesAntProtocol) return 0
         val addr = ParamTable.slotAddr(level)
         val payload = PasswordCodec.encode(level, password)
         withLock(sessionLock) {
@@ -1284,8 +1394,17 @@ class BmsRepository(
     /** 本次连接是否已尝试读参数（失败不重复打，权限升级后再强制重读） */
     private var paramsAttempted = false
 
+    /** 只重读新保护板允许直接读取的参数，不进入工厂模式、不解锁写入。 */
+    fun refreshBoardSettings() = withLock(sessionLock) {
+        if (!acceptingFrames || previewActive.value || manualDisconnect.value) return@withLock
+        readOnlyBoard?.refreshSettings()
+        meterSnapshotComplete = false
+        pollWake.trySend(Unit)
+    }
+
     /** 强制刷新合并为后续一轮；修订号挡住读到一半时被写入淘汰的累积结果。 */
     fun refreshParams(force: Boolean = false) = withLock(sessionLock) {
+        if (!session.family.usesAntProtocol) return@withLock
         if (realTransport == null || meter != null || previewActive.value || manualDisconnect.value || !acceptingFrames) return@withLock
         val expected = session
         if (readJob?.isActive == true) {
@@ -1436,8 +1555,8 @@ class BmsRepository(
                     append(" · 正在重连")
                 } else if (st.hasData) {
                     append(" · ")
-                    append(st.soc)
-                    append("% · %.1fV".fmt(st.totalVoltage))
+                    if (st.hasReading("soc")) append("${st.soc}% · ")
+                    if (st.hasReading("voltage")) append("%.1fV".fmt(st.totalVoltage))
                 } else {
                     append(" · 等待数据")
                 }
@@ -1646,6 +1765,7 @@ class BmsRepository(
     /** 控制命令（返回结果码，1=成功）；会话在入队前捕获。 */
     suspend fun control(cmd: Int): Int {
         val expected = session
+        if (!expected.family.usesAntProtocol) return WRITE_READ_ONLY
         return try {
             modifyingInSession(expected) { controlInSession(cmd, expected) }
         } catch (e: CancellationException) {
@@ -1716,6 +1836,7 @@ class BmsRepository(
      */
     suspend fun writeParam(addr: Int, rawValue: Int): Int {
         val expected = session
+        if (!expected.family.usesAntProtocol) return WRITE_READ_ONLY
         return try {
             modifyingInSession(expected) {
                 ParamTable.validateRaw(addr, rawValue)?.let {

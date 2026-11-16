@@ -6,9 +6,9 @@ import kotlinx.serialization.Serializable
 enum class DeviceKind { Board, Meter }
 
 /**
- * 设备家族：**按蓝牙广播名判定**。
+ * 设备家族：广播名称与服务用于提示，用户可以手动指定板型；连接后的报文校验才决定可用读数。
  *
- * 名称规则来自官方小程序解包（`unpack/解包结果/`）与真机确认：
+ * 原有名称规则来自官方小程序，新板型参考 docs/16-彦阳与嘉佰达只读接入.md：
  * - 蚂蚁保护板：名字以 `ANT` 开头（本仓库既有实现）；
  * - 蓝宝电量计：`utils/btls/ble.js` 的 `regName = "BlueBabe"`，品牌前缀 `blue` / `lb`
  *   （陆行小程序 `pages/mianEM02/EM02.js` 的 `batteryOptions` 里 `蓝宝=blue/lb`）；
@@ -27,11 +27,22 @@ enum class DeviceFamily(
     val namePrefixes: List<String>,
 ) {
     Ant("蚂蚁保护板", DeviceKind.Board, listOf("ANT")),
+    YanYang("彦阳保护板", DeviceKind.Board, listOf("YYBMS", "YY-", "彦阳")),
+    Jbd("嘉佰达保护板", DeviceKind.Board, listOf("JBD", "SP", "DB", "嘉佰达")),
     LanBao("蓝宝电量计", DeviceKind.Meter, listOf("BLUEBABE", "BLUE", "LB")),
     LuXing("陆行电量计", DeviceKind.Meter, listOf("EM2APP")),
     Unknown("未知设备", DeviceKind.Board, emptyList());
 
     val isMeter: Boolean get() = kind == DeviceKind.Meter
+    val isReadOnlyBoard: Boolean get() = this == YanYang || this == Jbd
+    val usesAntProtocol: Boolean get() = this == Ant || this == Unknown
+
+    /** 广播名可以被改，扫描服务与手动板型选择共同兜底。 */
+    val serviceUuids: List<String> get() = when (this) {
+        Jbd -> listOf("FF00", "FFE0")
+        YanYang -> listOf("FFE0", "FEE9")
+        else -> listOf("FFE0")
+    }
 
     companion object {
         /**
@@ -46,10 +57,16 @@ enum class DeviceFamily(
                 .flatMap { f -> f.namePrefixes.map { it.uppercase() to f } }
                 .sortedByDescending { it.first.length }
 
-        /** 广播名 → 家族；未命中任何已知前缀返回 null（扫描时丢弃） */
+        private val jbdApName = Regex("AP2[0-9]S.*")
+
+        /** 广播名 → 家族提示；未命中返回 null，仍可按广播服务或手动板型选择。 */
         fun matchName(name: String?): DeviceFamily? {
             val n = name?.trim()?.uppercase() ?: return null
             if (n.isEmpty()) return null
+            // YYBMS 的蓝牙模块常用 BT37/BTxxxx；只接数字后缀，避免把普通 BT 音频名认成板。
+            if (n.startsWith("BT") && n.drop(2).isNotEmpty() && n.drop(2).all { it.isDigit() }) return YanYang
+            if (n.startsWith("XIAOXIANG") || n.startsWith("DP04S") || n.startsWith("GJ-") ||
+                jbdApName.matches(n)) return Jbd
             return byPrefix.firstOrNull { n.startsWith(it.first) }?.second
         }
 

@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
+import io.github.lswlc33.maibms.protocol.board.BoardReading
+import io.github.lswlc33.maibms.protocol.board.BoardSetting
+import io.github.lswlc33.maibms.transport.DeviceFamily
 
 /** 单体电压格；[missing] = 该串未接（协议 0xFFFF），界面显示 "--" 但保留网格位置 */
 @Serializable
@@ -81,7 +84,13 @@ data class BmsStatus(
     val relayBoardName: String = "--",
     /** 电量计中继的保护板 MAC；未知 = "--" */
     val relayBoardMac: String = "--",
+    /** 新只读协议逐项登记已收到的字段；null 兼容原有 ANT/电量计快照。 */
+    val availableFields: Set<String>? = null,
+    val cellBalanceBits: Long = 0,
 )
+
+fun BmsStatus.hasReading(field: String): Boolean = hasData &&
+    (availableFields == null || field in availableFields)
 
 /**
  * 是否已报到中继信息（品牌/名称/MAC 任一非 "--"）——**中继信息卡**与卡1 上的展开小标共用这一条判据：
@@ -143,6 +152,9 @@ object MockBms {
     val identity = MutableStateFlow<Map<String, String>>(emptyMap())
     /** 参数区读取中（界面显示进度） */
     val paramsReading = MutableStateFlow(false)
+    val family = MutableStateFlow(DeviceFamily.Unknown)
+    val boardSettings = MutableStateFlow<List<BoardSetting>>(emptyList())
+    val readError = MutableStateFlow<String?>(null)
     /** 当前连接的 BLE 设备名（真机模式用于顶栏「设备名称」） */
     val connectedDeviceName = MutableStateFlow<String?>(null)
 
@@ -178,6 +190,9 @@ object MockBms {
         status = _status.value.copy(connected = false),
         liveParams = liveParams.value,
         identity = identity.value,
+        family = family.value,
+        capabilities = caps.value,
+        boardSettings = boardSettings.value,
     )
 
     /**
@@ -202,6 +217,12 @@ object MockBms {
     fun restoreSnapshot(s: BmsSnapshot) {
         liveParams.value = s.liveParams
         identity.value = s.identity
+        val restoredFamily = s.family.takeIf { it != DeviceFamily.Unknown }
+            ?: DeviceFamily.matchName(s.deviceName) ?: DeviceFamily.Ant
+        family.value = restoredFamily
+        caps.value = s.capabilities ?: DeviceCapabilities.forFamily(restoredFamily)
+        boardSettings.value = s.boardSettings
+        readError.value = null
         connectedDeviceName.value = s.deviceName.ifBlank { null }
         paramsFromCache.value = false   // 快照是快照：横幅走预览文案，不标「缓存」
         // 历史日志是「设备此刻读出来的」，不属于快照内容：预览时清掉，
@@ -239,6 +260,11 @@ object MockBms {
     fun loadParamsCache(cache: AppStore.ParamsCache) {
         liveParams.value = cache.params
         identity.value = cache.identity
+        boardSettings.value = cache.boardSettings
+        if (cache.family != DeviceFamily.Unknown) {
+            family.value = cache.family
+            caps.value = DeviceCapabilities.forFamily(cache.family)
+        }
         paramsFromCache.value = true
     }
 
@@ -257,6 +283,10 @@ object MockBms {
         setUnsavedWriteError(null)
         liveParams.value = emptyMap()
         identity.value = emptyMap()
+        boardSettings.value = emptyList()
+        readError.value = null
+        family.value = DeviceFamily.Unknown
+        caps.value = DeviceCapabilities.Board
         paramsFromCache.value = false   // 会话数据已清空，「缓存」标记自然也不成立
         connectedDeviceName.value = null
         clearTrend()
@@ -476,6 +506,84 @@ object MockBms {
             trendCurrent = norm(histCurr.toList(), includeZero = true),
             trendVolt = norm(histVolt.toList(), includeZero = false),
         )
+        connected.value = true
+    }
+
+    /** 只读保护板的字段可用性随实际报文增长，未提供的数据不会变成假零值。 */
+    fun applyBoardReading(r: BoardReading) {
+        val cur = _status.value
+        val fields = (cur.availableFields ?: emptySet()).toMutableSet()
+        fun seen(name: String, value: Any?) { if (value != null) fields += name }
+        seen("voltage", r.totalVoltage); seen("current", r.current); seen("power", r.power)
+        seen("soc", r.soc); seen("capacity", r.totalCapAh); seen("remaining", r.remainCapAh)
+        seen("soh", r.soh); seen("cycles", r.cycles); seen("cycleCapacity", r.totalCycleAh)
+        seen("runtime", r.runtimeSec); seen("remainingTime", r.remainChargeMin ?: r.remainDischargeMin)
+        seen("mos", r.chMos ?: r.disMos); seen("balance", r.balancing ?: r.balanceBits)
+        seen("state", r.battState); seen("protection", r.protectPairs); seen("alarms", r.alarmPairs)
+        val balanceBits = r.balanceBits ?: cur.cellBalanceBits
+        val newCells = r.cells?.let { values ->
+            val valid = values.mapIndexedNotNull { i, v -> v?.let { (i + 1) to it } }
+            val maxIdx = valid.maxWithOrNull(compareBy({ it.second }, { -it.first }))?.first
+            val minIdx = valid.minWithOrNull(compareBy({ it.second }, { it.first }))?.first
+            values.mapIndexed { i, v ->
+                CellV(i + 1, v ?: 0.0, i + 1 == maxIdx, i + 1 == minIdx,
+                    (balanceBits ushr i) and 1L != 0L, v == null)
+            }
+        } ?: r.balanceBits?.let { bits -> cur.cells.map { it.copy(balancing = (bits ushr (it.index - 1)) and 1L != 0L) } }
+        val validCells = newCells?.filterNot { it.missing }?.map { it.volt }
+        r.totalVoltage?.let { v -> r.current?.let { c -> pushTrend(v, c) } }
+        r.chMos?.let { chargeSwitch.value = it }
+        r.disMos?.let { dischargeSwitch.value = it }
+        r.balancing?.let { balanceSwitch.value = it }
+        val ch = r.chMos?.let { if (it) "开启" else "关闭" } ?: cur.chMos
+        val dis = r.disMos?.let { if (it) "开启" else "关闭" } ?: cur.disMos
+        val protect = r.protectPairs ?: cur.protectPairs
+        val alarms = r.alarmPairs ?: cur.alarmPairs
+        _status.value = cur.copy(
+            hasData = cur.hasData || r.hasLiveReading,
+            connected = true,
+            deviceName = connectedDeviceName.value ?: cur.deviceName,
+            totalVoltage = r.totalVoltage ?: cur.totalVoltage,
+            current = r.current ?: cur.current,
+            power = r.power ?: cur.power,
+            soc = r.soc ?: cur.soc,
+            totalCapAh = r.totalCapAh ?: cur.totalCapAh,
+            remainCapAh = r.remainCapAh ?: cur.remainCapAh,
+            soh = r.soh ?: cur.soh,
+            cycles = r.cycles ?: cur.cycles,
+            totalCycleAh = r.totalCycleAh ?: cur.totalCycleAh,
+            runtime = r.runtimeSec?.let(::fmtRuntime) ?: cur.runtime,
+            remainChargeMin = r.remainChargeMin ?: cur.remainChargeMin,
+            remainDischargeMin = r.remainDischargeMin ?: cur.remainDischargeMin,
+            battState = r.battState ?: cur.battState,
+            chMos = ch, disMos = dis,
+            chMosCode = r.chMos?.let { if (it) 1 else 0 } ?: cur.chMosCode,
+            disMosCode = r.disMos?.let { if (it) 1 else 0 } ?: cur.disMosCode,
+            balance = r.balancing?.let { if (it) "均衡中" else "关闭" } ?: cur.balance,
+            balanceCode = r.balancing?.let { if (it) 1 else 0 } ?: cur.balanceCode,
+            protectPairs = reuse(cur.protectPairs, protect),
+            alarmPairs = reuse(cur.alarmPairs, alarms),
+            protectList = reuse(cur.protectList, protect.map { it.second }),
+            alarmList = reuse(cur.alarmList, alarms.map { it.second }),
+            statePairs = r.statePairs?.let { reuse(cur.statePairs, it) } ?: cur.statePairs,
+            cells = newCells?.let { reuse(cur.cells, it) } ?: cur.cells,
+            maxCell = validCells?.maxOrNull()?.let { "%.3f".fmt(it) } ?: if (validCells != null) "--" else cur.maxCell,
+            minCell = validCells?.minOrNull()?.let { "%.3f".fmt(it) } ?: if (validCells != null) "--" else cur.minCell,
+            avgCell = validCells?.takeIf { it.isNotEmpty() }?.average()?.let { "%.3f".fmt(it) } ?: if (validCells != null) "--" else cur.avgCell,
+            deltaCell = validCells?.takeIf { it.isNotEmpty() }?.let { "%.3f".fmt(it.max() - it.min()) } ?: if (validCells != null) "--" else cur.deltaCell,
+            temps = r.temps?.let { reuse(cur.temps, it) } ?: cur.temps,
+            swVersion = r.identity["swVersion"] ?: cur.swVersion,
+            hwVersion = r.identity["hwVersion"] ?: cur.hwVersion,
+            batteryType = r.identity["batteryType"] ?: cur.batteryType,
+            trendCurrent = norm(histCurr.toList(), includeZero = true),
+            trendVolt = norm(histVolt.toList(), includeZero = false),
+            availableFields = fields,
+            cellBalanceBits = balanceBits,
+        )
+        if (r.identity.isNotEmpty()) identity.value = identity.value + r.identity.filterValues { it.isNotBlank() }
+        r.settings?.let { incoming ->
+            boardSettings.value = (boardSettings.value + incoming).associateBy { it.key }.values.toList()
+        }
         connected.value = true
     }
 

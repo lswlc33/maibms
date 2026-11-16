@@ -14,6 +14,7 @@ import io.github.lswlc33.maibms.data.fmtRemainingMin
 import io.github.lswlc33.maibms.protocol.ControlCmd
 import io.github.lswlc33.maibms.protocol.MosStateDict
 import io.github.lswlc33.maibms.protocol.ParamTable
+import io.github.lswlc33.maibms.protocol.board.BoardSetting
 import io.github.lswlc33.maibms.transport.DeviceFamily
 import io.github.lswlc33.maibms.transport.LinkState
 import kotlinx.serialization.Serializable
@@ -42,6 +43,8 @@ internal data class ThemeState(
     val hint: String? = null,
     val scanning: Boolean,
     val scanError: String? = null,
+    val scanFamily: String? = null,
+    val scanFamilyLabel: String? = null,
     val previewActive: Boolean,
     val previewLabel: String? = null,
     val deviceName: String,
@@ -61,6 +64,9 @@ internal data class ThemeState(
     val flags: ThemeFlags,
     val relay: ThemeRelay,
     val params: ThemeParams,
+    val availableFields: Set<String>? = null,
+    val boardSettings: List<ThemeBoardSetting> = emptyList(),
+    val readError: String? = null,
     val devices: List<ThemeMetaDevice>,
     val settings: ThemeSettings,
     val version: ThemeVersion,
@@ -83,6 +89,14 @@ internal data class ThemeCaps(
     val controlBalance: Boolean,
     val maxCells: Int,
     val voltageDecimals: Int,
+    val readOnly: Boolean,
+    val antDetails: Boolean,
+    val runtime: Boolean,
+    val cycleCapacity: Boolean,
+    val cycleCount: Boolean,
+    val capacity: Boolean,
+    val stateOfHealth: Boolean,
+    val settings: Boolean,
 )
 
 @Serializable
@@ -116,6 +130,7 @@ internal data class ThemeDevice(
     val lastChargeGapText: String,
     val remainChargeText: String,
     val remainDischargeText: String,
+    val runtime: String,
 )
 
 @Serializable
@@ -156,6 +171,21 @@ internal data class ThemeParams(
     val identity: Map<String, String>,
     /** 已读到的原始值：字节地址（字符串）→ u16。主题按 paramGroups 里的 def 自行格式化 */
     val values: Map<String, Int>,
+)
+
+@Serializable
+internal data class ThemeBoardSetting(
+    val key: String,
+    val name: String,
+    val value: String,
+    val unit: String,
+    val group: String,
+)
+
+@Serializable
+internal data class ThemeBoardAccessStatus(
+    val configured: Boolean,
+    val macAddress: String = "",
 )
 
 @Serializable
@@ -328,20 +358,22 @@ object Bridge {
             hint = Bms.repository.connectHint.value,
             scanning = Bms.repository.scanning.value,
             scanError = Bms.repository.scanError.value,
+            scanFamily = Bms.repository.scanFamily.value?.name,
+            scanFamilyLabel = Bms.repository.scanFamily.value?.label,
             previewActive = Bms.repository.previewActive.value,
             previewLabel = Bms.repository.previewLabel.value,
             deviceName = MockBms.deviceLabel,
             deviceAddress = MockBms.savedAddress,
-            family = Bms.repository.currentFamily.value.name,
-            familyLabel = Bms.repository.currentFamily.value.label,
+            family = MockBms.family.value.name,
+            familyLabel = MockBms.family.value.label,
             channel = Bms.repository.activeChannel.value?.id,
             channelLabel = Bms.repository.activeChannel.value?.label,
             channels = Bms.repository.availableChannels.value.map {
                 ThemeChannel(it.id, it.label, it.tag, it.warn)
             },
             caps = caps.toTheme(),
-            permission = st.permissionLevel,
-            passwords = MockBms.plainPasswords.value.keys.sorted(),
+            permission = if (caps.permission && !caps.readOnly) st.permissionLevel else 0,
+            passwords = if (caps.permission && !caps.readOnly) MockBms.plainPasswords.value.keys.sorted() else emptyList(),
             device = deviceDto(st, caps),
             cells = st.cells.map { ThemeCell(it.index, it.volt, it.isMax, it.isMin, it.balancing, it.missing) },
             temps = st.temps.map { (n, v) -> ThemeTemp(n, v) },
@@ -355,11 +387,14 @@ object Bridge {
             ),
             relay = ThemeRelay(st.hasRelayInfo, st.relayBoardBrand, st.relayBoardName, st.relayBoardMac),
             params = ThemeParams(
-                reading = MockBms.paramsReading.value,
-                fromCache = MockBms.paramsFromCache.value,
+                reading = if (caps.readOnly) false else MockBms.paramsReading.value,
+                fromCache = if (caps.readOnly) false else MockBms.paramsFromCache.value,
                 identity = MockBms.identity.value,
-                values = MockBms.liveParams.value.mapKeys { it.key.toString() },
+                values = if (caps.readOnly) emptyMap() else MockBms.liveParams.value.mapKeys { it.key.toString() },
             ),
+            availableFields = st.availableFields,
+            boardSettings = if (caps.settings) MockBms.boardSettings.value.map { it.toTheme() } else emptyList(),
+            readError = MockBms.readError.value,
             devices = devices(),
             settings = settings(),
             version = ThemeVersion(AppVersion.name, AppVersion.code),
@@ -379,8 +414,8 @@ object Bridge {
     private fun meta(): ThemeMeta = ThemeMeta(
         version = ThemeVersion(AppVersion.name, AppVersion.code),
         builtAt = AppVersion.builtAtEpochSec,
-        paramGroups = paramGroups(),
-        commands = commands(),
+        paramGroups = if (MockBms.caps.value.readOnly) emptyList() else paramGroups(),
+        commands = if (MockBms.caps.value.readOnly) emptyList() else commands(),
         families = DeviceFamily.entries.associate { it.name to it.label },
     )
 
@@ -460,7 +495,7 @@ object Bridge {
             name = p.displayName,
             family = p.family.name,
             familyLabel = p.family.label,
-            passwords = p.passwords.size,
+            passwords = if (p.family.isReadOnlyBoard) 0 else p.passwords.size,
             lastConnectedAt = p.lastConnectedAt,
             saved = p.address == MockBms.savedAddress,
         )
@@ -496,18 +531,23 @@ object Bridge {
         chMosCode = st.chMosCode,
         disMosCode = st.disMosCode,
         balanceCode = st.balanceCode,
-        chMosReason = MosStateDict.chargeReason(st.chMosCode),
-        disMosReason = MosStateDict.dischargeReason(st.disMosCode),
-        balanceReason = MosStateDict.balanceMode(st.balanceCode),
+        chMosReason = if (caps.antDetails) MosStateDict.chargeReason(st.chMosCode) else null,
+        disMosReason = if (caps.antDetails) MosStateDict.dischargeReason(st.disMosCode) else null,
+        balanceReason = if (caps.antDetails) MosStateDict.balanceMode(st.balanceCode) else null,
         thisChargeText = fmtDurationSec(st.thisChargeSec),
         lastChargeGapText = fmtDurationSec(st.lastChargeGapSec),
         remainChargeText = fmtRemainingMin(st.remainChargeMin),
         remainDischargeText = fmtRemainingMin(st.remainDischargeMin),
+        runtime = st.runtime,
     )
+
+    private fun io.github.lswlc33.maibms.protocol.board.BoardSetting.toTheme() =
+        ThemeBoardSetting(key, name, value, unit, group)
 
     private fun DeviceCapabilities.toTheme() = ThemeCaps(
         protectAlarm, mos, balance, perCellVoltage, multiTemp, extTimes, permission,
         controlCharge, controlDischarge, controlBalance, maxCells, voltageDecimals,
+        readOnly, antDetails, runtime, cycleCapacity, cycleCount, capacity, stateOfHealth, settings,
     )
 
     private fun linkText(link: LinkState): String = when (link) {

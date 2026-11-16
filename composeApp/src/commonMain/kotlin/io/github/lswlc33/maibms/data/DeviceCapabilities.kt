@@ -1,6 +1,7 @@
 package io.github.lswlc33.maibms.data
 
 import io.github.lswlc33.maibms.transport.DeviceFamily
+import kotlinx.serialization.Serializable
 
 /**
  * 设备能力位：某设备（家族）能提供哪些数据。
@@ -10,6 +11,7 @@ import io.github.lswlc33.maibms.transport.DeviceFamily
  *
  * 取值依据官方小程序解包（见 [Plan/电量计兼容-开发计划.md] §6）。
  */
+@Serializable
 data class DeviceCapabilities(
     /** 保护/告警位域（蚂蚁实时帧才有；两家电量计都没有） */
     val protectAlarm: Boolean = true,
@@ -38,10 +40,32 @@ data class DeviceCapabilities(
      * 电量计自测电压的末位本来就有几十毫伏的测量噪声，多显示一位只是让数字一直抖。
      */
     val voltageDecimals: Int = 2,
+    val readOnly: Boolean = false,
+    /** MOS 原因码、历史事件与身份区地址均为蚂蚁专有。 */
+    val antDetails: Boolean = true,
+    val runtime: Boolean = true,
+    val cycleCapacity: Boolean = true,
+    val cycleCount: Boolean = false,
+    val capacity: Boolean = true,
+    val stateOfHealth: Boolean = true,
+    val settings: Boolean = true,
 ) {
     companion object {
         /** 蚂蚁保护板：全能力（与现状一致） */
         val Board = DeviceCapabilities()
+
+        val YanYang = DeviceCapabilities(
+            permission = false, controlCharge = false, controlDischarge = false,
+            controlBalance = false, maxCells = 25, readOnly = true, antDetails = false,
+            cycleCapacity = false, cycleCount = true,
+        )
+
+        val Jbd = DeviceCapabilities(
+            permission = false, controlCharge = false, controlDischarge = false,
+            controlBalance = false, maxCells = 32, extTimes = false, readOnly = true,
+            antDetails = false, runtime = false, cycleCapacity = false,
+            cycleCount = true, stateOfHealth = false,
+        )
 
         /** 蓝宝电量计：无保护/告警、无 MOS/均衡、无逐串、仅 1 路温度、无扩展时间、无权限、无控制 */
         val LanBao = DeviceCapabilities(
@@ -49,6 +73,8 @@ data class DeviceCapabilities(
             perCellVoltage = false, multiTemp = false, extTimes = false,
             permission = false, controlCharge = false, controlDischarge = false,
             controlBalance = false, maxCells = 0,
+            readOnly = true, antDetails = false, runtime = false, cycleCapacity = false,
+            cycleCount = true, stateOfHealth = false, settings = false,
         )
 
         /** 陆行电量计（EM2APP）：有逐串单体(≤30)与多路温度；无保护/告警、无 MOS/均衡、无扩展时间、无权限、无控制 */
@@ -58,9 +84,13 @@ data class DeviceCapabilities(
             permission = false, controlCharge = false, controlDischarge = false,
             controlBalance = false, maxCells = 30,
             voltageDecimals = 1,   // 官方首页 `(systemVoltage/1e3).toFixed(1)`
+            readOnly = true, antDetails = false, runtime = false, cycleCapacity = false,
+            cycleCount = true, stateOfHealth = false, settings = false,
         )
 
         fun forFamily(f: DeviceFamily): DeviceCapabilities = when (f) {
+            DeviceFamily.YanYang -> YanYang
+            DeviceFamily.Jbd -> Jbd
             DeviceFamily.LanBao -> LanBao
             DeviceFamily.LuXing -> LuXing
             else -> Board

@@ -216,7 +216,9 @@
         bar.appendChild(b);
       });
     }
+    var boardMode = window.MaibmsBoards.supports(st);
     bar.querySelectorAll('button').forEach(function (b) {
+      if (b.dataset.tab === 'control') b.style.display = boardMode ? 'none' : '';
       b.className = b.dataset.tab === ui.tab ? 'on' : '';
     });
   }
@@ -306,10 +308,10 @@
       // 只有 ?preview=1 才是示例数据。用 previewActive 区分，文案不能混用。
       if (st.previewActive) {
         wrap.appendChild(banner('界面预览：以下是示例数据，不是真机读数。点这里连接真实设备。', 'info',
-          ['连接设备', function () { M.connect(); }]));
+          ['连接设备', function () { window.MaibmsBoards.connect(); }]));
       } else {
         wrap.appendChild(banner('已断开：显示断开前的最后读数。', 'warn',
-          ['重新连接', function () { M.connect(); }]));
+          ['重新连接', function () { window.MaibmsBoards.connect(); }]));
       }
     }
     if (st.hint && !st.connected) wrap.appendChild(banner(st.hint));
@@ -336,7 +338,7 @@
 
     var row = el('div', 'btn-row');
     var b = el('button', 'btn primary', '① 选择设备并连接');
-    b.addEventListener('click', function () { M.connect(); });
+    b.addEventListener('click', function () { window.MaibmsBoards.connect(); });
     row.appendChild(b);
     body.appendChild(row);
 
@@ -939,7 +941,7 @@
     crow.appendChild(cmain);
     var cbtn = el('button', 'btn sm' + (st.connected ? '' : ' primary'), st.connected ? '断开' : '连接');
     cbtn.addEventListener('click', function () {
-      if (st.connected) M.disconnect(); else M.connect();
+      if (st.connected) M.disconnect(); else window.MaibmsBoards.connect();
     });
     crow.appendChild(cbtn);
     conn.appendChild(crow);
@@ -1342,6 +1344,18 @@
       app.appendChild(root);
     }
 
+    if (window.MaibmsBoards.supports(st)) {
+      if (ui.tab === 'control') ui.tab = 'params';
+      renderTopbar(st); renderTabbar(st);
+      var boardKey = window.MaibmsBoards.renderKey(st, ui.tab);
+      if (boardKey !== null && boardKey === ui.boardRenderKey) return;
+      ui.boardRenderKey = boardKey;
+      var boardMain = app.querySelector('main');
+      clear(boardMain); boardMain.appendChild(window.MaibmsBoards.render(st, ui.tab));
+      ui.lastRenderKey = null;
+      return;
+    }
+
     // 低频页：内容没变就不重绘（避免滚动跳变与点击丢失）
     var key = renderKey(st);
     if (key !== null && key === ui.lastRenderKey) {
@@ -1354,7 +1368,7 @@
     var y = window.scrollY;
 
     renderTopbar(st);
-    renderTabbar();
+    renderTabbar(st);
 
     var main = app.querySelector('main');
     clear(main);

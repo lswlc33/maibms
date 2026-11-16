@@ -58,6 +58,7 @@ import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.MockBms
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtRemainingMin
+import io.github.lswlc33.maibms.data.hasReading
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.PI
@@ -93,8 +94,10 @@ fun ClusterDashboard(
     var useKw by remember { mutableStateOf(AppStore.clusterPowerKw) }
     val link by Bms.repository.linkState.collectAsState()
     val stalled by Bms.repository.stalled.collectAsState()
+    val readError by MockBms.readError.collectAsState()
     // 电压小数位按家族能力位（陆行官方 1 位、保护板/蓝宝 2 位），与竖屏大卡同一口径
-    val voltsDecimals = MockBms.caps.collectAsState().value.voltageDecimals
+    val caps by MockBms.caps.collectAsState()
+    val voltsDecimals = caps.voltageDecimals
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
     val linkLost = connected && stalled
     // 沉浸：表盘在组合期间隐藏状态栏+手势条（边缘滑动临时呼出），离开表盘自动恢复
@@ -150,8 +153,8 @@ fun ClusterDashboard(
                     status.deviceName, fontSize = (u.value * 1.35).sp, fontWeight = FontWeight.SemiBold,
                     color = ClusterFg, maxLines = 1,
                 )
-                ClusterChip("权限 ${status.permissionLevel} 级", u)
-                ClusterChip("运行 ${status.runtime}", u)
+                if (caps.permission) ClusterChip("权限 ${status.permissionLevel} 级", u)
+                if (caps.runtime && status.hasReading("runtime")) ClusterChip("运行 ${status.runtime}", u)
                 Spacer(Modifier.weight(1f))
                 // 单位切换（W 默认 / kW），点按即切并落盘
                 ClusterChip(if (useKw) "单位 kW" else "单位 W", u, emphasize = true) {
@@ -189,6 +192,8 @@ fun ClusterDashboard(
                 }
             }
             // ---- 底条：背景延伸出安全区铺满全宽，内容收在安全区内 ----
+            if (readError != null) Text(readError!!, color = ClusterAmber, fontSize = 11.sp,
+                modifier = Modifier.padding(horizontal = sideSafe + 8.dp))
             ClusterBottomBar(status, u, sideSafe, bottomSafe)
         }
     }
@@ -220,7 +225,8 @@ private fun ClusterMidColumn(
     status: BmsStatus, connected: Boolean, linkLost: Boolean,
     modifier: Modifier = Modifier, u: Dp,
 ) {
-    val charging = status.hasData && status.power < -20
+    val caps by MockBms.caps.collectAsState()
+    val charging = status.hasReading("power") && status.power < -20
     val remainAh = status.remainCapAh
     Column(
         modifier,
@@ -232,7 +238,7 @@ private fun ClusterMidColumn(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(u * 1.4f)) {
             Row(verticalAlignment = Alignment.Bottom) {
                 Text(
-                    if (status.hasData) status.soc.toString() else "--",
+                    if (status.hasReading("soc")) status.soc.toString() else "--",
                     fontSize = (u.value * 5.6).sp, fontWeight = FontWeight.Light,
                     color = ClusterFg, maxLines = 1,
                 )
@@ -274,26 +280,28 @@ private fun ClusterMidColumn(
         // 剩余时间（扩展段 86/88；0=设备未报 → "--"）：**两行**显示——中央列宽度按 16:9 盒定，
         // 手机横屏（比 16:9 宽）时一行里塞两组「标签+值」会把末尾的值压成逐字换行，
         // 改成每个状态各占一行、各自居中
-        Column(
+        if (caps.extTimes && status.hasReading("remainingTime")) Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(u * 0.5f),
         ) {
-            ClusterRemainLine("充电剩余", if (connected && charging) fmtRemainingMin(status.remainChargeMin) else "--", u)
-            ClusterRemainLine("放电剩余", if (connected && status.power > 20) fmtRemainingMin(status.remainDischargeMin) else "--", u)
+            if (charging && status.remainChargeMin > 0) ClusterRemainLine("充电剩余", fmtRemainingMin(status.remainChargeMin), u)
+            if (!charging && status.remainDischargeMin > 0) ClusterRemainLine("放电剩余", fmtRemainingMin(status.remainDischargeMin), u)
         }
         // 六灯排
         // 六灯排：SpaceEvenly 随列宽自适应分布（fixed 间距在 16:9 盒的中央列里会溢出被裁）
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
             ClusterLed("连接", u, ClusterGreen, connected)
-            ClusterLed("充电MOS", u, ClusterTeal, status.chMos == "开启")
-            ClusterLed("放电MOS", u, ClusterGreen, status.disMos == "开启")
-            ClusterLed("均衡", u, ClusterBlue, status.balance == "均衡中")
-            ClusterLed("告警", u, ClusterAmber, status.alarmList.isNotEmpty())
-            ClusterLed("保护", u, ClusterRed, status.protectList.isNotEmpty())
+            if (caps.mos && status.hasReading("mos")) {
+                ClusterLed("充电MOS", u, ClusterTeal, status.chMos == "开启")
+                ClusterLed("放电MOS", u, ClusterGreen, status.disMos == "开启")
+            }
+            if (caps.balance && status.hasReading("balance")) ClusterLed("均衡", u, ClusterBlue, status.balance == "均衡中")
+            if (caps.protectAlarm && status.alarmList.isNotEmpty()) ClusterLed("告警", u, ClusterAmber, true)
+            if (caps.protectAlarm && status.protectList.isNotEmpty()) ClusterLed("保护", u, ClusterRed, true)
         }
         // 剩余 Ah 供剩余时间旁证（占用空间小，跟随底条数据）
         if (linkLost) Text("设备失联 · 数据停流", fontSize = (u.value * 1.2).sp, color = ClusterAmber)
-        else if (remainAh > 0) Text("剩余 ${fmt1(remainAh)}Ah", fontSize = (u.value * 1.2).sp, color = ClusterFg3)
+        else if (status.hasReading("remaining")) Text("剩余 ${fmt1(remainAh)}Ah", fontSize = (u.value * 1.2).sp, color = ClusterFg3)
     }
 }
 
@@ -521,13 +529,15 @@ private fun ClusterBottomBar(status: BmsStatus, u: Dp, sideSafe: Dp, bottomSafe:
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(u * 2.0f),
     ) {
-        ClusterBot("单体 ${if (on) status.maxCell else "--"}@${if (on) maxCell?.index ?: 0 else "-"}" +
-            " / ${if (on) status.minCell else "--"}@${if (on) minCell?.index ?: 0 else "-"}", u)
-        ClusterBot("压差 ${if (on) status.deltaCell else "--"}V", u)
-        ClusterBot("平均 ${if (on) status.avgCell else "--"}V", u)
-        ClusterBot("MOS ${if (on && mosTemp != null) "%.1f°".fmt(mosTemp) else "--"}", u)
-        ClusterBot("剩余 ${if (on) "%.1f".fmt(status.remainCapAh) else "--"}/${"%.0f".fmt(status.totalCapAh)}Ah", u)
-        ClusterBot("电流 ${if (on) (if (status.current > 0.05f) "+" else "") + "%.1fA".fmt(status.current) else "--"}", u)
+        if (status.cells.any { !it.missing }) {
+            ClusterBot("单体 ${status.maxCell}@${maxCell?.index ?: "-"} / ${status.minCell}@${minCell?.index ?: "-"}", u)
+            ClusterBot("压差 ${status.deltaCell}V", u)
+            ClusterBot("平均 ${status.avgCell}V", u)
+        }
+        if (on && mosTemp != null) ClusterBot("MOS ${"%.1f°".fmt(mosTemp)}", u)
+        if (status.hasReading("remaining") && status.hasReading("capacity"))
+            ClusterBot("剩余 ${"%.1f".fmt(status.remainCapAh)}/${"%.0f".fmt(status.totalCapAh)}Ah", u)
+        if (status.hasReading("current")) ClusterBot("电流 ${(if (status.current > 0.05) "+" else "") + "%.1fA".fmt(status.current)}", u)
         if (on && status.alarmList.isNotEmpty()) {
             Text("⚠ ${status.alarmList.first()}", fontSize = (u.value * 1.35).sp, color = ClusterAmber, maxLines = 1)
         }

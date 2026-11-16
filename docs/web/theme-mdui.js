@@ -440,7 +440,7 @@
     var row = h('div', 'btn-row mt-3');
     row.appendChild(button('选择设备并连接', {
       variant: 'filled', icon: 'bluetooth',
-      onClick: function () { M.connect(); }
+      onClick: function () { window.MaibmsBoards.connect(); }
     }));
     body.appendChild(row);
 
@@ -957,7 +957,7 @@
     row.appendChild(button(st.connected ? '断开连接' : '连接设备', {
       variant: st.connected ? 'tonal' : 'filled',
       icon: 'bluetooth',
-      onClick: function () { if (st.connected) M.disconnect(); else M.connect(); }
+      onClick: function () { if (st.connected) M.disconnect(); else window.MaibmsBoards.connect(); }
     }));
     connBody.appendChild(row);
     connBody.appendChild(h('div', 'muted mt-2', st.connected
@@ -1363,6 +1363,19 @@
 
     var content = $('#app .content');
     if (!content) return;
+    var boardMode = window.MaibmsBoards.supports(st);
+    var navItems = document.querySelectorAll('mdui-navigation-bar-item');
+    navItems.forEach(function (item) { if (item.getAttribute('value') === 'control') item.style.display = boardMode ? 'none' : ''; });
+    if (boardMode) {
+      if (ui.tab === 'control') ui.tab = 'params';
+      var boardKey = window.MaibmsBoards.renderKey(st, ui.tab);
+      if (boardKey !== null && boardKey === ui.boardRenderKey) return;
+      ui.boardRenderKey = boardKey;
+      clear(content); content.appendChild(window.MaibmsBoards.render(st, ui.tab));
+      ui.lastRenderKey = null;
+      var boardNav = $('mdui-navigation-bar'); if (boardNav) boardNav.setAttribute('value', ui.tab);
+      return;
+    }
 
     var key = renderKey(st);
     if (key !== null && key === ui.lastRenderKey) { renderTopbar(st); return; }

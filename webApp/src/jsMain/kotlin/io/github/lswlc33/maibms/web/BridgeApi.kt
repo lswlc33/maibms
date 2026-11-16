@@ -3,6 +3,8 @@ package io.github.lswlc33.maibms.web
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.Bms
 import io.github.lswlc33.maibms.data.BmsLog
+import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.transport.DeviceFamily
 import io.github.lswlc33.maibms.protocol.ResultCodes
 import io.github.lswlc33.maibms.transport.BleChannel
 import io.github.lswlc33.maibms.transport.webBluetoothAvailable
@@ -48,7 +50,26 @@ internal fun installStateAccess(api: dynamic) {
 
 internal fun installActions(api: dynamic) {
     // ---- 连接 ----
-    jsPut(api, "connect", { uiScope.launchRaw { startConnectFlowFromBridge() } })
+    jsPut(api, "connect", { family: String? -> uiScope.launchRaw { startConnectFlowFromBridge(family) } })
+    jsPut(api, "startScan", { family: String? -> uiScope.promise {
+        Bms.repository.startScan(parseFamily(family))
+        Bridge.pushState()
+        Bms.repository.scanResults.value.map { d ->
+            val item = jsObject()
+            jsPut(item, "address", d.address); jsPut(item, "name", d.name); jsPut(item, "family", d.family.name)
+            item
+        }.toTypedArray()
+    } })
+    jsPut(api, "connectTo", { address: String, family: String? ->
+        uiScope.launchRaw { Bms.repository.connectTo(address, parseFamily(family)) }
+    })
+    jsPut(api, "setBoardAccess", { password: String, mac: String ->
+        Bms.repository.setBoardAccess(password, mac).also { Bridge.pushState() }
+    })
+    jsPut(api, "boardAccess", {
+        val saved = if (Bms.repository.currentFamily.value == DeviceFamily.Jbd) Bms.repository.boardAccessFor() else "" to ""
+        ThemeBoardAccessStatus(saved.first.isNotEmpty(), saved.second).toJs(ThemeBoardAccessStatus.serializer())
+    })
     jsPut(api, "disconnect", { uiScope.launchRaw { Bms.repository.disconnect() } })
     jsPut(api, "supportsWebBluetooth", { webBluetoothAvailable() })
     jsPut(api, "canScan", { Bms.repository.canScan })
@@ -76,16 +97,19 @@ internal fun installActions(api: dynamic) {
     // ---- 权限 ----
     jsPut(api, "auth", { level: Int, pw: String -> authAction(level, pw) })
     jsPut(api, "savePassword", { level: Int, pw: String ->
-        Bms.repository.savePassword(level, pw)
+        if (!MockBms.caps.value.readOnly) Bms.repository.savePassword(level, pw)
         Bridge.pushState()
     })
     jsPut(api, "forgetPassword", { level: Int ->
-        Bms.repository.forgetPassword(level)
+        if (!MockBms.caps.value.readOnly) Bms.repository.forgetPassword(level)
         Bridge.pushState()
     })
 
     // ---- 参数 / 控制 ----
-    jsPut(api, "refreshParams", { uiScope.launchRaw { Bms.repository.refreshParams(force = true) } })
+    jsPut(api, "refreshParams", {
+        if (MockBms.caps.value.readOnly) Bms.repository.refreshBoardSettings()
+        else Bms.repository.refreshParams(force = true)
+    })
     jsPut(api, "writeParam", { addr: Int, raw: Int -> writeParamAction(addr, raw) })
     jsPut(api, "saveAllParams", { saveAllParamsAction() })
     jsPut(api, "control", { cmd: Int -> controlAction(cmd) })
@@ -125,9 +149,14 @@ private fun setThemeModeAction(mode: String): Boolean {
  * `requestDevice()` 必须在**用户手势**里调用，所以只能由主题页的点击事件触发；
  * 页面加载时自动调用会被浏览器拒绝（这是浏览器安全模型，主题页不要试）。
  */
-internal suspend fun startConnectFlowFromBridge() {
+private fun parseFamily(value: String?): DeviceFamily? = DeviceFamily.entries.firstOrNull {
+    value != null && it.name.equals(value, ignoreCase = true) && it != DeviceFamily.Unknown
+}
+
+internal suspend fun startConnectFlowFromBridge(familyName: String? = null) {
     val repo = Bms.repository
-    runCatching { repo.startScan() }.onFailure { err ->
+    val family = parseFamily(familyName)
+    runCatching { repo.startScan(family) }.onFailure { err ->
         BmsLog.e("WEB", "扫描失败：$err")
         Bridge.pushState()
         return
@@ -139,7 +168,7 @@ internal suspend fun startConnectFlowFromBridge() {
         Bridge.pushState()
         return
     }
-    repo.connectTo(found.address)
+    repo.connectTo(found.address, family)
 }
 
 private fun authAction(level: Int, password: String): dynamic = uiScope.promise {

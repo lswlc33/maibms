@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.collectAsState
 import io.github.lswlc33.maibms.data.AppStore
 import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.data.hasReading
 import io.github.lswlc33.maibms.data.POLL_INTERVAL_PRESETS_MS
 import io.github.lswlc33.maibms.data.UI_SCALE_PRESETS
 import kotlinx.coroutines.launch
@@ -59,11 +60,10 @@ fun SettingsHomeScreen(
     val reading by MockBms.paramsReading.collectAsState()
     val bleName by MockBms.connectedDeviceName.collectAsState()
     val connected = link == io.github.lswlc33.maibms.transport.LinkState.Connected
-    // 电量计（中继器）没有"备用通道"概念：隐藏通信通道入口，避免误导
-    val meterMode = io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value.isMeter
-    /** 身份区/状态里的值，空则显示 --（原设备信息页的逻辑） */
-    fun v(real: String?, fallback: String) = real?.ifBlank { null } ?: fallback.ifBlank { "--" }
-
+    val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
+    val caps by MockBms.caps.collectAsState()
+    val readOnlyBoard = family.isReadOnlyBoard || caps.readOnly
+    val meterMode = family.isMeter
     ScreenScaffold(title = "设置", bottomPadding = bottomPadding) {
         // 边距与配置页一致：卡片内距 CardPadding、行距默认、卡片间隔 7dp
         SectionCard {
@@ -146,7 +146,7 @@ fun SettingsHomeScreen(
                 },
             )
             // 通信通道：真机 BLE 才有（默认 / 备用 A / 备用 B，docs/02 §2.2）；电量计模式不适用
-            if (!meterMode) {
+            if (caps.antDetails && !readOnlyBoard) {
                 val chActive = channelActive
                 SettingRow(
                     title = "通信通道",
@@ -208,14 +208,16 @@ fun SettingsHomeScreen(
                 if (!monitoring.notificationAllowed) {
                     InfoBanner("通知权限未授予 · 请到系统设置允许通知；开关偏好不代表监控服务已运行", kind = "warn")
                 }
-                if (bgMonitor) {
+                if (bgMonitor && caps.antDetails) {
                     SwitchSettingRow(title = "告警通知", checked = alarmNotify, onChange = {
                         alarmNotify = it
                         AppStore.alarmNotify = it
                     })
                 }
                 Text(
-                    if (bgMonitor)
+                    if (!caps.antDetails)
+                        "退到后台继续读取仪表数据；关闭时暂停轮询省电，回到前台恢复。实时数据中断时可提醒，设备保护状态请查看仪表盘。"
+                    else if (bgMonitor)
                         "开启偏好后，有连接且通知权限允许时才会保持后台轮询并显示常驻通知；实际状态见上方。保护/告警新触发及设备失联时发通知，前台不重复提醒。"
                     else
                         "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。",
@@ -235,7 +237,7 @@ fun SettingsHomeScreen(
                 onClick = { onOpen(Route.Snapshots) },
             )
             // 权限与密码是蚂蚁保护板专有（多级密码校验，0x23）——电量计没有这套机制，不显示入口
-            if (!meterMode) {
+            if (caps.permission && !readOnlyBoard) {
                 SettingRow(
                     title = "权限与密码",
                     inlineValue = if (saved.isEmpty()) "未设置" else "已记住 " + saved.keys.sorted().joinToString("/") + " 级",
@@ -247,9 +249,7 @@ fun SettingsHomeScreen(
         }
         // 设备日志（0x13/0x15 历史事件与保护计数）只有真实连接的蚂蚁保护板才有；
         // 电量计无此数据，未连接/演示模式读了也是空——入口随之隐藏
-        val boardConnected = connected &&
-            io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value ==
-                io.github.lswlc33.maibms.transport.DeviceFamily.Ant
+        val boardConnected = connected && family == io.github.lswlc33.maibms.transport.DeviceFamily.Ant
         if (boardConnected) {
             SectionCard {
                 SettingRow(
@@ -261,31 +261,28 @@ fun SettingsHomeScreen(
             }
         }
         SectionCard {
-            SectionHeader("关于", tail = "身份区")
+            SectionHeader("关于", tail = family.label)
+            if (family.isReadOnlyBoard) SettingRow(title = "接入模式", inlineValue = "只读")
             if (reading) InfoBanner("身份区读取中…", kind = "info")
             else if (!connected && id.isEmpty()) InfoBanner("未连接设备 · 连接后自动读取身份区", kind = "warn")
             else if (!connected) InfoBanner("未连接 · 以下为「${MockBms.deviceLabel}」上次成功连接的缓存", kind = "info")
-            else if (id.isEmpty()) InfoBanner("身份区暂时读不到（权限不足或设备未就绪）", kind = "warn")
-            // Boot/电池组 ID/Code Key/设备地址 是保护板身份区专有，电量计不回报——
-            // 有值才显示该行，免得电量计用户看到一列恒为 "--" 的噪声
-            //（未连接时 id 为空则全隐，与空态横幅一致；保护板用户不受影响，这些键总有值）
-            SettingRow(title = "软件版本", inlineValue = v(id["swVersion"], status.swVersion))
-            SettingRow(title = "硬件版本", inlineValue = v(id["hwVersion"], status.hwVersion))
-            // 电池类型：保护板取自实时帧（0xFAFx → 中文，docs/13 §13.5），电量计取自设备信息表；
-            // 官方主页的设备信息头就有这一项，此前我们解码了却没地方看
-            SettingRow(title = "电池类型", inlineValue = v(id["batteryType"], status.batteryType))
-            if (!meterMode) {
-                SettingRow(title = "Boot 版本", inlineValue = v(id["boot"], "--"))
-                SettingRow(title = "设备地址", inlineValue = "A1")
-                SettingRow(title = "电池组 ID", inlineValue = v(id["packId"], "--"))
-                SettingRow(title = "Code Key", inlineValue = v(id["codeKey"], "--"))
+            else if (id.isEmpty() && !status.hasData) InfoBanner("设备身份信息尚未返回", kind = "info")
+            if (caps.runtime && status.hasReading("runtime")) SettingRow(title = "运行时间", inlineValue = status.runtime)
+            id["swVersion"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "软件版本", inlineValue = it) }
+            id["hwVersion"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "硬件版本", inlineValue = it) }
+            val batteryType = id["batteryType"] ?: status.batteryType.takeUnless { it == "--" }
+            batteryType?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "电池类型", inlineValue = it) }
+            if (caps.antDetails && !readOnlyBoard) {
+                id["boot"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "Boot 版本", inlineValue = it) }
+                if (connected || !readOnlyBoard) SettingRow(title = "设备地址", inlineValue = "A1")
+                id["packId"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "电池组 ID", inlineValue = it) }
+                id["codeKey"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "Code Key", inlineValue = it) }
             }
-            // 序列号与电芯串数只有电量计会报（蓝宝表2），保护板身份区没有这两项——
-            // 按需显示，免得保护板用户看到两行恒为 "--" 的噪声
-            id["serialNo"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "序列号", inlineValue = it) }
-            id["cellCount"]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "电芯串数", inlineValue = it) }
-            SettingRow(title = "蓝牙名称", inlineValue = (bleName ?: status.deviceName).trim())
-            SettingRow(title = "蓝牙地址", inlineValue = MockBms.savedAddress ?: "--")
+            listOf("serialNo" to "序列号", "cellCount" to "电芯串数", "model" to "设备型号",
+                "productName" to "产品型号", "packSerial" to "电池组序列号", "productionDate" to "生产日期")
+                .forEach { (key, label) -> id[key]?.takeIf { it.isNotBlank() }?.let { SettingRow(title = label, inlineValue = it) } }
+            bleName?.trim()?.takeIf { it.isNotBlank() }?.let { SettingRow(title = "蓝牙名称", inlineValue = it) }
+            if (caps.antDetails && !readOnlyBoard) SettingRow(title = "蓝牙地址", inlineValue = MockBms.savedAddress ?: "--")
         }
         AboutAppCard()
     }
@@ -441,7 +438,7 @@ fun PasswordScreen(onBack: () -> Unit) {
     val online = status.hasData
     // 多级密码（0x23/0x25）是蚂蚁保护板专有：电量计没有这套机制，
     // 页面只剩一句说明（入口在设置页已隐藏，这里兜底防深链直进）
-    val isMeter = io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState().value.isMeter
+    val isMeter = !MockBms.caps.collectAsState().value.permission
     ScreenScaffold(
         title = "权限与密码",
         subtitle = if (online) "设备：$label · 当前权限 ${status.permissionLevel} 级"
@@ -451,7 +448,7 @@ fun PasswordScreen(onBack: () -> Unit) {
         if (isMeter) {
             SectionCard {
                 Text(
-                    "「${label}」是电量计，不支持多级密码校验——密码功能只对蚂蚁保护板有效。",
+                    "多级密码校验仅适用于蚂蚁保护板；当前设备的连接选项见只读参数页。",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -803,7 +800,8 @@ fun DeveloperScreen(onBack: () -> Unit) {
         }
         // 操作行放在日志框「上面」：日志满时日志框近六屏高，放下面够不着
         // 电量计调试：陆行寄存器探测（只读）——连上 EM2APP 后点一下，结果进日志，导出即可分析
-        SectionCard {
+        val debugFamily by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
+        if (debugFamily.isMeter) SectionCard {
             SectionHeader("电量计调试", tail = "只读")
             var probing by remember { mutableStateOf(false) }
             val scope = rememberCoroutineScope()

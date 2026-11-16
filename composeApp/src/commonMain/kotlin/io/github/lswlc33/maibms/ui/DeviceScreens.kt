@@ -167,7 +167,7 @@ private fun DeviceRow(profile: DeviceProfile, isLast: Boolean, onClick: () -> Un
             Text(
                 // 多级密码是蚂蚁保护板专有；电量计档案没有密码库，摘要里也不再提「密码 N 级」
                 "${profile.address} · ${formatShortDateTime(profile.lastConnectedAt)}" +
-                    if (profile.family.isMeter) "" else " · 密码 ${profile.passwords.size} 级",
+                    if (!profile.family.usesAntProtocol) " · ${profile.family.label}" else " · 密码 ${profile.passwords.size} 级",
                 fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 1.dp),
             )
@@ -204,7 +204,7 @@ private fun DeviceDetailDialog(
                 singleLine = true, enabled = !busy,
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
             )
-            if (!profile.family.isMeter) {
+            if (profile.family.usesAntProtocol) {
                 Column(Modifier.padding(top = 10.dp)) {
                     Text("密码库 · 已记住 ${profile.passwords.size} 级", fontSize = 11.sp, fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface)

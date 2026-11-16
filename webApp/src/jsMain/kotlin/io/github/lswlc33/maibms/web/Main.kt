@@ -126,6 +126,9 @@ private fun startStatePusher() {
     }
     watch(io.github.lswlc33.maibms.data.MockBms.status)
     watch(io.github.lswlc33.maibms.data.MockBms.caps)
+    watch(io.github.lswlc33.maibms.data.MockBms.boardSettings)
+    watch(io.github.lswlc33.maibms.data.MockBms.readError)
+    watch(Bms.repository.scanFamily)
     watch(io.github.lswlc33.maibms.data.MockBms.liveParams)
     watch(io.github.lswlc33.maibms.data.MockBms.identity)
     watch(io.github.lswlc33.maibms.data.MockBms.paramsReading)

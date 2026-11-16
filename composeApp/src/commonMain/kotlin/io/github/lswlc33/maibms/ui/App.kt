@@ -46,6 +46,7 @@ import io.github.lswlc33.maibms.data.MockBms
 sealed class Route(val key: String) {
     data object Dashboard : Route("dashboard")
     data object Config : Route("config")
+    data object ReadOnlyBoardSettings : Route("readonly-board-settings")
     data object Settings : Route("settings")
     data class ParamGroup(val index: Int) : Route("param")   // S06（下标 → ParamTable.groups）
     data object ControlTools : Route("control")      // S08
@@ -152,15 +153,29 @@ fun App(
             val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
             val modifying by MockBms.modifying.collectAsState()
             val unsaved by MockBms.unsavedWriteError.collectAsState()
-            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(permissionLevel) && connected && !modifying
-            // 电量计（中继器）模式：隐藏"配置"标签（参数/控制/升级对电量计无意义），深链也重定向到仪表盘
+            val caps by MockBms.caps.collectAsState()
+            // 当前家族同时来自仓库与 MockBms（快照也会回填它）；新板能力位是最终安全边界。
             val family by io.github.lswlc33.maibms.data.Bms.repository.currentFamily.collectAsState()
             val meterMode = family.isMeter
-            LaunchedEffect(meterMode) {
-                if (meterMode) {
-                    if (currentTab.value == Route.Config) currentTab.value = Route.Dashboard
-                    backStack.removeAll { it is Route.ParamGroup || it == Route.ControlTools }
+            val readOnlyBoard = family.isReadOnlyBoard || caps.readOnly
+            val canWrite = io.github.lswlc33.maibms.protocol.Perm.canWrite(permissionLevel) &&
+                connected && !modifying && !caps.readOnly
+            // 电量计（中继器）模式隐藏配置标签；只读保护板保留配置标签，但内容改为只读参数。
+            LaunchedEffect(meterMode, readOnlyBoard, family) {
+                val blocked = { r: Route ->
+                    when {
+                        meterMode -> r is Route.ParamGroup || r == Route.ControlTools ||
+                            r == Route.Password || r == Route.Channels || r == Route.EventLogs
+                        readOnlyBoard -> r is Route.ParamGroup || r == Route.ControlTools ||
+                            r == Route.Password || r == Route.Channels || r == Route.EventLogs
+                        else -> false
+                    }
                 }
+                backStack.removeAll(blocked)
+                if (meterMode && currentTab.value == Route.Config) currentTab.value = Route.Dashboard
+                if ((meterMode || readOnlyBoard) && (dialog.value is DialogKind.PermLevels ||
+                    dialog.value is DialogKind.ControlConfirm || dialog.value is DialogKind.ParamEdit)
+                ) dialog.value = null
             }
             // 底栏在三个主标签（含仪表盘变体状态）显示
             val isTabRoot = backStack.isEmpty() && route.isTabRoot()
@@ -233,13 +248,17 @@ fun App(
                                     onControlConfirm = { cmd -> dialog.value = DialogKind.ControlConfirm(cmd) },
                                     onForceCharge = { dialog.value = DialogKind.ControlConfirm(io.github.lswlc33.maibms.protocol.ControlCmd.FORCE_CHARGE) },
                                 )
-                                Route.Config -> ConfigHomeScreen(
+                                Route.Config -> if (family.isReadOnlyBoard) ReadOnlyBoardSettingsScreen(
+                                    bottomPadding = navBarPad,
+                                    onConnect = { dialog.value = DialogKind.Scan },
+                                ) else ConfigHomeScreen(
                                     bottomPadding = navBarPad,
                                     onOpenGroup = { i -> push(Route.ParamGroup(i)) },
                                     onOpenTools = { push(Route.ControlTools) },
                                     onOpenPerm = { dialog.value = DialogKind.PermLevels },
                                     onConnect = { dialog.value = DialogKind.Scan },
                                 )
+                                Route.ReadOnlyBoardSettings -> ReadOnlyBoardSettingsScreen(onBack = popBack)
                                 Route.Settings -> SettingsHomeScreen(
                                     bottomPadding = navBarPad,
                                     onOpen = { r2 -> push(r2) },
@@ -319,16 +338,16 @@ fun App(
                             io.github.lswlc33.maibms.data.Bms.repository.stopScan()
                             dialog.value = null
                         },
-                        onConnect = { addr ->
+                        onConnect = { addr, chosenFamily ->
                             io.github.lswlc33.maibms.data.Bms.repository.stopScan()
                             dialog.value = null
-                            scope.launch { io.github.lswlc33.maibms.data.Bms.repository.connectTo(addr) }
+                            scope.launch { io.github.lswlc33.maibms.data.Bms.repository.connectTo(addr, chosenFamily) }
                         },
                     )
                     DialogKind.ProtectDetail -> ProtectDetailDialog(
                         onDismiss = { dialog.value = null },
                         // 「为什么跳保护」的下一步就是查设备里存的历史事件
-                        onOpenLog = { dialog.value = null; push(Route.EventLogs) },
+                        onOpenLog = if (caps.antDetails) ({ dialog.value = null; push(Route.EventLogs) }) else null,
                     )
                     is DialogKind.ControlConfirm -> ControlConfirmDialog(
                         d.cmd,

@@ -22,6 +22,7 @@ data class ParamParseResult(
 object ResultCodes {
     /** 0xFF 附加段结果码（写参数/读写状态） */
     fun writeResult(code: Int): String = when (code) {
+        -8 -> "此板型仅支持读取，未发送修改命令"
         -7 -> "参数未完整确认，保存已阻止"
         -6 -> "参数输入不合法"
         -5 -> "设备会话已结束"
@@ -47,6 +48,7 @@ object ResultCodes {
 
     /** 0x61 控制应答结果码 */
     fun controlResult(code: Int): String = when (code) {
+        -8 -> "此板型仅支持读取，未发送修改命令"
         -7 -> "参数未完整确认，保存已阻止"
         0 -> "设备未确认，请检查连接后重试"
         1 -> "成功"

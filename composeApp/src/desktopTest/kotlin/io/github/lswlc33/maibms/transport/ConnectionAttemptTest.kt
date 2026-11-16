@@ -272,6 +272,67 @@ class ConnectionAttemptTest {
         assertSame(newer, barriers.waiting("same-device", epochs.current))
     }
 
+    @Test fun readOnlyBoardRequiresConfirmedSubscriptionBeforeReady() {
+        val attempts = ConnectionAttempts()
+        val owner = attempts.begin("JBD")
+        val candidate = Any()
+        attempts.selectCandidate(owner, candidate)
+        var connected = false
+
+        assertFalse(attempts.publishSubscribedReady(owner, candidate) { connected = true })
+        assertFalse(owner.ready.isCompleted)
+        assertFalse(connected)
+        assertTrue(attempts.confirmSubscription(owner, candidate))
+        assertTrue(attempts.publishSubscribedReady(owner, candidate) { connected = true })
+        assertTrue(connected)
+        assertFalse(attempts.publishSubscribedReady(owner, candidate) { error("Duplicate ready") })
+    }
+
+    @Test fun switchingCandidateDiscardsOldSubscriptionConfirmation() {
+        val attempts = ConnectionAttempts()
+        val owner = attempts.begin("YYBMS")
+        val first = Any()
+        val next = Any()
+        attempts.selectCandidate(owner, first)
+        assertTrue(attempts.confirmSubscription(owner, first))
+        attempts.selectCandidate(owner, next)
+
+        assertFalse(attempts.subscriptionConfirmed(owner, first))
+        assertFalse(attempts.subscriptionConfirmed(owner, next))
+        assertFalse(attempts.confirmSubscription(owner, first))
+        assertFalse(attempts.publishSubscribedReady(owner, next) { error("Unconfirmed next channel") })
+        assertTrue(attempts.confirmSubscription(owner, next))
+        assertTrue(attempts.publishSubscribedReady(owner, next) {})
+    }
+
+    @Test fun delayedSubscriptionFromPreviousConnectionCannotConfirmNewAttempt() {
+        val attempts = ConnectionAttempts()
+        val candidate = Any()
+        val old = attempts.begin("same-device")
+        attempts.selectCandidate(old, candidate)
+        val current = attempts.begin("same-device")
+        attempts.selectCandidate(current, candidate)
+
+        assertFalse(attempts.confirmSubscription(old, candidate))
+        assertFalse(attempts.subscriptionConfirmed(current, candidate))
+        assertFalse(attempts.publishSubscribedReady(current, candidate) { error("Old confirmation escaped") })
+        assertTrue(attempts.confirmSubscription(current, candidate))
+        assertTrue(attempts.publishSubscribedReady(current, candidate) {})
+    }
+
+    @Test fun dropAfterSubscriptionConfirmationCannotPublishReady() {
+        val attempts = ConnectionAttempts()
+        val owner = attempts.begin("JBD")
+        val candidate = Any()
+        attempts.selectCandidate(owner, candidate)
+        assertTrue(attempts.confirmSubscription(owner, candidate))
+        attempts.finish(owner)
+
+        assertFalse(attempts.confirmSubscription(owner, candidate))
+        assertFalse(attempts.subscriptionConfirmed(owner, candidate))
+        assertFalse(attempts.publishSubscribedReady(owner, candidate) { error("Dropped connection revived") })
+    }
+
     private enum class Callback {
         Connect, Fail, Disconnect, Services, Characteristics, NotifySuccess, NotifyFailure, Data,
     }

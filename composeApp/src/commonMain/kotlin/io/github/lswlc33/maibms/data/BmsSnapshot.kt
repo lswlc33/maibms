@@ -2,6 +2,8 @@ package io.github.lswlc33.maibms.data
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import io.github.lswlc33.maibms.protocol.board.BoardSetting
+import io.github.lswlc33.maibms.transport.DeviceFamily
 
 /**
  * 设备数据快照：一次连接完成全量同步（实时帧 + 参数区 + 身份区）后冻结的完整状态。
@@ -22,6 +24,9 @@ data class BmsSnapshot(
     val liveParams: Map<Int, Int>,
     /** 身份区（boot/codeKey/hwVersion/swVersion/packId） */
     val identity: Map<String, String>,
+    val family: DeviceFamily = DeviceFamily.Unknown,
+    val capabilities: DeviceCapabilities? = null,
+    val boardSettings: List<BoardSetting> = emptyList(),
 )
 
 /** 快照 JSON 编解码入口。字段只增不改名：旧快照靠 ignoreUnknownKeys 向后兼容。 */

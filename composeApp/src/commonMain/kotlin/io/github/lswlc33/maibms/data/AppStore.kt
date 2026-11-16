@@ -1,6 +1,8 @@
 package io.github.lswlc33.maibms.data
 
 import io.github.lswlc33.maibms.transport.BleChannel
+import io.github.lswlc33.maibms.transport.DeviceFamily
+import io.github.lswlc33.maibms.protocol.board.BoardSetting
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -71,6 +73,8 @@ object AppStore {
         val savedAt: Long,
         val params: Map<Int, Int>,
         val identity: Map<String, String>,
+        val family: DeviceFamily = DeviceFamily.Unknown,
+        val boardSettings: List<BoardSetting> = emptyList(),
     )
 
     fun saveParamsCache(address: String, cache: ParamsCache) {

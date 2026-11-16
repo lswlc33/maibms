@@ -2,6 +2,8 @@ package io.github.lswlc33.maibms.transport
 
 import io.github.lswlc33.maibms.data.BmsLog
 import io.github.lswlc33.maibms.data.LinkStats
+import io.github.lswlc33.maibms.protocol.board.boardFrameForLog
+import io.github.lswlc33.maibms.protocol.board.isSafeBoardRead
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,7 +52,7 @@ class WebBleTransport : BmsTransport {
         private const val SERVICE = "0000ffe0-0000-1000-8000-00805f9b34fb"
         private const val UUID_FFF5 = "0000fff5-0000-1000-8000-00805f9b34fb"
 
-        private fun uuidOf(short: String) = "0000${short.lowercase()}-0000-1000-8000-00805f9b34fb"
+        private fun uuidOf(short: String) = bleUuid(short).lowercase()
 
         /** 探测超时 / 切通道间隔：与 Android 实现保持一致（官方也是 8s/条 + 200ms 间隔） */
         const val PROBE_TIMEOUT_MS = 8_000L
@@ -89,6 +91,8 @@ class WebBleTransport : BmsTransport {
     override val currentFamily: StateFlow<DeviceFamily> = _currentFamily
 
     private var targetFamily: DeviceFamily = DeviceFamily.Ant
+    private var scanFamily: DeviceFamily? = null
+    override fun setScanFamily(family: DeviceFamily?) { scanFamily = family }
     override fun setTargetFamily(family: DeviceFamily) {
         targetFamily = family
     }
@@ -193,7 +197,7 @@ class WebBleTransport : BmsTransport {
         }
         authorized = device
         val name = device.name?.trim().orEmpty()
-        val family = DeviceFamily.matchName(name)
+        val family = scanFamily ?: DeviceFamily.matchName(name)
         logI("已选择设备：${name.ifBlank { "(无名)" }}（${device.id}）→ ${family?.label ?: "未知家族"}")
         // 选择器现在列出全部设备（见 requestOptions 的说明），用户可能选到无关设备：
         // 给一句人话提示，但**不阻断**——协议探测失败会给出"通道无应答"，
@@ -228,7 +232,7 @@ class WebBleTransport : BmsTransport {
         // Android 是"先扫全部、再按 DeviceFamily.isTarget 判定"，这里照做：
         // 选择器里给出全部设备，家族判定交给 matchName（不区分大小写，规则只有一处）。
         // [all] 参数保留：历史调用点用它表达"更宽的范围"，现在两者等价。
-        return JSON.parse("""{"acceptAllDevices":true,"optionalServices":["$SERVICE"]}""")
+        return JSON.parse("""{"acceptAllDevices":true,"optionalServices":["$SERVICE","${uuidOf("FF00")}","${uuidOf("FEE9")}"]}""")
     }
 
     override fun stopScan() {
@@ -370,11 +374,14 @@ class WebBleTransport : BmsTransport {
                 _currentFamily.value = family
 
                 a.stage = Stage.Service
-                val service = srv.getPrimaryService(SERVICE).await<WebBluetoothGattService>()
-                checkAttempt(a)
-
-                a.stage = Stage.Characteristics
-                val candidates = buildCandidates(service, a)
+                val candidates = if (family.isReadOnlyBoard) {
+                    buildBoardCandidates(srv, a)
+                } else {
+                    val service = srv.getPrimaryService(SERVICE).await<WebBluetoothGattService>()
+                    checkAttempt(a)
+                    a.stage = Stage.Characteristics
+                    buildCandidates(service, a)
+                }
                 checkAttempt(a)
                 _availableChannels.value = candidates.map { it.channel }.ifEmpty { listOf(BleChannel.Default) }
                 if (candidates.isEmpty()) {
@@ -438,6 +445,31 @@ class WebBleTransport : BmsTransport {
         val write: WebBluetoothGattCharacteristic,
         val notify: WebBluetoothGattCharacteristic,
     )
+
+    private suspend fun buildBoardCandidates(server: WebBluetoothGattServer, a: LinkAttempt): List<Candidate> {
+        val found = ArrayList<Candidate>()
+        for (serviceId in a.family.serviceUuids) {
+            val service = try {
+                server.getPrimaryService(uuidOf(serviceId)).await<WebBluetoothGattService>()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                checkAttempt(a)
+                continue
+            }
+            checkAttempt(a)
+            a.stage = Stage.Characteristics
+            val chars = service.getCharacteristics().await<Array<WebBluetoothGattCharacteristic>>()
+            checkAttempt(a)
+            for (channel in boardBleChannels(a.family).filter { sameBleUuid(it.serviceUuid, serviceId) }) {
+                val write = chars.firstOrNull { sameBleUuid(it.uuid, channel.writeUuid) }
+                val notify = chars.firstOrNull { sameBleUuid(it.uuid, channel.notifyUuid) }
+                if (write != null && notify != null && propBool(write, "write", "writeWithoutResponse") &&
+                    propBool(notify, "notify", "indicate")) found += Candidate(channel, write, notify)
+            }
+        }
+        return found
+    }
 
     /** 发现服务后生成候选（规则与 Android 完全一致：只有可写 FFF5 的硬件才有备用通道） */
     private suspend fun buildCandidates(service: WebBluetoothGattService, a: LinkAttempt): List<Candidate> {
@@ -509,7 +541,7 @@ class WebBleTransport : BmsTransport {
      * 真正的握手交给 Repository 的电量计轮询帧（见 BmsRepository.pollLoop）。
      */
     private suspend fun probeChannels(ordered: List<Candidate>, a: LinkAttempt): Candidate? {
-        val isMeter = a.family.isMeter
+        val isMeter = a.family.isMeter || a.family.isReadOnlyBoard
         for ((index, c) in ordered.withIndex()) {
             checkAttempt(a)
             _connectHint.value = "通道探测：${c.channel.label}…"
@@ -627,7 +659,10 @@ class WebBleTransport : BmsTransport {
             return
         }
         // 帧日志走协议层的遮蔽版（0x23 密码帧的数据区不能原样进日志）
-        BmsLog.frame("WEB", "→", frame.size) { io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame) }
+        BmsLog.frame("WEB", "→", frame.size) {
+            if (targetFamily.isReadOnlyBoard) boardFrameForLog(targetFamily, frame)
+            else io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame)
+        }
         val a = activeAttempt ?: return
         checkAttempt(a)
         writeChunks(wc, frame, a)
@@ -636,6 +671,7 @@ class WebBleTransport : BmsTransport {
     /** 分片写：串行 + 每片 await（探测帧与业务帧共用），过期会话不再发送。 */
     private suspend fun writeChunks(wc: WebBluetoothGattCharacteristic, frame: ByteArray, a: LinkAttempt) = writeMutex.withLock {
         checkAttempt(a)
+        if (a.family.isReadOnlyBoard) require(isSafeBoardRead(a.family, frame)) { "只读板型拒绝修改命令" }
         val useResponse = propBool(wc, "write") && !propBool(wc, "writeWithoutResponse")
         var offset = 0
         while (offset < frame.size) {

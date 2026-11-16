@@ -64,6 +64,7 @@ import io.github.lswlc33.maibms.data.BmsStatus
 import io.github.lswlc33.maibms.data.CellV
 import io.github.lswlc33.maibms.data.DEFAULT_POWER_STAGES
 import io.github.lswlc33.maibms.data.MockBms
+import io.github.lswlc33.maibms.data.hasReading
 import io.github.lswlc33.maibms.data.fmt
 import io.github.lswlc33.maibms.data.fmtDurationSec
 import io.github.lswlc33.maibms.data.fmtRemainingMin
@@ -463,7 +464,7 @@ fun BatteryCard(
     // 未连接/无数据时用中性灰：真实 0% 才是低电红，别让空态看着像报警
     val caps = MockBms.caps.collectAsState().value
     val fill = fillColor ?: when {
-        !status.hasData -> BmsColors.OffGray
+        !status.hasReading("soc") -> BmsColors.OffGray
         status.soc <= 15 -> BmsColors.BadRed
         else -> BmsColors.GreenFill
     }
@@ -501,7 +502,7 @@ fun BatteryCard(
         // 电量填充（左=有电，右=空电）：父级 clip 已把右缘裁直，与截图一致
         Box(Modifier.matchParentSize()) {
             Box(
-                    Modifier.fillMaxHeight().fillMaxWidth(status.soc.coerceIn(0, 100) / 100f)
+                    Modifier.fillMaxHeight().fillMaxWidth(if (status.hasReading("soc")) status.soc.coerceIn(0, 100) / 100f else 0f)
                     .background(fill.copy(alpha = fillAlpha))
             )
         }
@@ -519,7 +520,7 @@ fun BatteryCard(
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text(
                         // 小数位跟家族能力位走（陆行官方只显示 1 位，末位测量噪声不再抖）
-                        if (status.hasData) "%.${caps.voltageDecimals}f".fmt(status.totalVoltage) else "--",
+                        if (status.hasReading("voltage")) "%.${caps.voltageDecimals}f".fmt(status.totalVoltage) else "--",
                         fontSize = 30.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
                         color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false,
                     )
@@ -538,11 +539,11 @@ fun BatteryCard(
                 )
                 // 保护板：累计循环容量 + 运行时间（实时帧扩展段）。
                 // 电量计没有"运行时间"这个字段（协议里没有）——只显示循环次数，不留 "--" 占位。
-                val cycleLine = when {
-                    caps.extTimes -> "${status.totalCycleAh}Ah 循环 · ${status.runtime}"
-                    status.cycles > 0 -> "循环 ${status.cycles} 次"
-                    else -> ""
-                }
+                val cycleLine = buildList {
+                    if (caps.cycleCapacity && status.hasReading("cycleCapacity")) add("${status.totalCycleAh}Ah 循环")
+                    if (caps.cycleCount && status.hasReading("cycles")) add("循环 ${status.cycles} 次")
+                    if (caps.runtime && status.hasReading("runtime")) add(status.runtime)
+                }.joinToString(" · ")
                 if (cycleLine.isNotEmpty()) Text(
                     cycleLine,
                     fontSize = 10.sp, fontWeight = FontWeight.Bold,
@@ -594,7 +595,7 @@ fun BatteryCard(
                         everConnected -> "重连中"
                         else -> "未连接"
                     }
-                    val pct = socText ?: (if (everConnected && status.hasData) status.soc.toString() + "%" else "--")
+                    val pct = socText ?: (if (status.hasReading("soc")) status.soc.toString() + "%" else "--")
                     Row {
                         Text(conn, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
                         Text(" · $pct", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
@@ -667,44 +668,32 @@ fun RelayBoardCard(
 
 @Composable
 fun StatusCapacityCard(status: BmsStatus, modifier: Modifier = Modifier) {
+    val caps = MockBms.caps.collectAsState().value
+    // 旧 ANT 空态保留占位；新协议只展示实际收到的字段，真实 0 仍是有效读数。
+    fun show(field: String) = status.hasReading(field) || (caps.antDetails && status.availableFields == null)
+    fun value(field: String, text: String) = if (status.hasReading(field)) text else "--"
+    fun mos(text: String, reason: String?) = if (reason == null) text else "$text·$reason"
+    val chargeReason = if (caps.antDetails) io.github.lswlc33.maibms.protocol.MosStateDict.chargeReason(status.chMosCode) else null
+    val dischargeReason = if (caps.antDetails) io.github.lswlc33.maibms.protocol.MosStateDict.dischargeReason(status.disMosCode) else null
+    val balanceText = if (caps.antDetails)
+        io.github.lswlc33.maibms.protocol.MosStateDict.balanceMode(status.balanceCode) ?: status.balance
+        else status.balance
+    val rows = buildList {
+        if (caps.mos && show("mos") && (caps.antDetails || status.chMos != "--"))
+            add(Triple(BmsColors.OffGray, "充电 MOS", value("mos", mos(status.chMos, chargeReason))))
+        if (show("state")) add(Triple(BmsColors.WarnAmber, "电池状态", value("state", status.battState)))
+        if (caps.mos && show("mos") && (caps.antDetails || status.disMos != "--"))
+            add(Triple(BmsColors.OkGreen, "放电 MOS", value("mos", mos(status.disMos, dischargeReason))))
+        if (caps.capacity && show("remaining"))
+            add(Triple(BmsColors.IcBlue, "剩余容量", value("remaining", "%.1f".fmt(status.remainCapAh) + " Ah")))
+        if (caps.balance && show("balance")) add(Triple(BmsColors.OffGray, "均衡状态", value("balance", balanceText)))
+        if (caps.capacity && show("capacity"))
+            add(Triple(BmsColors.IcBlue, "总容量", value("capacity", "%.1f".fmt(status.totalCapAh) + " Ah")))
+    }
+    if (rows.isEmpty()) return
     SectionCard(modifier) {
-        // 没收到过数据就一律 "--"：拿 0.0Ah / 0% 当读数是误导
-        fun v(text: String) = if (status.hasData) text else "--"
-        // MOS 断开原因（MosStateDict：码值 ≥2 才有原因）接在开关读数后面：「关闭」两字
-        // 看不出是被什么断开的，而那正是排查要的信息。保留码/未定义码不给原因，
-        // 免得把固件占位码当含义显示；原始码在「告警详情 → 运行状态」里始终可见。
-        fun mos(openClose: String, reason: String?) = if (reason == null) openClose else "$openClose·$reason"
-        val caps = MockBms.caps.collectAsState().value
-        // 左=MOS/均衡，右=电池状态+容量，左右各三行（SOH 已按需求移除）。
-        // 每行必须是同一个 Row：此前左右各一个 Column 自堆自的，行高由各行内容
-        // （中文 vs 拉丁数字的字体行高）决定，两列从第二行起逐行错位。
-        // 电量计没有 MOS/均衡 → 只保留右侧的状态/容量列（不显示读不到的 MOS 行）
-        val rows = listOf(
-            listOfNotNull(
-                Triple(
-                    BmsColors.OffGray, "充电 MOS",
-                    v(mos(status.chMos, io.github.lswlc33.maibms.protocol.MosStateDict.chargeReason(status.chMosCode))),
-                ).takeIf { caps.mos },
-                Triple(BmsColors.WarnAmber, "电池状态", v(status.battState)),
-            ),
-            listOfNotNull(
-                Triple(
-                    BmsColors.OkGreen, "放电 MOS",
-                    v(mos(status.disMos, io.github.lswlc33.maibms.protocol.MosStateDict.dischargeReason(status.disMosCode))),
-                ).takeIf { caps.mos },
-                Triple(BmsColors.IcBlue, "剩余容量", if (status.hasData) "%.1f".fmt(status.remainCapAh) + " Ah" else "--"),
-            ),
-            listOfNotNull(
-                // 均衡：有模式名就显示模式（自动均衡/极限均衡…），未定义码退回「均衡中」
-                Triple(
-                    BmsColors.OffGray, "均衡状态",
-                    io.github.lswlc33.maibms.protocol.MosStateDict.balanceMode(status.balanceCode)
-                        ?.let { v(it) } ?: v(status.balance),
-                ).takeIf { caps.balance },
-                Triple(BmsColors.IcBlue, "总容量", if (status.hasData) "%.1f".fmt(status.totalCapAh) + " Ah" else "--"),
-            ),
-        )
-        AdaptiveCardGrid(rows.flatten(), minWidth = DASHBOARD_CARD_COLUMN_MIN_DP.dp, maxColumns = if (caps.mos || caps.balance) 2 else 1, spacing = 4.dp) { cell, mod ->
+        AdaptiveCardGrid(rows, minWidth = DASHBOARD_CARD_COLUMN_MIN_DP.dp,
+            maxColumns = if (caps.mos || caps.balance) 2 else 1, spacing = 4.dp) { cell, mod ->
             SRow(cell.first, cell.second, cell.third, mod)
         }
     }
@@ -827,7 +816,8 @@ fun MetricGridCard(
                     // 「充电剩余」，放电/静置给「放电剩余」——不再两项并列，免掉恒有一项 "--" 的噪音。
                     // 文字整行居中收在本列内，不往右挤立牌和卡1 的电量角标
                     val chargingNow = hasData && powerW < -20
-                    if (caps.extTimes) Text(
+                    if (caps.extTimes && status.hasReading("remainingTime") &&
+                        (if (chargingNow) status.remainChargeMin else status.remainDischargeMin) > 0) Text(
                         (if (chargingNow) "充电剩余 " else "放电剩余 ") +
                             fmtRemainingMin(if (chargingNow) status.remainChargeMin else status.remainDischargeMin),
                         fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
@@ -1031,19 +1021,21 @@ fun BmsStatus.metrics(off: Boolean = !hasData): List<Metric> {
 @Composable
 fun ProtectAlarmCards(status: BmsStatus, onSeeAll: () -> Unit, modifier: Modifier = Modifier) {
     // 电量计没有保护/告警位域：整块隐藏（否则永远是两张空卡）
-    if (!MockBms.caps.collectAsState().value.protectAlarm) return
-    // 连接后两卡都空 → 整块隐藏（父列 spacedBy(8dp) 自动吸收间距）；未连接保留占位
-    if (status.hasData && status.protectList.isEmpty() && status.alarmList.isEmpty()) return
+    val caps by MockBms.caps.collectAsState()
+    if (!caps.protectAlarm) return
+    // 新板只有收到真实保护/告警位才显示；空数据时隐藏整块，避免空占位卡。
+    if (!status.hasData) return
+    if (status.protectList.isEmpty() && status.alarmList.isEmpty()) return
     // IntrinsicSize.Min：两卡按内容较多的一侧撑齐高度（一侧空一侧有条目时不再一高一低）
     Row(
         modifier.fillMaxWidth().height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         // 条目圆点对齐官方小程序：保护=绿、告警=橙（官方圆点素材色，2026-11-04 复核）
-        PwCard("保护信息", if (status.hasData) status.protectList.size else null,
+        if (caps.antDetails || status.protectList.isNotEmpty()) PwCard("保护信息", status.protectList.size,
                if (isDarkScheme()) BmsColors.ProtectDotDark else BmsColors.ProtectDot,
                status.protectList, status.hasData, onSeeAll, Modifier.weight(1f))
-        PwCard("告警信息", if (status.hasData) status.alarmList.size else null,
+        if (caps.antDetails || status.alarmList.isNotEmpty()) PwCard("告警信息", status.alarmList.size,
                if (isDarkScheme()) BmsColors.WarnDotDark else BmsColors.WarnDot,
                status.alarmList, status.hasData, onSeeAll, Modifier.weight(1f))
     }
@@ -1092,13 +1084,8 @@ fun TempCard(temps: List<Pair<String, Double>>, modifier: Modifier = Modifier) {
     SectionCard(modifier) {
         val present = presentTemperatures(temps)
         SectionHeader("温度", tail = if (present.isEmpty()) "--" else present.size.toString() + " 路")
-        // 整帧没有任何温度、或所有通道都是 -40（未接）时，都走空态；
-        // 不能只看 temps.isEmpty()，否则会留下一张「0 路」的空卡。
-        if (present.isEmpty()) {
-            Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 2.dp))
-            return@SectionCard
-        }
+    // 温度卡：没有有效温度就不占位（连接后也不显示“未连接 · 无数据”）。
+    if (present.isEmpty()) return@SectionCard
         // 所有有效通道都保留，包括电量计报告的「电池」「环境」等未分类名称。
         AdaptiveCardGrid(present, minWidth = 112.dp, maxColumns = 3, spacing = 6.dp) { temp, mod ->
             TempBox(temp.first, temp.second, mod)

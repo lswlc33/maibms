@@ -11,7 +11,11 @@ import android.content.Context
 import android.os.Build
 import io.github.lswlc33.maibms.data.PlatformLock
 import io.github.lswlc33.maibms.data.withLock
+import io.github.lswlc33.maibms.protocol.board.isSafeBoardRead
+import io.github.lswlc33.maibms.protocol.board.boardFrameForLog
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,8 +43,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         const val PROBE_TIMEOUT_MS = 8_000L
         const val PROBE_SETTLE_MS = 200L
 
-        /** 短 UUID（"FFF3"）→ 完整 128 位 UUID */
-        private fun uuidOf(short: String) = UUID.fromString("0000$short-0000-1000-8000-00805F9B34FB")
+        /** 短 UUID 或完整 UUID → Android UUID */
+        private fun uuidOf(value: String): UUID = UUID.fromString(bleUuid(value))
         const val MTU_TARGET = 512
 
         /** 单次 GATT 写分片上限：MTU 协商到 512 时若按 502 写字，部分 ROM/从机会静默丢包 */
@@ -54,6 +58,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         const val CONNECT_TIMEOUT_AUTO_MS = 25_000L
         /** 就绪兜底：个别 ROM 不回调 onDescriptorWrite，超过这个时间就按「订阅已发出」继续 */
         const val READY_FALLBACK_MS = 250L
+        /** 新板没有 ANT 探测兜底，必须等 CCCD 成功；超时重连而非假定已订阅。 */
+        const val BOARD_SUBSCRIBE_TIMEOUT_MS = 4_000L
     }
 
     private val _linkState = MutableStateFlow(LinkState.Idle)
@@ -85,6 +91,13 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         targetFamily = family
     }
 
+    /** 扫描时可选的手动板型；连接仍以 targetFamily 为准。 */
+    @Volatile private var scanFamily: DeviceFamily? = null
+
+    override fun setScanFamily(family: DeviceFamily?) {
+        scanFamily = family
+    }
+
     /** 一组候选：通道定义 + 实际拿到的写/通知特征 */
     private data class Candidate(
         val channel: BleChannel,
@@ -105,6 +118,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     private var gatt: BluetoothGatt? = null
     private var writeChar: BluetoothGattCharacteristic? = null
     private var notifyChar: BluetoothGattCharacteristic? = null
+    private val writeGuard = Mutex()
+    @Volatile private var pendingGattWrite: CompletableDeferred<Boolean>? = null
 
     @Volatile private var mtu: Int = 20
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -169,8 +184,19 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         if (p and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0) add("指示")
     }.joinToString("/").ifEmpty { "无" }
 
-    /**
-     * 生成候选通道：先按官方规则决定"这块硬件有没有备用通道"，
+    /** 新只读板：按家族支持的服务与特征配对构建候选，不回退到 ANT 通道。 */
+    private fun buildBoardCandidates(services: List<BluetoothGattService>): List<Candidate> =
+        boardBleChannels(targetFamily).flatMap { ch ->
+            services.filter { sameBleUuid(it.uuid.toString(), ch.serviceUuid) }.mapNotNull { service ->
+                val w = service.getCharacteristic(uuidOf(ch.writeUuid))
+                val n = service.getCharacteristic(uuidOf(ch.notifyUuid))
+                if (w != null && n != null && isWritable(w) && isNotifiable(n)) {
+                    Candidate(ch, w, n)
+                } else null
+            }
+        }
+
+    /** 生成候选通道：先按官方规则决定“这块硬件有没有备用通道”，
      * 再按实际特征与属性过滤（写特征要可写、通知特征要能 notify/indicate）。
      */
     private fun buildCandidates(service: BluetoothGattService): List<Candidate> {
@@ -205,7 +231,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     private fun afterSubscribed(g: BluetoothGatt, c: Candidate): Unit = withLock(attemptLock) {
         val owner = attempts.current ?: return@withLock
         if (g !== gatt || !attempts.acceptsCandidate(owner, c)) return@withLock
-        if (targetFamily.isMeter) {
+        if (targetFamily.isReadOnlyBoard && !attempts.subscriptionConfirmed(owner, c)) return@withLock
+        if (targetFamily.isMeter || targetFamily.isReadOnlyBoard) {
             completeReady(g, owner, c)
         } else {
             startProbe(g, owner, c)
@@ -216,6 +243,15 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     private fun looksLikeProbeResponse(b: ByteArray): Boolean =
         b.size >= 3 && b[0] == 0x7E.toByte() &&
             (b[2] == 0x11.toByte() || b[2] == 0x12.toByte())
+
+    /** 订阅失败只淘汰当前候选；旧回调和已经就绪的候选不能回头改连接状态。 */
+    private fun failBoardSubscription(g: BluetoothGatt, owner: ConnectionAttempt, c: Candidate, detail: String): Unit = withLock(attemptLock) {
+        if (g !== gatt || !attempts.acceptsCandidate(owner, c) || owner.ready.isCompleted) return@withLock
+        logW("${c.channel.label}通知订阅失败：$detail")
+        unsubscribe(g, c)
+        candidateIndex++
+        probeNext(g)
+    }
 
     /**
      * 试下一个候选通道：订阅通知 →（CCCD 落地后）发探测帧等应答。
@@ -239,22 +275,47 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         probeStarted = false
         logI("通道探测 ${candidateIndex + 1}/${candidates.size}：${c.channel.id}（写 ${shortUuid(c.write.uuid)} / 通知 ${shortUuid(c.notify.uuid)}）")
         _connectHint.value = "通道探测：${c.channel.label}…"
-        runCatching { g.setCharacteristicNotification(c.notify, true) }
+        val localSubscribed = runCatching { g.setCharacteristicNotification(c.notify, true) }.getOrDefault(false)
+        if (targetFamily.isReadOnlyBoard && !localSubscribed) {
+            failBoardSubscription(g, owner, c, "蓝牙栈拒绝启用通知")
+            return@withLock
+        }
         val desc = c.notify.getDescriptor(CCCD)
         if (desc == null) {
+            if (targetFamily.isReadOnlyBoard) {
+                failBoardSubscription(g, owner, c, "缺少 CCCD 描述符")
+                return@withLock
+            }
             logW("通知特征上没有 CCCD 描述符，直接发探测帧")
             runCatching { g.requestMtu(MTU_TARGET) }
             runCatching { g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH) }
             afterSubscribed(g, c)
             return@withLock
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            runCatching { g.writeDescriptor(desc, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) }
+        val notifyValue = if (c.notify.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0)
+            BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE else BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+        val queued = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            runCatching { g.writeDescriptor(desc, notifyValue) == BluetoothStatusCodes.SUCCESS }.getOrDefault(false)
         } else {
             @Suppress("DEPRECATION")
-            desc.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            desc.value = notifyValue
             @Suppress("DEPRECATION")
-            runCatching { g.writeDescriptor(desc) }
+            runCatching { g.writeDescriptor(desc) }.getOrDefault(false)
+        }
+        if (targetFamily.isReadOnlyBoard) {
+            if (!queued) {
+                failBoardSubscription(g, owner, c, "CCCD 写入请求被拒绝")
+                return@withLock
+            }
+            // 新板上行最多 11B，不需要 MTU 协商；先等订阅完成，避免 GATT 并发占用。
+            scope.launch {
+                delay(BOARD_SUBSCRIBE_TIMEOUT_MS)
+                withLock(attemptLock) {
+                    if (!attempts.subscriptionConfirmed(owner, c))
+                        failBoardSubscription(g, owner, c, "CCCD 确认超时")
+                }
+            }
+            return@withLock
         }
         // MTU 只影响写分片，异步协商；连接间隔提到最高档，命令往返能少几十毫秒
         runCatching { g.requestMtu(MTU_TARGET) }
@@ -300,13 +361,15 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     /** valid/current GATT/drop 检查与 Connected 发布同锁，不允许掉线后被等待方重新置态。 */
     private fun completeReady(g: BluetoothGatt, owner: ConnectionAttempt, c: Candidate): Unit = withLock(attemptLock) {
         if (g !== gatt || !attempts.acceptsCandidate(owner, c)) return@withLock
-        attempts.publishReady(owner) {
+        val publish: () -> Unit = {
             _activeChannel.value = c.channel
             _linkState.value = LinkState.Connected
             _connectHint.value = null
             logI(if (targetFamily.isMeter) "电量计通道就绪：${c.channel.id}（跳过保护板探测）"
                  else "通道就绪：${c.channel.label}（${c.channel.id}）")
         }
+        if (targetFamily.isReadOnlyBoard) attempts.publishSubscribedReady(owner, c, publish)
+        else attempts.publishReady(owner, publish)
     }
 
     // ---------------- 扫描 ----------------
@@ -326,12 +389,19 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 // 权限在扫描过程中被回收时，device.name/address 会抛 SecurityException；
                 // 这里是 Binder 回调线程，未捕获会直接崩进程
                 runCatching {
-                    val name = result.device.name ?: return@runCatching
-                    // 按广播名判定家族：保护板（ANT）+ 两家电量计；陆行同厂控制器 CJ01 显式排除
-                    if (!DeviceFamily.isTarget(name)) return@runCatching
-                    val family = DeviceFamily.matchName(name) ?: return@runCatching
-                    logD("scan 发现 $name ${result.device.address} rssi=${result.rssi} → ${family.label}")
-                    onFound(ScanDevice(name, result.device.address, result.rssi, family))
+                    val advertisedName = result.scanRecord?.deviceName?.trim().orEmpty()
+                    val fallbackName = result.device.name?.trim().orEmpty()
+                    val name = advertisedName.ifBlank { fallbackName }.ifBlank { "未命名设备" }
+                    val services = result.scanRecord?.serviceUuids?.map { it.toString() }.orEmpty()
+                    val detected = advertisedFamily(name, services)
+                    val family = scanFamily ?: detected
+                    // 手动板型选择时允许列出所有有名设备；自动模式仍只列服务/名称可识别的目标。
+                    val report = if (scanFamily != null) {
+                        advertisedName.isNotBlank() || fallbackName.isNotBlank()
+                    } else detected != null
+                    if (!report) return@runCatching
+                    logD("scan 发现 $name ${result.device.address} rssi=${result.rssi} 服务=${services.joinToString()} → ${family?.label ?: "未知家族"}")
+                    onFound(ScanDevice(name, result.device.address, result.rssi, family ?: DeviceFamily.Unknown))
                 }.onFailure { logW("扫描回调异常（权限被回收？）：${it.message}") }
             }
 
@@ -493,6 +563,8 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         val current = attempts.current
         val g = gatt
         val probe = probeSignal
+        pendingGattWrite?.complete(false)
+        pendingGattWrite = null
         gatt = null
         writeChar = null
         notifyChar = null
@@ -542,6 +614,25 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
                 return@withLock
             }
             logD("服务列表: " + g.services.joinToString { shortUuid(it.uuid) })
+            if (targetFamily.isReadOnlyBoard) {
+                val found = buildBoardCandidates(g.services)
+                _availableChannels.value = found.map { it.channel }
+                if (found.isEmpty()) {
+                    logE("${targetFamily.label} 没有可用的写/通知特征")
+                    owner.services.complete(Unit)
+                    owner.ready.complete(false)
+                    runCatching { g.disconnect() }
+                    return@withLock
+                }
+                logI("${targetFamily.label} 可用通道：${found.joinToString { it.channel.id }}")
+                val pref = preferred
+                candidates = listOfNotNull(found.firstOrNull { it.channel == pref }) +
+                    found.filter { it.channel != pref }
+                candidateIndex = 0
+                attempts.servicesDiscovered(owner, candidates.size)
+                probeNext(g)
+                return@withLock
+            }
             val service = g.getService(SERVICE) ?: run {
                 logE("设备没有 FFE0 服务（不是已知的保护板/电量计？）")
                 owner.services.complete(Unit)
@@ -585,6 +676,17 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         @SuppressLint("MissingPermission")
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int): Unit = withLock(attemptLock) {
             if (g !== gatt || d.uuid != CCCD || d.characteristic !== notifyChar) return@withLock
+            val owner = attempts.current ?: return@withLock
+            val c = candidates.getOrNull(candidateIndex) ?: return@withLock
+            if (targetFamily.isReadOnlyBoard) {
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    failBoardSubscription(g, owner, c, statusText(status))
+                } else if (attempts.confirmSubscription(owner, c)) {
+                    logD("CCCD 写入成功，新板通知订阅已确认")
+                    afterSubscribed(g, c)
+                }
+                return@withLock
+            }
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 // 订阅没落地 = 这条通道收不到任何帧：换下一个候选（没有下一个则本轮连接失败）
                 logE("CCCD 写入失败：${statusText(status)}（订阅未落地，换下一个候选通道）")
@@ -598,13 +700,20 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             candidates.getOrNull(candidateIndex)?.let { afterSubscribed(g, it) }
         }
 
+        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int): Unit = withLock(attemptLock) {
+            if (g !== gatt || c !== writeChar) return@withLock
+            pendingGattWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic): Unit = withLock(attemptLock) {
             if (g !== gatt || c !== notifyChar || attempts.current == null) return@withLock
             @Suppress("DEPRECATION")
             val data = c.value ?: return@withLock
             // 帧级转储：开关关着时只拼「← 245B」——这里在 BLE 回调线程上，
             // 一帧 245 字节的十六进制是 245 次字符串分配，会推迟后面的 tryEmit
-            LOG.frame("BLE", "←", data.size) { hex(data) }
+            LOG.frame("BLE", "←", data.size) {
+                if (targetFamily == DeviceFamily.Jbd) "[嘉佰达通知内容已隐藏]" else hex(data)
+            }
             noteProbeResponse(data)
             if (!_incoming.tryEmit(data.copyOf())) noteDropped()
         }
@@ -613,7 +722,9 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
             g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray
         ): Unit = withLock(attemptLock) {
             if (g !== gatt || c !== notifyChar || attempts.current == null) return@withLock
-            LOG.frame("BLE", "←", value.size) { hex(value) }
+            LOG.frame("BLE", "←", value.size) {
+                if (targetFamily == DeviceFamily.Jbd) "[嘉佰达通知内容已隐藏]" else hex(value)
+            }
             noteProbeResponse(value)
             if (!_incoming.tryEmit(value.copyOf())) noteDropped()
         }
@@ -634,37 +745,58 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         if (_linkState.value != LinkState.Connected) { logW("写入被丢弃：链路未就绪"); return }
         // 帧日志统一走协议层的遮蔽版：0x23 密码帧的数据区不能被原样写进日志。
         // 同样只在开关打开时拼（仓库层也会记一条 TX，两边都是"要看细节"时才付出代价）
-        LOG.frame("BLE", "→", frame.size) { io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame) }
+        LOG.frame("BLE", "→", frame.size) {
+            if (targetFamily.isReadOnlyBoard) boardFrameForLog(targetFamily, frame)
+            else io.github.lswlc33.maibms.protocol.Frame.hexForLog(frame)
+        }
         writeChunks(g, wc, frame)
     }
 
     /** 分片写入：业务帧与探测帧共用（探测发生在「就绪」之前，所以这里不检查链路态） */
     @SuppressLint("MissingPermission")
-    private suspend fun writeChunks(g: BluetoothGatt, wc: BluetoothGattCharacteristic, frame: ByteArray) {
-        val chunk = minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)
+    private suspend fun writeChunks(g: BluetoothGatt, wc: BluetoothGattCharacteristic, frame: ByteArray) = writeGuard.withLock {
+        writeChunksLocked(g, wc, frame)
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun writeChunksLocked(g: BluetoothGatt, wc: BluetoothGattCharacteristic, frame: ByteArray) {
+        if (targetFamily.isReadOnlyBoard) require(isSafeBoardRead(targetFamily, frame)) { "只读板型拒绝修改命令" }
+        val writeType = if (wc.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0)
+            BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        val chunk = if (targetFamily.isReadOnlyBoard) 20
+            else minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)
         var offset = 0
         var retried = false
         while (offset < frame.size) {
+            if (g !== gatt) return
             val len = minOf(chunk, frame.size - offset)
             val piece = frame.copyOfRange(offset, offset + len)
             // 写入可能被栈拒绝（返回 false）或在权限被回收时抛 SecurityException：
             // 前者重试一次，后者按失败处理，不能让一帧丢掉后没人知道。
-            val queued = runCatching {
+            val response = if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+                CompletableDeferred<Boolean>().also { pendingGattWrite = it } else null
+            val accepted = runCatching {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     // API 33+ 的新重载返回 BluetoothStatusCodes，不是 boolean
-                    g.writeCharacteristic(wc, piece, BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE) ==
+                    g.writeCharacteristic(wc, piece, writeType) ==
                         BluetoothStatusCodes.SUCCESS
                 } else {
                     @Suppress("DEPRECATION")
                     wc.value = piece
                     @Suppress("DEPRECATION")
-                    wc.writeType = BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    wc.writeType = writeType
                     @Suppress("DEPRECATION")
                     g.writeCharacteristic(wc)
                 }
             }.getOrElse {
                 logW("写入分片异常（${offset}/${frame.size}）：${it.message}")
                 false
+            }
+            val queued = try {
+                accepted && (response == null || withTimeoutOrNull(1_500) { response.await() } == true)
+            } finally {
+                if (pendingGattWrite === response) pendingGattWrite = null
+                response?.cancel()
             }
             if (!queued) {
                 if (!retried) {

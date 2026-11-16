@@ -19,7 +19,11 @@ class DeviceFamilyTest {
         assertEquals(DeviceFamily.LanBao, DeviceFamily.matchName("blue-abc"))
         assertEquals(DeviceFamily.LanBao, DeviceFamily.matchName("LB123"))
         assertEquals(DeviceFamily.LuXing, DeviceFamily.matchName("EM2APP-0001"))
-        // 电领（DL）已移除，不再识别
+        assertEquals(DeviceFamily.YanYang, DeviceFamily.matchName("YY-NiuM-73A3"))
+        assertEquals(DeviceFamily.YanYang, DeviceFamily.matchName("BT37"))
+        assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("JBD-SP04S034"))
+        assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("SP15S001-P13S-30A"))
+        assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("xiaoxiang-123"))
         assertNull(DeviceFamily.matchName("DL"))
         assertNull(DeviceFamily.matchName("dl-abcd"))
     }
