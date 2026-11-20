@@ -74,6 +74,7 @@ fun DashboardScreen(
     val connectHint by repo.connectHint.collectAsState()
     val stalled by repo.stalled.collectAsState()
     val manual by repo.manualDisconnect.collectAsState()
+    val connectionIntentActive by repo.connectionIntentActive.collectAsState()
     val ctrlResult by MockBms.lastControlResult.collectAsState()
     val chargeOn by MockBms.chargeSwitch.collectAsState()
     val dischargeOn by MockBms.dischargeSwitch.collectAsState()
@@ -95,12 +96,13 @@ fun DashboardScreen(
     /** 链路三态：正常 / 失联（GATT 在但数据停流）/ 断开（含未连接、连接中失败） */
     val linkLost = link == io.github.lswlc33.maibms.transport.LinkState.Connected && stalled
     val linkDown = link != io.github.lswlc33.maibms.transport.LinkState.Connected
+    val showGuide = showScanEntry && shouldShowConnectionGuide(link, status.hasData, previewing)
 
     // 仪表视图（横屏表盘）：**只按宽高比自动进入**（宽 ≥ 高 × 1.2，见 ClusterMode）——
     // 手机/平板横屏、拉宽的桌面窗口自动进；正方形屏与大竖屏不进（表盘在那种窗口里只能压成
     // 一条 2.4:1 的横带）。三端都可以手动进出：顶栏「仪表视图」进、表盘内「退出仪表」出。
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        if (useClusterLayout(maxWidth, maxHeight)) {
+        if (useClusterLayout(maxWidth, maxHeight) && !showGuide) {
             ClusterDashboard(status, onExit = { exitCluster() })
         } else {
         Column(Modifier.fillMaxSize()) {
@@ -111,7 +113,7 @@ fun DashboardScreen(
                 Spacer(Modifier.weight(1f))
                 // 仪表视图入口：三端都显示（原先只给能锁方向的 Android）——手动进入不依赖屏幕方向，
                 // 正方形屏/竖屏平板上也能用；Android 顺带锁横屏，让表盘铺满整屏
-                Box(
+                if (!showGuide) Box(
                     Modifier.clip(RoundedCornerShape(99.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable {
@@ -134,6 +136,16 @@ fun DashboardScreen(
                     }
                 }
             }
+            if (showGuide) {
+                DashboardConnectionGuide(
+                    reconnecting = connectionIntentActive && !manual,
+                    manuallyDisconnected = manual,
+                    deviceName = status.deviceName,
+                    connectHint = connectHint,
+                    bottomPadding = bottomPadding,
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
             // 中继信息卡（电量计模式）的两态都从这一条判据出：品牌/名称/MAC 任一报到才算有这张卡；
             // 收起时它不在场，改由卡1 右上角的小标代表它
             val hasRelay = status.hasRelayInfo
@@ -270,6 +282,7 @@ fun DashboardScreen(
                         )
                     }
                 }
+            }
             }
         }
         }

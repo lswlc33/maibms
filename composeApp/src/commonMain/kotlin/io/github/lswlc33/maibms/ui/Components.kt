@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -47,6 +48,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -735,9 +737,8 @@ data class Metric(val label: String, val value: String, val unit: String)
 
 /**
  * 卡3：只显示「电流」与「功率」两个大读数——左右对分、label 在上数值居中在下。
- * 大读数下方是小灰字：**按状态只显示一项**剩余时间——充电中给「充电剩余」、放电/静置给
- * 「放电剩余」（扩展段 86/88，0=设备未报 → "--"），有值时再补一行已充/距上次充电
- * （扩展段 78/82）；两行都收在本列内，不往右挤立牌。
+ * 大读数下方的小灰字并排在同一行：按状态显示有值的「充电剩余」或「放电剩余」（扩展段 86/88），
+ * 「已充」和「距上次充电」（扩展段 78/82）也仅在有值时显示。
  * 进度条即**卡片背景本身**：放电时每个档位一条**完整**进度条（刻度 0~本档上限），功率到档
  * 整条切换（500W 用 0~1000 的条、1500W 切 0~2000 的条），配色=节能绿/均衡蓝/运动红；
  * **副档位**（充电与动能回收共用，默认 -1500W）画成节能绿的反向条（右→左），
@@ -819,38 +820,36 @@ fun MetricGridCard(
                 ) {
                     val current = metrics.firstOrNull { it.label == "电流" }
                     val power = metrics.firstOrNull { it.label == "功率" }
-                    AdaptiveCardGrid(listOf(current, power), minWidth = 142.dp, maxColumns = 2) { metric, mod ->
-                        CenterMetric(metric, labelColor, mod)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                        CenterMetric(current, labelColor, Modifier.weight(1f))
+                        CenterMetric(power, labelColor, Modifier.weight(1f))
                     }
-                    // 大读数下方的小灰字：充电/放电剩余（扩展段 86/88，0=设备未报 → "--"）。
-                    // 只显示与当前状态相关的一项：充电中（P < -20W，与横屏表盘同一死区）给
-                    // 「充电剩余」，放电/静置给「放电剩余」——不再两项并列，免掉恒有一项 "--" 的噪音。
-                    // 文字整行居中收在本列内，不往右挤立牌和卡1 的电量角标
-                    val chargingNow = hasData && powerW < -20
-                    if (caps.extTimes && status.hasReading("remainingTime") &&
-                        (if (chargingNow) status.remainChargeMin else status.remainDischargeMin) > 0) Text(
-                        (if (chargingNow) "充电剩余 " else "放电剩余 ") +
-                            fmtRemainingMin(if (chargingNow) status.remainChargeMin else status.remainDischargeMin),
-                        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
-                        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
-                    )
-                    // 本次充电时长/上次充电间隔（扩展段 78/82）：有值才出现的一行，整行居中
-                    val statLine = buildList {
-                        if (status.thisChargeSec > 0) add("已充 " + fmtDurationSec(status.thisChargeSec))
-                        if (status.lastChargeGapSec > 0) add("距上次充电 " + fmtDurationSec(status.lastChargeGapSec))
+                    if (caps.extTimes) {
+                        // 沿用表盘的 -20W 死区，只显示当前状态对应的剩余时间。
+                        val chargingNow = hasData && powerW < -20
+                        val remainingMin = if (chargingNow) status.remainChargeMin else status.remainDischargeMin
+                        val statLine = buildList {
+                            if (status.hasReading("remainingTime") && remainingMin > 0) {
+                                add((if (chargingNow) "充电剩余 " else "放电剩余 ") + fmtRemainingMin(remainingMin))
+                            }
+                            if (status.thisChargeSec > 0) add("已充 " + fmtDurationSec(status.thisChargeSec))
+                            if (status.lastChargeGapSec > 0) add("距上次充电 " + fmtDurationSec(status.lastChargeGapSec))
+                        }
+                        if (statLine.isNotEmpty()) Row(
+                            Modifier.fillMaxWidth().padding(top = 1.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                        ) {
+                            statLine.forEach { text ->
+                                Text(
+                                    text, fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
+                                    textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(text.length.toFloat(), fill = false),
+                                )
+                            }
+                        }
                     }
-                    if (caps.extTimes && statLine.isNotEmpty()) Text(
-                        statLine.joinToString(" · "),
-                        fontSize = 9.5.sp, fontWeight = FontWeight.SemiBold, color = labelColor,
-                        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth().padding(top = 1.dp),
-                    )
                 }
-                // 右下角状态立牌：裁边贴纸显示 80dp，充电/一档/二档/三档随状态切图（不放任何提示文字）；
-                // 顶破末档时左右轻摇表示到顶。开表即占位、关表才收起——它是表盘规格的一部分，
-                // 不再按卡片宽度取舍（原先 190dp×2 的门槛把标准手机全挡掉了，双击只见背景变色）；
-                // 窄屏下读数网格自动竖排让位
+                // 右下角状态立牌：80dp，随状态切图，顶破末档时左右轻摇。开表即占位、关表才收起。
                 sticker?.let { res ->
                     Image(
                         painterResource(res),
@@ -879,14 +878,36 @@ fun MetricGridCard(
 /** 居中大读数（卡3 用）：label 小字加粗居上，数值大字居中在下；大字固定 onSurface（色块上仍够对比） */
 @Composable
 private fun CenterMetric(m: Metric?, labelColor: Color, modifier: Modifier = Modifier) {
-    Column(modifier.fillMaxWidth().padding(horizontal = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 2.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         if (m == null) {
             Text("--", fontSize = 10.sp, color = labelColor)
             return@Column
         }
-        Text("${m.label} · ${m.unit}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor)
-        Text(m.value, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
-            color = MaterialTheme.colorScheme.onSurface, maxLines = 1, softWrap = false)
+        Text("${m.label} · ${m.unit}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = labelColor, maxLines = 1)
+        val valueStyle = LocalTextStyle.current.copy(
+            fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.Monospace,
+        )
+        val textMeasurer = rememberTextMeasurer()
+        BoxWithConstraints {
+            // Compose 1.7.3 没有 TextAutoSize，用实际字宽只缩小放不下的数字。
+            val availableWidth = constraints.maxWidth
+            fun fits(size: Int): Boolean = textMeasurer.measure(
+                m.value, valueStyle.copy(fontSize = size.sp), maxLines = 1, softWrap = false,
+            ).size.width <= availableWidth
+            val fontSize = if (fits(22)) 22 else {
+                var low = 12
+                var high = 21
+                while (low < high) {
+                    val size = (low + high + 1) / 2
+                    if (fits(size)) low = size else high = size - 1
+                }
+                low
+            }
+            Text(
+                m.value, style = valueStyle, fontSize = fontSize.sp, color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1, softWrap = false, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

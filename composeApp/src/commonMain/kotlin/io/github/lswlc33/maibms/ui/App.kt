@@ -40,6 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.data.MockBms
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 
 /* ---------- 简易导航：三底栏 + push 栈 ---------- */
 
@@ -147,10 +149,14 @@ fun App(
             // 页面内的异步动作（写参数/控制命令）与弹窗共用一个 scope
             val scope = rememberCoroutineScope()
             // 运行权限与链路：参数编辑的只读判定、控制命令拦截都用这两个（判据集中在 Perm）
-            // 根组合只关心权限这一个标量：收整份 status 会让整个界面每拍重组（见 MockBms.permissionLevel）
+            // 根组合只收权限/是否出数等标量：收整份 status 会让整个界面每拍重组。
             val permissionLevel by MockBms.permissionLevel.collectAsState(initial = MockBms.status.value.permissionLevel)
             val bmsLink by io.github.lswlc33.maibms.data.Bms.repository.linkState.collectAsState()
             val connected = bmsLink == io.github.lswlc33.maibms.transport.LinkState.Connected
+            val hasDashboardData by remember { MockBms.status.map { it.hasData }.distinctUntilChanged() }
+                .collectAsState(initial = MockBms.status.value.hasData)
+            val dashboardPreviewing by io.github.lswlc33.maibms.data.Bms.repository.previewActive.collectAsState()
+            val showConnectionGuide = shouldShowConnectionGuide(bmsLink, hasDashboardData, dashboardPreviewing)
             val modifying by MockBms.modifying.collectAsState()
             val unsaved by MockBms.unsavedWriteError.collectAsState()
             val caps by MockBms.caps.collectAsState()
@@ -185,7 +191,7 @@ fun App(
             // 横屏表盘（仪表视图）不显示底栏，表盘自己的底条取而代之。
             // 判据是宽高比（不是绝对宽度），见 ClusterMode：正方形屏/大竖屏不进表盘，
             // 手动「仪表视图」进、表盘内「退出仪表」出（三端都可用）
-            val onCluster = useClusterLayout(maxWidth, maxHeight) && route == Route.Dashboard
+            val onCluster = useClusterLayout(maxWidth, maxHeight) && route == Route.Dashboard && !showConnectionGuide
             PlatformBackHandler(
                 enabled = dialog.value != null || backStack.isNotEmpty() ||
                         currentTab.value != Route.Dashboard || onCluster
