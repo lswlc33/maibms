@@ -63,11 +63,11 @@ class RepositoryTransactionsTest {
     }
 
     private class RecordingNotifier : Notifier {
-        private val updates = mutableListOf<String?>()
-        override fun updateMonitoring(text: String?) { synchronized(updates) { updates += text } }
+        private val updates = mutableListOf<MonitorNotification?>()
+        override fun updateMonitoring(content: MonitorNotification?) { synchronized(updates) { updates += content } }
         override fun alert(id: Int, title: String, text: String) {}
         override fun ensurePermission() {}
-        fun texts(): List<String?> = synchronized(updates) { updates.toList() }
+        fun contents(): List<MonitorNotification?> = synchronized(updates) { updates.toList() }
     }
 
     private suspend fun waitUntil(ms: Long = 5_000, condition: () -> Boolean): Boolean {
@@ -501,14 +501,14 @@ class RepositoryTransactionsTest {
         val notifier = RecordingNotifier()
         Notifications.impl = notifier
         repo.setBackgroundMonitor(true)
-        assertTrue(waitUntil { notifier.texts().any { it != null } })
-        val before = notifier.texts().size
+        assertTrue(waitUntil { notifier.contents().any { it != null } })
+        val before = notifier.contents().size
         transport.linkState.value = LinkState.Disconnected
-        assertTrue(waitUntil { notifier.texts().drop(before).any { it?.contains("正在重连") == true } })
+        assertTrue(waitUntil { notifier.contents().drop(before).any { it?.title == "正在重连" } })
         assertTrue(repo.connectionIntentActive.value)
-        assertTrue(notifier.texts().drop(before).all { it != null }, "掉线重试不能撤掉 FGS")
+        assertTrue(notifier.contents().drop(before).all { it != null }, "掉线重试不能撤掉 FGS")
         repo.disconnect()
-        assertNull(notifier.texts().last())
+        assertNull(notifier.contents().last())
         assertFalse(repo.connectionIntentActive.value)
     }
 
@@ -542,7 +542,9 @@ class RepositoryTransactionsTest {
         assertFalse(MockBms.modifying.value)
     }
 
-    @Test fun idleWithoutConnectionIntentDoesNotStartMonitoring() = withRepo { _, transport ->
+    @Test fun idleWithoutConnectionIntentDoesNotStartMonitoring() = withRepo { repo, _ ->
+        // 夹具已经连接了另一仓库，先停掉它，避免全局通知出口收到它的后台刷新。
+        repo.disconnect()
         // 新仓库只 start、不 connect：即使 manualDisconnect 默认 false，也不能启动 FGS。
         val idleWorker = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val notifier = RecordingNotifier()
@@ -557,7 +559,7 @@ class RepositoryTransactionsTest {
             idle.setBackgroundMonitor(true)
             delay(100)
             assertFalse(idle.connectionIntentActive.value)
-            assertTrue(notifier.texts().isEmpty())
+            assertTrue(notifier.contents().isEmpty())
         } finally {
             AppStore.backgroundMonitor = false
             idleWorker.coroutineContext[Job]?.cancelAndJoin()

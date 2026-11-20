@@ -215,12 +215,13 @@ fun SettingsHomeScreen(
                     })
                 }
                 Text(
-                    if (!caps.antDetails)
+                    (if (!caps.antDetails)
                         "退到后台继续读取仪表数据；关闭时暂停轮询省电，回到前台恢复。实时数据中断时可提醒，设备保护状态请查看仪表盘。"
                     else if (bgMonitor)
                         "开启偏好后，有连接且通知权限允许时才会保持后台轮询并显示常驻通知；实际状态见上方。保护/告警新触发及设备失联时发通知，前台不重复提醒。"
                     else
-                        "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。",
+                        "关闭时退到后台暂停轮询省电，回前台立即恢复（连接保留）。打开后会常驻一条通知，保护/告警触发时能收到提醒。") +
+                        "支持时使用安卓原生实时活动，否则显示普通通知；展开可查看电压、电流、功率与全部有效温度。",
                     fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )

@@ -1536,8 +1536,8 @@ class BmsRepository(
      */
     private val monitorLock = PlatformLock()
 
-    /** 常驻监控通知当前文案（null = 未在监控）；用于去重，避免每拍都推给系统 */
-    private var monitorText: String? = null
+    /** 常驻监控通知当前内容（null = 未在监控）；用于去重，避免每拍都推给系统 */
+    private var monitorContent: MonitorNotification? = null
     private var monitorUpdatedAt = 0L
 
     /** 本次会话是否已就失联发过通知（恢复后重置，避免反复提醒） */
@@ -1565,8 +1565,8 @@ class BmsRepository(
             val on = AppStore.backgroundMonitor && Notifications.supported &&
                     _connectionIntentActive.value && !manualDisconnect.value && !previewActive.value
             if (!on) {
-                if (monitorText != null) {
-                    monitorText = null
+                if (monitorContent != null) {
+                    monitorContent = null
                     Notifications.updateMonitoring(null)
                 }
                 return
@@ -1575,21 +1575,14 @@ class BmsRepository(
             if (!force && now - monitorUpdatedAt < MONITOR_REFRESH_MS) return
             monitorUpdatedAt = now
             val st = MockBms.status.value
-            val text = buildString {
-                append(MockBms.deviceLabel)
-                if (_linkState.value != LinkState.Connected) {
-                    append(" · 正在重连")
-                } else if (st.hasData) {
-                    append(" · ")
-                    if (st.hasReading("soc")) append("${st.soc}% · ")
-                    if (st.hasReading("voltage")) append("%.1fV".fmt(st.totalVoltage))
-                } else {
-                    append(" · 等待数据")
-                }
-            }
-            if (text != monitorText) {
-                monitorText = text
-                Notifications.updateMonitoring(text)
+            val content = monitorNotificationContent(
+                status = st,
+                deviceName = MockBms.deviceLabel,
+                connected = _linkState.value == LinkState.Connected,
+            )
+            if (content != monitorContent) {
+                monitorContent = content
+                Notifications.updateMonitoring(content)
             }
         }
     }

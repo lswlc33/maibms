@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import io.github.lswlc33.maibms.AndroidApp
+import io.github.lswlc33.maibms.data.MonitorNotification
 import io.github.lswlc33.maibms.data.Notifications
 import io.github.lswlc33.maibms.data.Notifier
 
@@ -33,8 +34,8 @@ class AndroidNotifier(private val context: Context) : Notifier {
     }
 
     @Synchronized
-    override fun updateMonitoring(text: String?) {
-        perform(lifecycle.request(text))
+    override fun updateMonitoring(content: MonitorNotification?) {
+        perform(lifecycle.request(content))
     }
 
     @Synchronized
@@ -52,7 +53,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         when (action) {
             is io.github.lswlc33.maibms.data.MonitorLifecycle.Action.Start -> {
                 BmsMonitorService.starting = true
-                runCatching { context.startForegroundService(BmsMonitorService.intent(context, action.text)) }
+                runCatching { context.startForegroundService(BmsMonitorService.intent(context, action.content)) }
                     .onFailure {
                         BmsMonitorService.starting = false
                         lifecycle.failed()
@@ -61,7 +62,11 @@ class AndroidNotifier(private val context: Context) : Notifier {
                     }
             }
             is io.github.lswlc33.maibms.data.MonitorLifecycle.Action.Update -> {
-                runCatching { nm.notify(Notifications.ID_MONITOR, BmsMonitorService.monitorNotification(context, action.text)) }
+                runCatching {
+                    BmsMonitorService.postMonitorNotification(context, action.content) {
+                        nm.notify(Notifications.ID_MONITOR, it)
+                    }
+                }
                     .onFailure { BmsMonitorService.publishStatus(context, "通知更新失败，请检查系统通知权限") }
                     .onSuccess { BmsMonitorService.publishStatus(context) }
             }
@@ -88,7 +93,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         BmsMonitorService.ensureChannels(context)
         BmsMonitorService.publishStatus(context, Notifications.monitoring.value.error)
         if (io.github.lswlc33.maibms.data.AppForeground.active.value) {
-            lifecycle.requestedText?.let { updateMonitoring(it) }
+            lifecycle.requestedContent?.let { updateMonitoring(it) }
         }
     }
 

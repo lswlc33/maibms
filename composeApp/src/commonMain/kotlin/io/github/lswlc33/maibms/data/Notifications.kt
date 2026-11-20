@@ -27,7 +27,7 @@ interface Notifier {
      * 常驻监控通知：非 null 表示"正在后台监控"（Android 会起前台服务保活 + 常驻通知），
      * null 表示停止监控。
      */
-    fun updateMonitoring(text: String?)
+    fun updateMonitoring(content: MonitorNotification?)
 
     /** 一次性告警通知；[id] 相同的通知会覆盖（避免同一件事刷屏） */
     fun alert(id: Int, title: String, text: String)
@@ -52,8 +52,8 @@ object Notifications {
     /** 当前平台是否支持后台监控与通知 */
     val supported: Boolean get() = impl != null
 
-    fun updateMonitoring(text: String?) {
-        impl?.updateMonitoring(text)
+    fun updateMonitoring(content: MonitorNotification?) {
+        impl?.updateMonitoring(content)
     }
 
     fun alert(id: Int, title: String, text: String) {
