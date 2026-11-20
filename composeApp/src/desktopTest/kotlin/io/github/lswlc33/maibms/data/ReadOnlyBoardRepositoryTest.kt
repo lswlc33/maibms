@@ -237,6 +237,19 @@ class ReadOnlyBoardRepositoryTest {
         }
 
     @Test
+    fun brandsWithoutVerifiedBleProtocolDoNotConnectOrSendAntFrames() =
+        withRepository { _, repo, transport, _ ->
+            for (family in listOf(DeviceFamily.Xingheng, DeviceFamily.Zhiba, DeviceFamily.Shanchong, DeviceFamily.Xiaoha)) {
+                val address = "unverified-${family.name}"
+                repo.connectTo(address, family)
+                assertTrue(transport.configuredFamilies().isEmpty())
+                assertTrue(transport.writes().isEmpty())
+                assertEquals(family.connectionSupportHint, repo.connectHint.value)
+                assertNull(DeviceProfiles.find(address))
+            }
+        }
+
+    @Test
     fun jbdGoldenFramesAreFragmentedIntoUiAndPollingContinuesReadOnly() =
         withRepository { _, repo, transport, _ ->
             val address = "JBD:00:00:00:00:01"

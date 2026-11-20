@@ -28,9 +28,12 @@ internal class BoardConnectionProbe(family: DeviceFamily, password: String?, mac
 }
 
 internal fun boardConnectionHint(family: DeviceFamily, detail: String? = null): String {
-    val help = if (family == DeviceFamily.Jbd)
-        "请确认选择了嘉佰达板型、关闭原厂 App；需要配对的模块请完成系统配对，旧密码模块可在只读参数中填写已有密码和真实 MAC"
-    else if (family == DeviceFamily.Jikong) "请确认选择了极空板型并关闭原厂 App；支持 JK02 / JK04，实际字段按设备区分"
-    else "请确认选择了彦阳板型并关闭原厂 App；应用会探测 B 代或旧 A 兼容布局"
+    val help = when (family) {
+        DeviceFamily.Jbd -> "请确认选择了嘉佰达板型、关闭原厂 App；需要配对的模块请完成系统配对，旧密码模块可在只读参数中填写已有密码和真实 MAC"
+        DeviceFamily.Jikong -> "请确认选择了极空板型并关闭原厂 App；支持 JK02 / JK04，实际字段按设备区分"
+        DeviceFamily.Yadi -> "请确认是 FD 系列亚迪设备并关闭原厂小程序；需要 Nordic UART 服务和校验正确的 F403 读数"
+        DeviceFamily.Mingtang -> "请确认是明唐 FA00 模块并关闭原厂 App；当前只支持 stateread 实时数据"
+        else -> "请确认选择了彦阳板型并关闭原厂 App；应用会探测 B 代或旧 A 兼容布局"
+    }
     return "未收到${family.label}有效数据。${detail?.let { "$it。" }.orEmpty()}$help"
 }

@@ -357,16 +357,20 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
     var selected by remember { mutableStateOf<String?>(null) }
     var selectedFamily by remember { mutableStateOf<io.github.lswlc33.maibms.transport.DeviceFamily?>(null) }
     var needsFamily by remember { mutableStateOf(false) }
+    var supportHint by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     fun connectSelected(address: String, known: io.github.lswlc33.maibms.transport.DeviceFamily?) {
         val family = selectedFamily ?: known?.takeIf { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }
         if (family == null) {
             selected = address
             needsFamily = true
+        } else if (!family.supportsDirectConnection) {
+            supportHint = family.connectionSupportHint
         } else onConnect(address, family)
     }
     LaunchedEffect(selectedFamily) {
         selected = null
+        supportHint = null
         io.github.lswlc33.maibms.data.Bms.repository.startScan(selectedFamily)
     }
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
@@ -392,8 +396,11 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
                     }
                 }
             }
-            Text("广播名被改过或识别不准时，先选择对应板型再连接。", fontSize = 10.sp,
+            Text("广播名被改过时可手选板型；小哈仅广播电量，星恒/智霸/闪充直连协议待确认。", fontSize = 10.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            (supportHint ?: selectedFamily?.connectionSupportHint)?.let {
+                Text(it, fontSize = 11.sp, color = BmsColors.WarnAmber, modifier = Modifier.padding(vertical = 4.dp))
+            }
             Text(
                 when {
                     !canScan -> "当前平台没有蓝牙扫描（桌面端）"
@@ -455,7 +462,8 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
                         Text(d.name, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                         Text(
                             if (d.family == io.github.lswlc33.maibms.transport.DeviceFamily.Unknown) d.address
-                            else "${d.address} · ${d.family.label}",
+                            else "${d.address} · ${d.family.label}" +
+                                (d.advertisedSoc?.let { " · 广播电量 $it%" } ?: ""),
                             fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -500,11 +508,11 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
         onDismissRequest = { needsFamily = false },
         title = { Text("选择设备品牌") },
         text = {
-            Column {
+            Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
                 Text("这台设备的广播名无法确认品牌，请选择对应协议。", fontSize = 12.sp)
                 io.github.lswlc33.maibms.transport.DeviceFamily.values()
                     .filter { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }.forEach { family ->
-                        TextButton(onClick = { needsFamily = false; selected?.let { onConnect(it, family) } }) { Text(family.label) }
+                        TextButton(onClick = { needsFamily = false; selected?.let { connectSelected(it, family) } }) { Text(family.label) }
                     }
             }
         },

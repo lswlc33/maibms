@@ -45,7 +45,10 @@ const hostSource = readFileSync(hostPath, 'utf8');
 const uuid = (short) => `0000${short.toLowerCase()}-0000-1000-8000-00805f9b34fb`;
 const FFE0 = uuid('ffe0'), FFE1 = uuid('ffe1'), FFE2 = uuid('ffe2');
 const FF00 = uuid('ff00'), FF01 = uuid('ff01'), FF02 = uuid('ff02');
-const isReadOnlyBoard = (family) => ['Jbd', 'YanYang', 'Jikong'].includes(family);
+const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_WRITE = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_NOTIFY = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const isReadOnlyBoard = (family) => ['Jbd', 'YanYang', 'Jikong', 'Yadi', 'Mingtang'].includes(family);
 const JK_FRAMES = JSON.parse(readFileSync(new URL('../../composeApp/src/desktopTest/resources/jikong-frames.json', import.meta.url), 'utf8')).samples.JK02_32S;
 const JK04_FRAMES = JSON.parse(readFileSync(new URL('../../composeApp/src/desktopTest/resources/jk04-frames.json', import.meta.url), 'utf8')).frames;
 function jkResponse(command, revision = 0, jk04 = false) {
@@ -231,7 +234,37 @@ function syntheticYanYangLegacyResponse(register, revision = 0, slave = 1) {
   return withCrc(Buffer.concat([Buffer.from([slave, 3, data.length]), data]));
 }
 
+// Synthetic protocol fixtures; these are not captures from real hardware.
+function yadiResponse(address, revision = 0) {
+  const page = Buffer.alloc(124);
+  page.writeUInt16LE(revision ? 5160 : 5110, 20);
+  page.writeUInt16LE(600, 48); page.writeUInt16LE(3, 60); page[63] = 15;
+  for (let i = 0; i < 15; i++) page.writeUInt16LE(3400 + i, 68 + i * 2);
+  const count = new Map([[0x1000, 60], [0x103c, 59], [0x1077, 5]]).get(address);
+  const raw = withCrc(Buffer.concat([Buffer.from([0xf4, 3, count]), page.subarray(address - 0x1000, address - 0x1000 + count)]));
+  return Buffer.from(raw.toString('hex').toUpperCase(), 'ascii');
+}
+function mingtangResponse(revision = 0) {
+  const tlv = (tag, data) => Buffer.concat([Buffer.from([tag >>> 8, tag & 255, data.length]), data]);
+  const voltage = Buffer.alloc(2); voltage.writeUInt16BE(revision ? 1360 : 1338);
+  const cells = Buffer.alloc(8); for (let i = 0; i < 4; i++) cells.writeUInt16BE(3340 + i, i * 2);
+  const payload = Buffer.concat([tlv(10, voltage), tlv(38, Buffer.from([60])), tlv(4, cells)]);
+  const header = Buffer.from([0xe1, 0x11, 0, 0, 0, 0]); header.writeUInt16BE(6 + payload.length, 4);
+  return Buffer.concat([header, payload, Buffer.from([0])]);
+}
 function assertBoardRead(family, bytes, legacy = false, allowLegacyProbe = false) {
+  if (family === 'Yadi') {
+    const text = bytes.toString('ascii');
+    assert.match(text, /^F403[0-9A-F]{10}$/);
+    const raw = Buffer.from(text, 'hex'), address = raw.readUInt16BE(2);
+    assert.equal(raw[4], new Map([[0x1000, 60], [0x103c, 59], [0x1077, 5]]).get(address));
+    assert.equal(raw.readUInt16LE(5), crc16(raw.subarray(0, 5)));
+    return address;
+  }
+  if (family === 'Mingtang') {
+    assert.equal(bytes.toString('ascii'), 'stateread');
+    return 'stateread';
+  }
   if (family === 'Jikong') {
     assert.equal(bytes.length, 20);
     assert.equal(hex(bytes.subarray(0, 4)), 'aa5590eb');
@@ -334,9 +367,10 @@ class FakeGatt {
     this.device = new Events();
     this.device.id = options.id ?? `vm-${family}`;
     this.device.name = options.name ?? { Ant: 'ANT-B2A20', LuXing: 'EM2APP-A581', LanBao: 'BlueBabe-METER',
-      Jbd: 'JBD-SP04S034', YanYang: 'YY-NiuM-TEST', Jikong: 'JK-BMS-A' }[family];
+      Jbd: 'JBD-SP04S034', YanYang: 'YY-NiuM-TEST', Jikong: 'JK-BMS-A', Yadi: 'FDA90705',
+      Mingtang: 'custom-mingtang', Xiaoha: 'HBB8909006196SOC060' }[family];
     const characteristic = (short, properties) => {
-      const c = Object.assign(new Events(), { uuid: uuid(short), properties, value: null, notifying: false });
+      const c = Object.assign(new Events(), { uuid: short.length === 4 ? uuid(short) : short, properties, value: null, notifying: false });
       c.startNotifications = async () => {
         this.failAt('notifications');
         if (this.options.notificationDelay) await this.wait(this.options.notificationDelay);
@@ -352,14 +386,15 @@ class FakeGatt {
       c.writeValueWithoutResponse = (value) => this.write(c, value, 'without-response');
       return c;
     };
-    this.notify = characteristic(family === 'Jbd' ? 'ff01' : 'ffe1', { notify: true, write: family === 'Ant',
-      writeWithoutResponse: family === 'Ant', read: false, indicate: false });
-    this.writer = family === 'Ant' ? this.notify : characteristic(family === 'Jbd' ? 'ff02' : family === 'Jikong' || options.singleFfe1 ? 'ffe1' : 'ffe2',
+    this.notify = characteristic(family === 'Yadi' ? NUS_NOTIFY : family === 'Mingtang' ? 'fa71' : family === 'Jbd' ? 'ff01' : 'ffe1',
+      { notify: true, write: family === 'Ant', writeWithoutResponse: family === 'Ant', read: false, indicate: false });
+    this.writer = family === 'Ant' ? this.notify : characteristic(family === 'Yadi' ? NUS_WRITE : family === 'Mingtang' ? 'fa72'
+      : family === 'Jbd' ? 'ff02' : family === 'Jikong' || options.singleFfe1 ? 'ffe1' : 'ffe2',
       { write: true, writeWithoutResponse: options.bothWriteModes === true, notify: false, read: false, indicate: false });
     const fallbackWriter = family === 'YanYang' && options.silentPrimary
       ? characteristic('ffe1', { write: true, writeWithoutResponse: false }) : null;
     this.service = {
-      uuid: family === 'Jbd' ? FF00 : FFE0,
+      uuid: family === 'Yadi' ? NUS : family === 'Mingtang' ? uuid('fa00') : family === 'Jbd' ? FF00 : FFE0,
       getCharacteristics: async () => {
         this.failAt('characteristics');
         this.injectDrop('characteristics');
@@ -398,6 +433,9 @@ class FakeGatt {
         this.requests.push(JSON.parse(JSON.stringify(opts)));
         this.check(() => {
           assert.ok(opts.optionalServices?.some((s) => s.toLowerCase() === FFE0), 'Chooser must authorize FFE0');
+          if (family === 'Yadi' || family === 'Mingtang') {
+            assert.ok(opts.optionalServices.some((s) => s.toLowerCase() === this.service.uuid), 'Chooser must authorize the new service');
+          }
           assert.ok(opts.acceptAllDevices === true || opts.filters?.length, 'Invalid chooser options');
         });
         return this.device;
@@ -449,12 +487,13 @@ class FakeGatt {
         ? Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
         : Buffer.from(new Uint8Array(value));
       assert.ok(bytes.length > 0 && bytes.length <= 20, 'BLE write chunks must be 1..20 bytes');
-      const expectedWrite = this.family === 'Ant' || this.family === 'Jikong' || this.options.singleFfe1 ? FFE1 : this.family === 'Jbd' ? FF02 : FFE2;
+      const expectedWrite = this.family === 'Yadi' ? NUS_WRITE : this.family === 'Mingtang' ? uuid('fa72')
+        : this.family === 'Ant' || this.family === 'Jikong' || this.options.singleFfe1 ? FFE1 : this.family === 'Jbd' ? FF02 : FFE2;
       assert.ok(c.uuid === expectedWrite || (this.options.silentPrimary && c.uuid === FFE1), 'Wrong write characteristic UUID');
       assert.ok(this.server.connected, 'Write after GATT disconnect');
       assert.ok(this.notify.notifying, 'Subscribe before writing');
       assert.equal(this.writeInFlight, 0, 'Concurrent GATT writes');
-      assert.equal(method, c.properties.writeWithoutResponse && !(this.family === 'YanYang' && c.properties.write)
+      assert.equal(method, c.properties.writeWithoutResponse && !(['YanYang', 'Mingtang'].includes(this.family) && c.properties.write)
         ? 'without-response' : 'response', 'Wrong write method for properties');
       return bytes;
     });
@@ -480,7 +519,9 @@ class FakeGatt {
           // A silent YY channel may be probed with either layout's base read.
           const command = assertBoardRead(this.family, bytes, this.options.legacy === true, silent);
           if (silent) return;
-          response = this.family === 'Jbd' ? jbdResponse(command, this.boardRevision)
+          response = this.family === 'Yadi' ? yadiResponse(command, this.boardRevision)
+            : this.family === 'Mingtang' ? mingtangResponse(this.boardRevision)
+            : this.family === 'Jbd' ? jbdResponse(command, this.boardRevision)
             : this.family === 'Jikong' ? jkResponse(command, this.boardRevision, this.options.jk04 === true)
             : this.options.legacy ? syntheticYanYangLegacyResponse(command, this.boardRevision, this.options.slave ?? 1)
             : syntheticYanYangResponse(command, this.boardRevision);
@@ -989,6 +1030,37 @@ for (const family of ['Jbd', 'YanYang', 'Jikong']) {
   });
 }
 
+for (const family of ['Yadi', 'Mingtang']) {
+  test(`${family} full read-only connection and polling`, family, { bothWriteModes: true }, async (h) => {
+    h.api.connect(family);
+    await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === (family === 'Yadi' ? 15 : 4),
+      'New protocol did not publish complete readings', 20_000);
+    assert.equal(h.state.family, family);
+    assert.equal(h.state.caps.readOnly, true); assert.equal(h.state.caps.controlCharge, false);
+    assert.equal(h.state.device.totalVoltage, family === 'Yadi' ? 51.1 : 13.38);
+    assert.equal(h.state.device.soc, 60);
+    assert.ok(!h.state.availableFields.includes('current'), 'Unknown current must stay unavailable');
+    assert.ok(!h.state.availableFields.includes('mos'), 'Unknown MOS must stay unavailable');
+    assert.equal(h.state.channel, family === 'Yadi' ? 'yadi-nus' : 'mingtang');
+    const voltage = h.state.device.totalVoltage;
+    h.fake.boardRevision = 1;
+    await h.until(() => h.state.device.totalVoltage !== voltage, 'Polling did not refresh new board', 20_000);
+    assert.equal(h.state.device.totalVoltage, family === 'Yadi' ? 51.6 : 13.6);
+    const write = await h.api.writeParam(0, 4300), control = await h.api.control(6);
+    assert.equal(write.ok, false); assert.equal(control.ok, false);
+    assert.ok(h.fake.writes.every((w) => { assertBoardRead(family, Buffer.from(w.bytes, 'hex')); return true; }));
+    saveUiState(h);
+  });
+}
+
+test('Xiaoha advertisement shows only SOC and never opens GATT', 'Xiaoha', {}, async (h) => {
+  h.api.connect('Xiaoha');
+  await h.clock.advance(1000);
+  assert.equal(h.fake.connectCalls, 0); assert.equal(h.fake.writes.length, 0);
+  assert.equal(h.state.connected, false); assert.equal(h.state.hasData, false);
+  assert.match(h.state.hint, /广播电量 60%/);
+});
+
 test('YanYang FFE1 shared UUID handles and acknowledged writes work without profile reply', 'YanYang',
   { singleFfe1: true, bothWriteModes: true, ignoreProfile: true }, async (h) => {
     h.api.connect('YanYang');
@@ -999,7 +1071,7 @@ test('YanYang FFE1 shared UUID handles and acknowledged writes work without prof
     assert.equal(h.state.device.totalVoltage, 13.38);
   });
 
-for (const family of ['Jbd', 'YanYang', 'Jikong']) {
+for (const family of ['Jbd', 'YanYang', 'Jikong', 'Yadi', 'Mingtang']) {
   test(`${family} subscribed but silent never reports connected`, family, {}, async (h) => {
     h.fake.replyEnabled = false;
     h.api.connect(family);

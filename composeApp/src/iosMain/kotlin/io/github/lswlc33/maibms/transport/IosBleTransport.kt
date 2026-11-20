@@ -172,11 +172,11 @@ class IosBleTransport : BmsTransport {
         boardBleChannels(targetFamily).flatMap { channel ->
             services.filter { sameBleUuid(it.UUID.UUIDString, channel.serviceUuid) }.flatMap { service ->
                 val chars = service.characteristics.orEmpty().mapNotNull { it as? CBCharacteristic }
-                val write = chars.firstOrNull { sameBleUuid(it.UUID.UUIDString, channel.writeUuid) && isWritable(it) }
-                val notify = chars.firstOrNull { sameBleUuid(it.UUID.UUIDString, channel.notifyUuid) && isNotifiable(it) }
-                if (write != null && notify != null && isWritable(write) && isNotifiable(notify)) {
-                    listOf(Candidate(channel, write, notify))
-                } else emptyList()
+                val writes = chars.filter { isWritable(it) &&
+                    (channel.discoverByProperties || sameBleUuid(it.UUID.UUIDString, channel.writeUuid)) }
+                val notifications = chars.filter { isNotifiable(it) &&
+                    (channel.discoverByProperties || sameBleUuid(it.UUID.UUIDString, channel.notifyUuid)) }
+                writes.flatMap { write -> notifications.map { notify -> Candidate(channel, write, notify) } }.take(4)
             }
         }
 
@@ -1028,7 +1028,7 @@ class IosBleTransport : BmsTransport {
         if (targetFamily.isReadOnlyBoard) require(isSafeBoardRead(targetFamily, frame)) { "只读板型拒绝修改命令" }
         val withResponse = (wc.properties and CBCharacteristicPropertyWrite).toInt() != 0
         val withoutResponse = (wc.properties and CBCharacteristicPropertyWriteWithoutResponse).toInt() != 0
-        val writeType = if (withoutResponse && !(targetFamily == DeviceFamily.YanYang && withResponse))
+        val writeType = if (withoutResponse && !(targetFamily in listOf(DeviceFamily.YanYang, DeviceFamily.Mingtang) && withResponse))
             CBCharacteristicWriteWithoutResponse else CBCharacteristicWriteWithResponse
         val chunk = minOf(p.maximumWriteValueLengthForType(writeType).toInt(), MAX_CHUNK).coerceAtLeast(1)
         var offset = 0

@@ -32,6 +32,46 @@ class DeviceFamilyTest {
     }
 
     @Test
+    fun added_brands_require_specific_names_or_manual_selection() {
+        assertEquals(DeviceFamily.Yadi, DeviceFamily.matchName("FDA90705"))
+        assertEquals(DeviceFamily.Yadi, DeviceFamily.matchName(" fd01ab2345 "))
+        assertNull(DeviceFamily.matchName("FD-headphones"))
+        assertNull(DeviceFamily.matchName("FD"))
+        assertEquals(DeviceFamily.Mingtang, DeviceFamily.matchName("明唐-001"))
+        assertEquals(DeviceFamily.Xingheng, DeviceFamily.matchName("星恒星蓝Pro"))
+        assertEquals(DeviceFamily.Zhiba, DeviceFamily.matchName("智霸锂电-001"))
+        assertEquals(DeviceFamily.Shanchong, DeviceFamily.matchName("闪充智行-001"))
+        assertNull(DeviceFamily.matchName("XH-headphones"))
+        assertNull(DeviceFamily.matchName("CF-keyboard"))
+    }
+
+    @Test
+    fun xiaoha_soc_is_only_read_from_a_complete_advertised_name() {
+        for (soc in listOf(0, 33, 60, 100)) {
+            val name = "HBB8909006196SOC${soc.toString().padStart(3, '0')}"
+            assertEquals(DeviceFamily.Xiaoha, DeviceFamily.matchName(name))
+            assertEquals(soc, ScanDevice(name, "id", -60).advertisedSoc)
+        }
+        for (name in listOf("HBB8909006196SOC101", "HBBSOC060", "HBB123SOC60", "HBB123SOC060x", "XHSOC060")) {
+            assertNull(DeviceFamily.advertisedSoc(name))
+            assertNull(DeviceFamily.matchName(name))
+        }
+    }
+
+    @Test
+    fun discovery_only_brands_never_enable_ant_or_control_capabilities() {
+        for (family in listOf(DeviceFamily.Xingheng, DeviceFamily.Zhiba, DeviceFamily.Shanchong, DeviceFamily.Xiaoha)) {
+            assertFalse(family.supportsDirectConnection)
+            assertFalse(family.usesAntProtocol)
+            assertTrue(family.isReadOnlyBoard)
+            assertTrue(family.serviceUuids.isEmpty())
+            val caps = io.github.lswlc33.maibms.data.DeviceCapabilities.forFamily(family)
+            assertTrue(caps.readOnly)
+            assertFalse(caps.permission || caps.controlCharge || caps.controlDischarge || caps.controlBalance)
+        }
+    }
+
+    @Test
     fun longest_prefix_wins() {
         // BlueBabe 必须命中蓝宝，不能被更短的前缀干扰
         assertEquals(DeviceFamily.LanBao, DeviceFamily.matchName("BlueBabe"))

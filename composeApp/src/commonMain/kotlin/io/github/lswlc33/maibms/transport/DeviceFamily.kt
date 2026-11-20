@@ -30,18 +30,36 @@ enum class DeviceFamily(
     YanYang("彦阳保护板", DeviceKind.Board, listOf("YYBMS", "YY-", "彦阳")),
     Jbd("嘉佰达保护板", DeviceKind.Board, listOf("JBD", "SP", "DB", "嘉佰达")),
     Jikong("极空保护板", DeviceKind.Board, listOf("JK-", "JK_", "极空")),
+    Yadi("亚迪智电", DeviceKind.Board, listOf("亚迪智电")),
+    Xingheng("星恒星蓝", DeviceKind.Board, listOf("星恒星蓝", "星恒", "XINGHENG")),
+    Mingtang("明唐保护板", DeviceKind.Board, listOf("明唐", "MINGTANG")),
+    Zhiba("智霸锂电", DeviceKind.Board, listOf("智霸锂电", "智霸")),
+    Shanchong("闪充智行", DeviceKind.Board, listOf("闪充智行")),
+    Xiaoha("小哈锂电", DeviceKind.Board, listOf("小哈锂电", "小哈智电")),
     LanBao("蓝宝电量计", DeviceKind.Meter, listOf("BLUEBABE", "BLUE", "LB")),
     LuXing("陆行电量计", DeviceKind.Meter, listOf("EM2APP")),
     Unknown("未知设备", DeviceKind.Board, emptyList());
 
     val isMeter: Boolean get() = kind == DeviceKind.Meter
-    val isReadOnlyBoard: Boolean get() = this == YanYang || this == Jbd || this == Jikong
+    val isReadOnlyBoard: Boolean get() = kind == DeviceKind.Board && !usesAntProtocol
     val usesAntProtocol: Boolean get() = this == Ant || this == Unknown
+    /** 识别品牌与已实现直连协议分开，尚无协议的设备不能落入 ANT 读取/控制。 */
+    val supportsDirectConnection: Boolean get() = this !in listOf(Xingheng, Zhiba, Shanchong, Xiaoha)
+    val connectionSupportHint: String? get() = when (this) {
+        Xiaoha -> "小哈目前仅能从 HBB…SOCxxx 广播名读取电量，尚未确认直连协议；扫描页可查看电量"
+        Xingheng -> "星恒星蓝尚无已确认的蓝牙直连协议；已发现的一线通协议不能直接用于 BLE"
+        Zhiba -> "智霸锂电尚缺已确认的蓝牙协议，暂不发送读取或控制命令"
+        Shanchong -> "闪充智行尚缺已确认的蓝牙直连协议；通过陆行中继时请选择陆行电量计"
+        else -> null
+    }
 
     /** 广播名可以被改，扫描服务与手动板型选择共同兜底。 */
     val serviceUuids: List<String> get() = when (this) {
         Jbd -> listOf("FF00", "FFE0")
         YanYang -> listOf("FFE0", "FEE9")
+        Yadi -> listOf("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
+        Mingtang -> listOf("FA00")
+        Xingheng, Zhiba, Shanchong, Xiaoha -> emptyList()
         else -> listOf("FFE0")
     }
 
@@ -59,11 +77,19 @@ enum class DeviceFamily(
                 .sortedByDescending { it.first.length }
 
         private val jbdApName = Regex("AP2[0-9]S.*")
+        private val yadiName = Regex("FD[0-9A-F]{6,}")
+        private val xiaohaName = Regex("HBB[0-9]+SOC([0-9]{3})")
+
+        /** 只认完整且电量在范围内的实测广播格式，不猜 CF/XH 等通用短前缀。 */
+        fun advertisedSoc(name: String?): Int? = xiaohaName.matchEntire(name?.trim()?.uppercase().orEmpty())
+            ?.groupValues?.get(1)?.toIntOrNull()?.takeIf { it in 0..100 }
 
         /** 广播名 → 家族提示；未命中返回 null，仍可按广播服务或手动板型选择。 */
         fun matchName(name: String?): DeviceFamily? {
             val n = name?.trim()?.uppercase() ?: return null
             if (n.isEmpty()) return null
+            if (yadiName.matches(n)) return Yadi
+            if (advertisedSoc(n) != null) return Xiaoha
             // YYBMS 的蓝牙模块常用 BT37/BTxxxx；只接数字后缀，避免把普通 BT 音频名认成板。
             if (n.startsWith("BT") && n.drop(2).isNotEmpty() && n.drop(2).all { it.isDigit() }) return YanYang
             if (n.startsWith("XIAOXIANG") || n.startsWith("DP04S") || n.startsWith("GJ-") ||

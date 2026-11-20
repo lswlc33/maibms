@@ -230,7 +230,9 @@ class WebBleTransport : BmsTransport {
             )
         )
         // 选择器已确定唯一目标，扫描到此为止（没有"持续扫描"这回事）
-        if (family != null) _connectHint.value = "已选择：${name.ifBlank { "未命名设备" }}"
+        if (family != null) _connectHint.value = if (!family.supportsDirectConnection) {
+            family.connectionSupportHint.orEmpty() + (DeviceFamily.advertisedSoc(name)?.let { "；本次广播电量 $it%" } ?: "")
+        } else "已选择：${name.ifBlank { "未命名设备" }}"
     }
 
     private fun requestOptions(all: Boolean): dynamic {
@@ -246,7 +248,7 @@ class WebBleTransport : BmsTransport {
         // Android 是"先扫全部、再按 DeviceFamily.isTarget 判定"，这里照做：
         // 选择器里给出全部设备，家族判定交给 matchName（不区分大小写，规则只有一处）。
         // [all] 参数保留：历史调用点用它表达"更宽的范围"，现在两者等价。
-        return JSON.parse("""{"acceptAllDevices":true,"optionalServices":["$SERVICE","${uuidOf("FF00")}","${uuidOf("FEE9")}"]}""")
+        return JSON.parse("""{"acceptAllDevices":true,"optionalServices":["$SERVICE","${uuidOf("FF00")}","${uuidOf("FEE9")}","${uuidOf("FA00")}","${uuidOf(BleChannel.Yadi.serviceUuid)}"]}""")
     }
 
     override fun stopScan() {
@@ -477,10 +479,11 @@ class WebBleTransport : BmsTransport {
             val chars = service.getCharacteristics().await<Array<WebBluetoothGattCharacteristic>>()
             checkAttempt(a)
             for (channel in boardBleChannels(a.family).filter { sameBleUuid(it.serviceUuid, serviceId) }) {
-                val write = chars.firstOrNull { sameBleUuid(it.uuid, channel.writeUuid) && propBool(it, "write", "writeWithoutResponse") }
-                val notify = chars.firstOrNull { sameBleUuid(it.uuid, channel.notifyUuid) && propBool(it, "notify", "indicate") }
-                if (write != null && notify != null && propBool(write, "write", "writeWithoutResponse") &&
-                    propBool(notify, "notify", "indicate")) found += Candidate(channel, write, notify)
+                val writes = chars.filter { propBool(it, "write", "writeWithoutResponse") &&
+                    (channel.discoverByProperties || sameBleUuid(it.uuid, channel.writeUuid)) }
+                val notifications = chars.filter { propBool(it, "notify", "indicate") &&
+                    (channel.discoverByProperties || sameBleUuid(it.uuid, channel.notifyUuid)) }
+                found += writes.flatMap { write -> notifications.map { notify -> Candidate(channel, write, notify) } }.take(4)
             }
         }
         return found
@@ -707,7 +710,7 @@ class WebBleTransport : BmsTransport {
     private suspend fun writeChunks(wc: WebBluetoothGattCharacteristic, frame: ByteArray, a: LinkAttempt) = writeMutex.withLock {
         checkAttempt(a)
         if (a.family.isReadOnlyBoard) require(isSafeBoardRead(a.family, frame)) { "只读板型拒绝修改命令" }
-        val useResponse = propBool(wc, "write") && (a.family == DeviceFamily.YanYang || !propBool(wc, "writeWithoutResponse"))
+        val useResponse = propBool(wc, "write") && (a.family in listOf(DeviceFamily.YanYang, DeviceFamily.Mingtang) || !propBool(wc, "writeWithoutResponse"))
         var offset = 0
         while (offset < frame.size) {
             checkAttempt(a)

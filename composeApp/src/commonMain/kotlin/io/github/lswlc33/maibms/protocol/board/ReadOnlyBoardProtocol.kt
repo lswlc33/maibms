@@ -45,7 +45,8 @@ data class BoardReading(
     val settings: List<BoardSetting>? = null,
 ) {
     val hasLiveReading: Boolean get() = totalVoltage != null &&
-        (current != null || power != null || cells?.any { it != null } == true)
+        (current != null || power != null || cells?.any { it != null } == true ||
+            (identity["protocol"] == "MINGTANG-TLV" && soc != null))
 }
 
 /** 每次只保留一条在途读取，Modbus 应答不带寄存器地址，不能并发猜测归属。 */
@@ -72,6 +73,8 @@ interface ReadOnlyBoardProtocol {
             DeviceFamily.YanYang -> YanYangProtocol()
             DeviceFamily.Jbd -> JbdProtocol()
             DeviceFamily.Jikong -> JikongProtocol()
+            DeviceFamily.Yadi -> YadiProtocol()
+            DeviceFamily.Mingtang -> MingtangProtocol()
             else -> null
         }
     }
@@ -106,6 +109,8 @@ fun isSafeBoardRead(family: DeviceFamily, frame: ByteArray): Boolean {
             u8(2) == 0x90 && u8(3) == 0xEB && u8(4) in 0x96..0x97 &&
             (5 until 19).all { u8(it) == 0 } &&
             (frame.take(19).sumOf { it.toInt() and 255 } and 255) == u8(19)
+        DeviceFamily.Yadi -> YadiProtocol.isReadRequest(frame)
+        DeviceFamily.Mingtang -> MingtangProtocol.isReadRequest(frame)
         else -> false
     }
 }
@@ -123,5 +128,7 @@ fun boardProbeRequest(family: DeviceFamily): ByteArray? = when (family) {
     DeviceFamily.YanYang -> byteArrayOf(1, 3, 0, 0x3F, 0, 4, 0x74, 5)
     DeviceFamily.Jikong -> JikongProtocol.readFrame(0x97)
     DeviceFamily.Jbd -> byteArrayOf(0xDD.toByte(), 0xA5.toByte(), 3, 0, 0xFF.toByte(), 0xFD.toByte(), 0x77)
+    DeviceFamily.Yadi -> YadiProtocol.readFrame(0x1000, 60)
+    DeviceFamily.Mingtang -> MingtangProtocol.readFrame()
     else -> null
 }

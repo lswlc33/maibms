@@ -13,7 +13,10 @@ data class ScanDevice(
     val rssi: Int,
     /** 按广播名判定的家族；识别不出时 Unknown */
     val family: DeviceFamily = DeviceFamily.Unknown,
-)
+) {
+    /** 广播携带的即时电量，不能充当 GATT 连接成功或其它电池读数。 */
+    val advertisedSoc: Int? get() = DeviceFamily.advertisedSoc(name)
+}
 
 /** 连接状态 */
 enum class LinkState { Idle, Connecting, Connected, Disconnected }
@@ -45,6 +48,8 @@ enum class BleChannel(
     /** 备用通道的代价（卡片警示语）；默认通道为 null */
     val warn: String? = null,
     val serviceUuid: String = "FFE0",
+    /** 厂商只确认了服务 UUID 时，在该服务内按可写/可通知属性逐对探测。 */
+    val discoverByProperties: Boolean = false,
 ) {
     Default("ffe1", "默认通道", "ffe1收发", "FFE1", "FFE1"),
     BackupA(
@@ -75,7 +80,16 @@ enum class BleChannel(
     ),
     Jbd("jbd", "嘉佰达通道", "ff02发-ff01收", "FF02", "FF01", serviceUuid = "FF00"),
     JbdFfe0("jbd-ffe0", "嘉佰达串口模块", "ffe1收发", "FFE1", "FFE1"),
-    Jikong("jikong", "极空通道", "ffe1收发", "FFE1", "FFE1");
+    Jikong("jikong", "极空通道", "ffe1收发", "FFE1", "FFE1"),
+    Yadi(
+        "yadi-nus", "亚迪 UART 通道", "Nordic UART",
+        "6E400002-B5A3-F393-E0A9-E50E24DCCA9E", "6E400003-B5A3-F393-E0A9-E50E24DCCA9E",
+        serviceUuid = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E",
+    ),
+    Mingtang(
+        "mingtang", "明唐通道", "fa00按属性探测", "", "",
+        serviceUuid = "FA00", discoverByProperties = true,
+    );
 
     companion object {
         fun byId(id: String?): BleChannel? = values().firstOrNull { it.id == id }

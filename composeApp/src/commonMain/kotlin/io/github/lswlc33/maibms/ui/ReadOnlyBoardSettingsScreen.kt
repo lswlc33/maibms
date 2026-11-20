@@ -42,6 +42,13 @@ fun ReadOnlyBoardSettingsScreen(
             kind = "info", action = "连接设备", onAction = onConnect,
         )
         error?.let { InfoBanner(it, kind = "warn") }
+        if (family == DeviceFamily.Yadi || family == DeviceFamily.Mingtang) {
+            InfoBanner(
+                if (family == DeviceFamily.Mingtang) "实验性只读接入：总压单位的公开资料有冲突，请先与原厂读数核对；尚未完成真机验证。"
+                else "实验性只读接入：仅显示有依据的基础读数，容量和状态保留原始值；尚未完成真机验证。",
+                kind = "info",
+            )
+        }
         if (family == DeviceFamily.Jbd) {
             SectionCard {
                 SettingRow(title = "蓝牙访问", inlineValue = "已有密码登录", trailing = { Chevron() },

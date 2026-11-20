@@ -202,12 +202,12 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
     /** 新只读板：按家族支持的服务与特征配对构建候选，不回退到 ANT 通道。 */
     private fun buildBoardCandidates(services: List<BluetoothGattService>): List<Candidate> =
         boardBleChannels(targetFamily).flatMap { ch ->
-            services.filter { sameBleUuid(it.uuid.toString(), ch.serviceUuid) }.mapNotNull { service ->
-                val w = service.characteristics.firstOrNull { sameBleUuid(it.uuid.toString(), ch.writeUuid) && isWritable(it) }
-                val n = service.characteristics.firstOrNull { sameBleUuid(it.uuid.toString(), ch.notifyUuid) && isNotifiable(it) }
-                if (w != null && n != null && isWritable(w) && isNotifiable(n)) {
-                    Candidate(ch, w, n)
-                } else null
+            services.filter { sameBleUuid(it.uuid.toString(), ch.serviceUuid) }.flatMap { service ->
+                val writes = service.characteristics.filter { isWritable(it) &&
+                    (ch.discoverByProperties || sameBleUuid(it.uuid.toString(), ch.writeUuid)) }
+                val notifications = service.characteristics.filter { isNotifiable(it) &&
+                    (ch.discoverByProperties || sameBleUuid(it.uuid.toString(), ch.notifyUuid)) }
+                writes.flatMap { w -> notifications.map { n -> Candidate(ch, w, n) } }.take(4)
             }
         }
 
@@ -843,7 +843,7 @@ class AndroidBleTransport(private val context: Context) : BmsTransport {
         if (targetFamily.isReadOnlyBoard) require(isSafeBoardRead(targetFamily, frame)) { "只读板型拒绝修改命令" }
         val withResponse = wc.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0
         val withoutResponse = wc.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE != 0
-        val writeType = if (withoutResponse && !(targetFamily == DeviceFamily.YanYang && withResponse))
+        val writeType = if (withoutResponse && !(targetFamily in listOf(DeviceFamily.YanYang, DeviceFamily.Mingtang) && withResponse))
             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE else BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
         val chunk = if (targetFamily.isReadOnlyBoard) 20
             else minOf(mtu - 10, MAX_CHUNK).coerceAtLeast(10)

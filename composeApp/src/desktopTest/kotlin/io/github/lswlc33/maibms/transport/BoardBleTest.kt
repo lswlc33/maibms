@@ -20,6 +20,12 @@ class BoardBleTest {
         assertEquals(DeviceFamily.LanBao, advertisedFamily("BlueBabe-1", listOf("FFE0"), listOf(0x0B65)))
         assertEquals(DeviceFamily.Jbd, advertisedFamily("JBD-SP04", listOf("FEE9")))
         assertEquals(DeviceFamily.YanYang, advertisedFamily("YY-123", listOf("FF00")))
+        assertEquals(DeviceFamily.Yadi, advertisedFamily("FDA90705", listOf(BleChannel.Yadi.serviceUuid)))
+        assertEquals(DeviceFamily.Unknown, advertisedFamily("custom UART", listOf(BleChannel.Yadi.serviceUuid)))
+        assertEquals(DeviceFamily.Mingtang, advertisedFamily("custom", listOf("fa00")))
+        assertEquals(DeviceFamily.Xiaoha, advertisedFamily("HBB8909006196SOC000", emptyList()))
+        assertTrue(BleChannel.Mingtang.discoverByProperties)
+        assertEquals(listOf("FA00"), DeviceFamily.Mingtang.serviceUuids)
         assertTrue(BleChannel.YanYangFfe1 in boardBleChannels(DeviceFamily.YanYang))
         assertNull(advertisedFamily("CJ01-EM02", listOf("FFE0")))
         assertNull(advertisedFamily("headphones", emptyList()))
@@ -29,7 +35,7 @@ class BoardBleTest {
     }
 
     @Test fun newBoardsOnlyHaveTheirOwnChannelsAndSafeProbes() {
-        for (family in listOf(DeviceFamily.Jbd, DeviceFamily.YanYang, DeviceFamily.Jikong)) {
+        for (family in listOf(DeviceFamily.Jbd, DeviceFamily.YanYang, DeviceFamily.Jikong, DeviceFamily.Yadi, DeviceFamily.Mingtang)) {
             assertTrue(boardBleChannels(family).isNotEmpty())
             assertTrue(boardBleChannels(family).none { it == BleChannel.BackupA || it == BleChannel.BackupB })
             assertTrue(isSafeBoardRead(family, boardProbeRequest(family)!!))

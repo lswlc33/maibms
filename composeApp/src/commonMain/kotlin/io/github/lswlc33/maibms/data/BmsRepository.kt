@@ -694,6 +694,13 @@ class BmsRepository(
             _scanError.value = _connectHint.value
             return@withLock
         }
+        if (!family.supportsDirectConnection) {
+            val hint = family.connectionSupportHint.orEmpty() +
+                (scanned?.advertisedSoc?.let { "；本次广播电量 $it%" } ?: "")
+            _connectHint.value = hint
+            _scanError.value = hint
+            return@withLock
+        }
         BmsLog.i("CONN", "选择设备 $name ($address)")
         stopSessionWork()
         if (_linkState.value != LinkState.Idle && _linkState.value != LinkState.Disconnected) transport.disconnect()
@@ -760,6 +767,16 @@ class BmsRepository(
                 manualDisconnect.value = true
                 _connectionIntentActive.value = false
                 _connectHint.value = "无法自动识别品牌，请在扫描页选择对应保护板或电量计后重试"
+                _linkState.value = LinkState.Disconnected
+                acceptingFrames = false
+            }
+            return
+        }
+        if (!family.supportsDirectConnection) {
+            withLock(sessionLock) {
+                manualDisconnect.value = true
+                _connectionIntentActive.value = false
+                _connectHint.value = family.connectionSupportHint
                 _linkState.value = LinkState.Disconnected
                 acceptingFrames = false
             }

@@ -57,6 +57,8 @@ internal fun installActions(api: dynamic) {
         Bms.repository.scanResults.value.map { d ->
             val item = jsObject()
             jsPut(item, "address", d.address); jsPut(item, "name", d.name); jsPut(item, "family", d.family.name)
+            jsPut(item, "advertisedSoc", d.advertisedSoc)
+            jsPut(item, "supportsDirectConnection", d.family.supportsDirectConnection)
             item
         }.toTypedArray()
     } })

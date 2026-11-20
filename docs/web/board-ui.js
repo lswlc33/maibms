@@ -7,7 +7,7 @@
     if (text != null) node.textContent = String(text);
     return node;
   }
-  function supported(st) { return ['YanYang', 'Jbd', 'Jikong'].indexOf(st.family) >= 0; }
+  function supported(st) { return ['YanYang', 'Jbd', 'Jikong', 'Yadi', 'Mingtang'].indexOf(st.family) >= 0; }
   function has(st, field, capability) {
     return !!st.hasData && (!capability || (st.caps || {})[capability] !== false) &&
       (st.availableFields == null || st.availableFields.indexOf(field) >= 0);
@@ -50,6 +50,8 @@
       note(form, '广播名被改过时请手动选择。板型会跟随设备记住，后续重连沿用。');
       var select = el('select'); select.setAttribute('aria-label', '保护板种类');
       [['', '自动识别'], ['YanYang', '彦阳 YYBMS'], ['Jbd', '嘉佰达 JBD'], ['Jikong', '极空 JK'], ['Ant', '蚂蚁 ANT'],
+        ['Yadi', '亚迪智电 FD · 只读'], ['Mingtang', '明唐 FA00 · 只读'], ['Xiaoha', '小哈 · 仅广播电量'],
+        ['Xingheng', '星恒星蓝 · 协议待确认'], ['Zhiba', '智霸锂电 · 协议待确认'], ['Shanchong', '闪充智行 · 协议待确认'],
         ['LanBao', '蓝宝电量计'], ['LuXing', '陆行电量计']].forEach(function (pair) {
         var option = el('option', pair[1]); option.value = pair[0]; select.appendChild(option);
       });
@@ -88,6 +90,8 @@
     else if (!st.connected) note(header, st.hasData ? '已断开 · 显示最后收到的读数' : '未连接');
     else if (!st.hasData) note(header, '蓝牙已连接 · 等待设备返回仪表数据…');
     if (st.readError) note(header, st.readError);
+    if (st.family === 'Mingtang') note(header, '实验性只读接入：公开资料的总压单位有冲突，请先与原厂读数核对；尚未完成真机验证。');
+    if (st.family === 'Yadi') note(header, '实验性只读接入：容量和状态仅保留原始值；尚未完成真机验证。');
     if (st.hint && !st.connected) note(header, st.hint);
     if (st.stalled) note(header, '实时数据已中断，请检查距离、设备休眠或其他 App 的连接占用。');
     if (st.connected) header.appendChild(button('断开连接', function () { M.disconnect(); }));

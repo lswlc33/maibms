@@ -74,6 +74,23 @@ data class DeviceCapabilities(
             cycleCount = true,
         )
 
+        val Yadi = Jbd.copy(
+            maxCells = 24, mos = false, protectAlarm = false, balance = false,
+            multiTemp = false, capacity = false, stateOfHealth = false,
+        )
+
+        val Mingtang = Jbd.copy(maxCells = 32, mos = false, protectAlarm = false, cycleCount = false)
+
+        /** 仅识别/广播读数，未确认的蓝牙协议不提供控制或参数入口。 */
+        val DiscoveryOnly = DeviceCapabilities(
+            protectAlarm = false, mos = false, balance = false,
+            perCellVoltage = false, multiTemp = false, extTimes = false,
+            permission = false, controlCharge = false, controlDischarge = false,
+            controlBalance = false, maxCells = 0, readOnly = true, antDetails = false,
+            runtime = false, cycleCapacity = false, capacity = false,
+            stateOfHealth = false, settings = false,
+        )
+
         /** 蓝宝电量计：无保护/告警、无 MOS/均衡、无逐串、仅 1 路温度、无扩展时间、无权限、无控制 */
         val LanBao = DeviceCapabilities(
             protectAlarm = false, mos = false, balance = false,
@@ -99,6 +116,9 @@ data class DeviceCapabilities(
             DeviceFamily.YanYang -> YanYang
             DeviceFamily.Jbd -> Jbd
             DeviceFamily.Jikong -> Jikong
+            DeviceFamily.Yadi -> Yadi
+            DeviceFamily.Mingtang -> Mingtang
+            DeviceFamily.Xingheng, DeviceFamily.Zhiba, DeviceFamily.Shanchong, DeviceFamily.Xiaoha -> DiscoveryOnly
             DeviceFamily.LanBao -> LanBao
             DeviceFamily.LuXing -> LuXing
             else -> Board
