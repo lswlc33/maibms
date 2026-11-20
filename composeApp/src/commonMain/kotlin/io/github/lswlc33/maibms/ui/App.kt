@@ -167,7 +167,7 @@ fun App(
                         meterMode -> r is Route.ParamGroup || r == Route.ControlTools ||
                             r == Route.Password || r == Route.Channels || r == Route.EventLogs
                         readOnlyBoard -> r is Route.ParamGroup || r == Route.ControlTools ||
-                            r == Route.Password || r == Route.Channels || r == Route.EventLogs
+                            r == Route.Password || r == Route.EventLogs
                         else -> false
                     }
                 }

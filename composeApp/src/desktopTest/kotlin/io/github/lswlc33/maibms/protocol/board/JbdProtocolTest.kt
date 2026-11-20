@@ -31,10 +31,10 @@ class JbdProtocolTest {
         assertEquals("DDA50500FFFB77", p.nextRequest(600)!!.hex())
         p.onNotification(response(5, "SP04S-TEST".encodeToByteArray()), 620)
         assertEquals("DDA50300FFFD77", p.nextRequest(900)!!.hex())
-        assertTrue(isSafeBoardRead(DeviceFamily.Jbd, p.nextRequest(2200)!!))
+        assertTrue(isSafeBoardRead(DeviceFamily.Jbd, p.nextRequest(4000)!!))
         p.reset()
         assertFalse(p.snapshotReady)
-        assertEquals("DDA50300FFFD77", p.nextRequest(2300)!!.hex())
+        assertEquals("DDA50300FFFD77", p.nextRequest(4300)!!.hex())
     }
 
     @Test fun checksumNoiseAndPayloadSentinelAreHandled() {
@@ -68,31 +68,36 @@ class JbdProtocolTest {
     @Test fun optionalLoginUsesCapturedGoldenVectorAndNeverChangesPassword() {
         val p = JbdProtocol()
         p.configureAccess("000000", "A4:C1:37:04:2D:BE")
-        val probe = p.nextRequest(0)!!
+        assertEquals("DDA50300FFFD77", p.nextRequest(0)!!.hex())
+        val probe = p.nextRequest(3000)!!
         assertEquals("FFAA15063030303030303B", probe.hex())
-        p.onNotification(hex("FFAA15010016"), 10)
-        assertEquals("FFAA170017", p.nextRequest(300)!!.hex())
-        p.onNotification(hex("FFAA1701627A"), 310)
-        val login = p.nextRequest(600)!!
+        p.onNotification(hex("FFAA15010016"), 3010)
+        assertEquals("DDA50300FFFD77", p.nextRequest(3300)!!.hex())
+        assertEquals("FFAA15063030303030303B", p.nextRequest(6300)!!.hex())
+        p.onNotification(hex("FFAA15010016"), 6310)
+        assertEquals("FFAA170017", p.nextRequest(6600)!!.hex())
+        p.onNotification(hex("FFAA1701627A"), 6610)
+        val login = p.nextRequest(6900)!!
         assertEquals("FFAA1806F65369967FF0D5", login.hex())
         assertTrue(isSafeBoardRead(DeviceFamily.Jbd, probe))
         assertTrue(isSafeBoardRead(DeviceFamily.Jbd, login))
         assertFalse(boardFrameForLog(DeviceFamily.Jbd, login).contains("F6 53"))
-        p.onNotification(hex("FFAA18010019"), 610)
-        assertEquals("DDA50300FFFD77", p.nextRequest(900)!!.hex())
+        p.onNotification(hex("FFAA18010019"), 6910)
+        assertEquals("DDA50300FFFD77", p.nextRequest(7200)!!.hex())
         assertFalse(isSafeBoardRead(DeviceFamily.Jbd, hex("FFAA16063030303030303C")))
         assertFalse(isSafeBoardRead(DeviceFamily.Jbd, hex("DD5A00025678FF3077")))
     }
 
     @Test fun failedLoginDoesNotRetryUntilUserOrReconnect() {
         val p = JbdProtocol()
-        p.configureAccess("000000", "A4:C1:37:04:2D:BE")
+        p.configureAccess("000000", null)
         p.nextRequest(0)
-        assertNull(p.nextRequest(1300))
-        assertNotNull(p.error)
+        assertNotNull(p.nextRequest(3000))
         assertNull(p.nextRequest(6000))
+        assertNotNull(p.error)
+        assertNull(p.nextRequest(9000))
         p.configureAccess(null, null)
-        assertNotNull(p.nextRequest(6300))
+        assertNotNull(p.nextRequest(9300))
     }
 
     @Test fun missingCellResponseDoesNotStopBasicRefresh() {
@@ -100,9 +105,9 @@ class JbdProtocolTest {
         p.nextRequest(0)
         p.onNotification(basic, 10)
         assertEquals("DDA50400FFFC77", p.nextRequest(300)!!.hex())
-        assertEquals("DDA50500FFFB77", p.nextRequest(1600)!!.hex())
-        p.onNotification(response(5, "JBD".encodeToByteArray()), 1610)
-        assertEquals("DDA50300FFFD77", p.nextRequest(1900)!!.hex())
+        assertEquals("DDA50500FFFB77", p.nextRequest(3300)!!.hex())
+        p.onNotification(response(5, "JBD".encodeToByteArray()), 3310)
+        assertEquals("DDA50300FFFD77", p.nextRequest(3600)!!.hex())
         assertFalse(p.snapshotReady)
     }
 
@@ -110,6 +115,53 @@ class JbdProtocolTest {
         val p = JbdProtocol()
         assertTrue(p.onNotification(hex("FFAA1701627A"), 0).isEmpty())
         assertEquals("DDA50300FFFD77", p.nextRequest(300)!!.hex())
+    }
+
+    @Test fun directPasswordModuleDoesNotRequireMacAndCredentialsDoNotBlockOpenModule() {
+        val open = JbdProtocol()
+        open.configureAccess("123456", null)
+        assertEquals("DDA50300FFFD77", open.nextRequest(0)!!.hex())
+        assertEquals(15.6, open.onNotification(basic, 50).single().totalVoltage)
+        assertEquals("DDA50400FFFC77", open.nextRequest(300)!!.hex())
+        val protected = JbdProtocol()
+        protected.configureAccess("123456", null)
+        protected.nextRequest(0)
+        val login = protected.nextRequest(3000)!!
+        assertEquals("FFAA150631323334353650", login.hex())
+        assertFalse(boardFrameForLog(DeviceFamily.Jbd, login).contains("31 32 33"))
+        assertTrue(isSafeBoardRead(DeviceFamily.Jbd, login))
+        protected.onNotification(hex("FFAA15010016"), 3010)
+        assertEquals("DDA50300FFFD77", protected.nextRequest(3300)!!.hex())
+        assertEquals(15.6, protected.onNotification(basic, 3310).single().totalVoltage)
+    }
+
+    @Test fun immediateReadRejectionAndSilentDirectLoginReachLegacyChallenge() {
+        val denied = hex("DD038000FF8077")
+        val p = JbdProtocol()
+        p.configureAccess("123456", "A4:C1:37:04:2D:BE")
+        p.nextRequest(0)
+        p.onNotification(denied, 10)
+        assertEquals("FFAA150631323334353650", p.nextRequest(300)!!.hex())
+        p.onNotification(hex("FFAA15010016"), 310)
+        p.nextRequest(600)
+        p.onNotification(denied, 610)
+        assertEquals("FFAA15063030303030303B", p.nextRequest(900)!!.hex())
+        p.onNotification(hex("FFAA15010016"), 910)
+        assertEquals("FFAA170017", p.nextRequest(1200)!!.hex())
+        val silent = JbdProtocol()
+        silent.configureAccess("123456", "A4:C1:37:04:2D:BE")
+        silent.nextRequest(0)
+        silent.nextRequest(3000)
+        assertEquals("FFAA15063030303030303B", silent.nextRequest(6000)!!.hex())
+    }
+
+    @Test fun extendedBasicPayloadIsNotRejectedByArtificial64ByteLimit() {
+        val payload = basic.copyOfRange(4, basic.size - 3).copyOf(90)
+        val p = JbdProtocol()
+        p.nextRequest(0)
+        val read = response(3, payload).toList().chunked(20).flatMap { p.onNotification(it.toByteArray(), 100) }.single()
+        assertEquals(15.6, read.totalVoltage)
+        assertNull(p.error)
     }
 
     private fun response(command: Int, payload: ByteArray): ByteArray {

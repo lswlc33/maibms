@@ -303,6 +303,8 @@ class BmsRepository(
                     if (st == LinkState.Connected && acceptingFrames && !previewActive.value && !manualDisconnect.value) {
                         DeviceProfiles.touch(MockBms.savedAddress)
                         linkWindowAt = epochMillisNow()
+                        real.boardAddress?.let { readOnlyBoard?.configureAddress(it) }
+                        real.boardLayout?.let { readOnlyBoard?.configureLayout(it) }
                         if (meter == null && readOnlyBoard == null) startPostConnect(session)
                         pollWake.trySend(Unit)
                     } else if (st != LinkState.Connected) {
@@ -339,6 +341,7 @@ class BmsRepository(
                                 emptyList()
                             }
                         MockBms.readError.value = b.error
+                        MockBms.caps.value = b.caps
                         for (rd in readings) {
                             MockBms.applyBoardReading(rd)
                             if (MockBms.boardSettings.value != session.boardSettingsCached ||
@@ -679,8 +682,18 @@ class BmsRepository(
             _connectHint.value = "正在预览快照，自动连接已停用（重启应用恢复）"
             return@withLock
         }
-        val name = _scanResults.value.firstOrNull { it.address == address }?.name?.trim()
-            ?: DeviceProfiles.find(address)?.displayName
+        val previous = DeviceProfiles.find(address)
+        val scanned = _scanResults.value.firstOrNull { it.address == address }
+        val name = scanned?.name?.trim() ?: previous?.name
+        val family = familyOverride?.takeIf { it != DeviceFamily.Unknown }
+            ?: DeviceFamily.matchName(name)
+            ?: previous?.family?.takeIf { it != DeviceFamily.Unknown }
+            ?: scanned?.family?.takeIf { it != DeviceFamily.Unknown }
+        if (family == null) {
+            _connectHint.value = "无法自动识别品牌，请在扫描页选择对应保护板或电量计后重试"
+            _scanError.value = _connectHint.value
+            return@withLock
+        }
         BmsLog.i("CONN", "选择设备 $name ($address)")
         stopSessionWork()
         if (_linkState.value != LinkState.Idle && _linkState.value != LinkState.Disconnected) transport.disconnect()
@@ -690,8 +703,6 @@ class BmsRepository(
             AppStore.savedAddress = address
             AppStore.savedDeviceName = name
             val prev = DeviceProfiles.find(address)
-            val family = familyOverride ?: _scanResults.value.firstOrNull { it.address == address }
-                ?.family?.takeIf { it != DeviceFamily.Unknown } ?: prev?.family ?: DeviceFamily.Unknown
             DeviceProfiles.upsert(DeviceProfile(
                 address = address,
                 name = name ?: prev?.name.orEmpty(),
@@ -739,6 +750,21 @@ class BmsRepository(
 
     private suspend fun connectLocked(address: String?) {
         val targetAddr = address ?: MockBms.savedAddress
+        val profile = DeviceProfiles.find(targetAddr)
+        val scanned = _scanResults.value.firstOrNull { it.address == targetAddr }
+        val family = profile?.family?.takeIf { it != DeviceFamily.Unknown }
+            ?: DeviceFamily.matchName(scanned?.name ?: profile?.name ?: AppStore.savedDeviceName)
+            ?: scanned?.family?.takeIf { it != DeviceFamily.Unknown }
+        if (family == null) {
+            withLock(sessionLock) {
+                manualDisconnect.value = true
+                _connectionIntentActive.value = false
+                _connectHint.value = "无法自动识别品牌，请在扫描页选择对应保护板或电量计后重试"
+                _linkState.value = LinkState.Disconnected
+                acceptingFrames = false
+            }
+            return
+        }
         BmsLog.i("CONN", "发起连接" + (targetAddr?.let { " → $it" } ?: "") + if (AppStore.autoReconnect) "（自动重连）" else "（手动）")
         withLock(sessionLock) {
             manualDisconnect.value = false
@@ -759,9 +785,6 @@ class BmsRepository(
             triedChannels.clear()
             channelRotationToken = null
             transport.preferChannel(AppStore.channelFor(targetAddr))
-            val family = DeviceProfiles.find(targetAddr)?.family?.takeIf { it != DeviceFamily.Unknown }
-                ?: _scanResults.value.firstOrNull { it.address == targetAddr }?.family?.takeIf { it != DeviceFamily.Unknown }
-                ?: DeviceFamily.matchName(MockBms.connectedDeviceName.value) ?: DeviceFamily.Ant
             session.family = family
             _currentFamily.value = family
             transport.setTargetFamily(family)
@@ -771,7 +794,8 @@ class BmsRepository(
             if (family == DeviceFamily.Jbd) {
                 val access = boardAccessFor(targetAddr)
                 readOnlyBoard?.configureAccess(access.first.takeIf { it.isNotBlank() }, access.second.takeIf { it.isNotBlank() })
-            }
+                transport.configureBoardAccess(access.first.takeIf { it.isNotBlank() }, access.second.takeIf { it.isNotBlank() })
+            } else transport.configureBoardAccess(null, null)
             meterInitSent = false
             MockBms.caps.value = readOnlyBoard?.caps ?: meter?.caps ?: DeviceCapabilities.forFamily(family)
             acceptingFrames = true
@@ -923,7 +947,8 @@ class BmsRepository(
         _activeChannel.value?.let { triedChannels += it }
         val next = avail.firstOrNull { it !in triedChannels }
         if (next == null || avail.size <= 1) {
-            _connectHint.value = "所有可用通道都试过仍无应答：请断电重启蓝牙后重试"
+            _connectHint.value = if (expected.family.isReadOnlyBoard) boardConnectionHint(expected.family)
+                else "所有可用通道都试过仍无应答：请确认设备在附近并关闭占用此设备的其他 App"
             return
         }
         triedChannels += next
@@ -982,11 +1007,12 @@ class BmsRepository(
         val addr = MockBms.savedAddress ?: return@withLock false
         val mac = macAddress.trim().uppercase()
         if (password.isNotEmpty() && (password.length != 6 || password.any { it.code !in 0x20..0x7E } ||
-                !Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}").matches(mac))) return@withLock false
+                (mac.isNotEmpty() && !Regex("([0-9A-F]{2}:){5}[0-9A-F]{2}").matches(mac)))) return@withLock false
         if (password.isBlank()) AppStore.removePassword(addr, 0)
         else AppStore.savePassword(addr, 0, password)
         AppStore.put("ble.jbd.mac.$addr", mac.takeIf { password.isNotEmpty() })
         readOnlyBoard?.configureAccess(password.takeIf { it.isNotEmpty() }, mac.takeIf { it.isNotEmpty() })
+        transport.configureBoardAccess(password.takeIf { it.isNotEmpty() }, mac.takeIf { it.isNotEmpty() })
         MockBms.readError.value = null
         pollWake.trySend(Unit)
         true

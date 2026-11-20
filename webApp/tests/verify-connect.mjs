@@ -18,27 +18,46 @@
  * every uplink outside their read-only whitelist, including during connection.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 let bundlePath = fileURLToPath(new URL('../../docs/maibms-data.js', import.meta.url));
 let filter = '';
+let stateDir = null;
 for (let i = 2; i < process.argv.length; i++) {
   const flag = process.argv[i];
-  assert.ok(['--bundle', '--case'].includes(flag) && process.argv[i + 1],
-    'Usage: node verify-connect.mjs [--bundle path] [--case name-substring]');
+  assert.ok(['--bundle', '--case', '--state-dir'].includes(flag) && process.argv[i + 1],
+    'Usage: node verify-connect.mjs [--bundle path] [--case name-substring] [--state-dir directory]');
   if (flag === '--bundle') bundlePath = resolve(process.argv[++i]);
+  else if (flag === '--state-dir') stateDir = resolve(process.argv[++i]);
   else filter = process.argv[++i].toLowerCase();
 }
 const source = readFileSync(bundlePath, 'utf8');
+function saveUiState(h) {
+  if (!stateDir) return;
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(resolve(stateDir, `${h.state.family}.json`), JSON.stringify(h.state, null, 2));
+}
 const hostPath = fileURLToPath(new URL('../../docs/web/maibms-host.js', import.meta.url));
 const hostSource = readFileSync(hostPath, 'utf8');
 const uuid = (short) => `0000${short.toLowerCase()}-0000-1000-8000-00805f9b34fb`;
 const FFE0 = uuid('ffe0'), FFE1 = uuid('ffe1'), FFE2 = uuid('ffe2');
 const FF00 = uuid('ff00'), FF01 = uuid('ff01'), FF02 = uuid('ff02');
-const isReadOnlyBoard = (family) => family === 'Jbd' || family === 'YanYang';
+const isReadOnlyBoard = (family) => ['Jbd', 'YanYang', 'Jikong'].includes(family);
+const JK_FRAMES = JSON.parse(readFileSync(new URL('../../composeApp/src/desktopTest/resources/jikong-frames.json', import.meta.url), 'utf8')).samples.JK02_32S;
+const JK04_FRAMES = JSON.parse(readFileSync(new URL('../../composeApp/src/desktopTest/resources/jk04-frames.json', import.meta.url), 'utf8')).frames;
+function jkResponse(command, revision = 0, jk04 = false) {
+  const data = Buffer.from(jk04 ? JK04_FRAMES[command === 0x97 ? 'JK04_device_info' : 'JK04_cell']
+    : command === 0x97 ? JK_FRAMES.dev : JK_FRAMES.cell, 'hex');
+  if (command === 0x96 && revision) {
+    if (jk04) data.writeFloatLE(3.4, 6);
+    else data.writeUInt32LE(27000, 150);
+    data[299] = data.subarray(0, 299).reduce((sum, b) => sum + b, 0) & 255;
+  }
+  return data;
+}
 const hex = (bytes) => Buffer.from(bytes).toString('hex');
 
 function crc16(bytes, polynomial = 0xa001) {
@@ -109,10 +128,10 @@ function lanbaoRead(table) {
     6, 6, 6, 6, 6, 6, table, 0, table === 1 ? 111 : 134]), 49960, true),
   Buffer.from([0xe5])]);
 }
-function lanbaoResponse(table) {
+function lanbaoResponse(table, revision = 0) {
   const data = Buffer.alloc(table === 1 ? 111 : 134);
   if (table === 1) {
-    data.writeUInt16BE(4800, 0); data.writeInt32BE(-250, 2);
+    data.writeUInt16BE(revision ? 4950 : 4800, 0); data.writeInt32BE(-250, 2);
     data.writeUInt16BE(800, 6); data.writeInt8(24, 14);
     data.writeUInt32BE(8_000_000, 15); data.writeInt32BE(-120, 19);
     data[50] = 1; data.set([0xaa, 0xbb, 0xcc, 0x11, 0x22, 0x33], 51);
@@ -154,12 +173,14 @@ function jbdResponse(command, revision = 0) {
     Buffer.from([checksum >>> 8, checksum & 255, 0x77])]);
 }
 const YANYANG_READS = new Map([[63, 4], [1, 79], [80, 80], [160, 81], [240, 20]]);
+const YANYANG_LEGACY_READS = new Map([[63, 4], [1, 47], [48, 42], [90, 22]]);
 const YANYANG_MAGIC = 0x4d444253;
 function yanYangRequest(register) {
   const count = YANYANG_READS.get(register);
   return withCrc(Buffer.from([1, 3, register >>> 8, register & 255, count >>> 8, count & 255]));
 }
 function syntheticYanYangResponse(register, revision = 0) {
+  if (register === 0) return null;
   // SYNTHETIC YYBMS B fixture, NOT a hardware capture. Payload offsets/lengths
   // follow NiuHelper@6ebda686 docs/yybms-bms-ble-protocol.md and YanYangProtocol:
   // profile 8 B, summary 158 B, status 160 B, settings 162 B, identity 40 B.
@@ -193,7 +214,32 @@ function syntheticYanYangResponse(register, revision = 0) {
   } else if (register === 240) data.write('SYNTHETIC-YYBMS', 20, 'ascii');
   return withCrc(Buffer.concat([Buffer.from([1, 3, data.length]), data]));
 }
-function assertBoardRead(family, bytes) {
+function syntheticYanYangLegacyResponse(register, revision = 0, slave = 1) {
+  if (register === 0) return withCrc(Buffer.from([slave, 3, 2, 0, slave]));
+  const count = YANYANG_LEGACY_READS.get(register);
+  if (!count) return null;
+  const data = Buffer.alloc(count * 2);
+  if (register === 1) {
+    data[12] = 4; data[13] = 2;
+    data.writeUInt16BE(revision ? 14960 : 14860, 22);
+    data.writeInt16BE(-1234, 26);
+    data.writeUInt16BE(213, 38);
+    data.writeUInt16BE(4567, 40); data.writeUInt16BE(8000, 42);
+    [revision ? 3800 : 3700, 3710, 3720, 3730].forEach((v, i) => data.writeUInt16BE(v, 44 + i * 2));
+    data[81] = 68; data[80] = 70;
+  }
+  return withCrc(Buffer.concat([Buffer.from([slave, 3, data.length]), data]));
+}
+
+function assertBoardRead(family, bytes, legacy = false, allowLegacyProbe = false) {
+  if (family === 'Jikong') {
+    assert.equal(bytes.length, 20);
+    assert.equal(hex(bytes.subarray(0, 4)), 'aa5590eb');
+    assert.ok([0x96, 0x97].includes(bytes[4]), 'JK only permits live/device info reads');
+    assert.ok(bytes.subarray(5, 19).every((b) => b === 0));
+    assert.equal(bytes[19], bytes.subarray(0, 19).reduce((sum, b) => sum + b, 0) & 255);
+    return bytes[4];
+  }
   if (family === 'Jbd') {
     assert.equal(bytes.length, 7, 'JBD permits only complete 03/04/05 read requests');
     assert.equal(hex(bytes), JBD_READS.get(bytes[2]), 'JBD read-only whitelist/header/checksum');
@@ -201,9 +247,15 @@ function assertBoardRead(family, bytes) {
   }
   assert.equal(family, 'YanYang');
   assert.equal(bytes.length, 8, 'YY permits only complete FC03 read requests');
+  assert.equal(bytes[1], 3, 'YY uses only FC03');
   const register = bytes.readUInt16BE(2);
-  assert.ok(YANYANG_READS.has(register), `YY register ${register} is outside read-only whitelist`);
-  assert.equal(hex(bytes), hex(yanYangRequest(register)), 'YY read-only whitelist/count/Modbus CRC');
+  const reads = legacy ? YANYANG_LEGACY_READS : YANYANG_READS;
+  const count = bytes.readUInt16BE(4);
+  const allowedCount = reads.get(register) === count ||
+    (register === 1 && ((legacy && count === 79) || (allowLegacyProbe && count === 47)));
+  assert.ok((bytes[0] === 0 && register === 0 && count === 1) ||
+    (bytes[0] >= 1 && bytes[0] <= 247 && allowedCount), `YY read outside layout whitelist`);
+  assert.equal(bytes.readUInt16LE(6), crc16(bytes.subarray(0, 6)), 'YY Modbus CRC');
   return register;
 }
 
@@ -282,7 +334,7 @@ class FakeGatt {
     this.device = new Events();
     this.device.id = options.id ?? `vm-${family}`;
     this.device.name = options.name ?? { Ant: 'ANT-B2A20', LuXing: 'EM2APP-A581', LanBao: 'BlueBabe-METER',
-      Jbd: 'JBD-SP04S034', YanYang: 'YY-NiuM-TEST' }[family];
+      Jbd: 'JBD-SP04S034', YanYang: 'YY-NiuM-TEST', Jikong: 'JK-BMS-A' }[family];
     const characteristic = (short, properties) => {
       const c = Object.assign(new Events(), { uuid: uuid(short), properties, value: null, notifying: false });
       c.startNotifications = async () => {
@@ -302,15 +354,17 @@ class FakeGatt {
     };
     this.notify = characteristic(family === 'Jbd' ? 'ff01' : 'ffe1', { notify: true, write: family === 'Ant',
       writeWithoutResponse: family === 'Ant', read: false, indicate: false });
-    this.writer = family === 'Ant' ? this.notify : characteristic(family === 'Jbd' ? 'ff02' : 'ffe2',
-      { write: true, writeWithoutResponse: false, notify: false, read: false, indicate: false });
+    this.writer = family === 'Ant' ? this.notify : characteristic(family === 'Jbd' ? 'ff02' : family === 'Jikong' || options.singleFfe1 ? 'ffe1' : 'ffe2',
+      { write: true, writeWithoutResponse: options.bothWriteModes === true, notify: false, read: false, indicate: false });
+    const fallbackWriter = family === 'YanYang' && options.silentPrimary
+      ? characteristic('ffe1', { write: true, writeWithoutResponse: false }) : null;
     this.service = {
       uuid: family === 'Jbd' ? FF00 : FFE0,
       getCharacteristics: async () => {
         this.failAt('characteristics');
         this.injectDrop('characteristics');
         // Notify-only FFE1 first: a property or UUID bug must not pass by luck.
-        return family === 'Ant' ? [this.notify] : [this.notify, this.writer];
+        return family === 'Ant' ? [this.notify] : [this.notify, this.writer, ...(fallbackWriter ? [fallbackWriter] : [])];
       },
       getCharacteristic: async (wanted) => {
         const c = [this.notify, this.writer].find((item) => item.uuid === wanted.toLowerCase());
@@ -395,11 +449,13 @@ class FakeGatt {
         ? Buffer.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
         : Buffer.from(new Uint8Array(value));
       assert.ok(bytes.length > 0 && bytes.length <= 20, 'BLE write chunks must be 1..20 bytes');
-      assert.equal(c.uuid, this.family === 'Ant' ? FFE1 : this.family === 'Jbd' ? FF02 : FFE2, 'Wrong write characteristic UUID');
+      const expectedWrite = this.family === 'Ant' || this.family === 'Jikong' || this.options.singleFfe1 ? FFE1 : this.family === 'Jbd' ? FF02 : FFE2;
+      assert.ok(c.uuid === expectedWrite || (this.options.silentPrimary && c.uuid === FFE1), 'Wrong write characteristic UUID');
       assert.ok(this.server.connected, 'Write after GATT disconnect');
       assert.ok(this.notify.notifying, 'Subscribe before writing');
       assert.equal(this.writeInFlight, 0, 'Concurrent GATT writes');
-      assert.equal(method, this.family === 'Ant' ? 'without-response' : 'response', 'Wrong write method for properties');
+      assert.equal(method, c.properties.writeWithoutResponse && !(this.family === 'YanYang' && c.properties.write)
+        ? 'without-response' : 'response', 'Wrong write method for properties');
       return bytes;
     });
     this.writes.push({ uuid: c.uuid, bytes: hex(bytes), at: this.clock.now });
@@ -420,9 +476,18 @@ class FakeGatt {
           if (bytes[2] === 1) { assert.equal(hex(bytes), hex(ANT_PROBE)); response = antRealtime(); }
           else if (bytes[2] === 2) response = antFrame(0x12, bytes.readUInt16LE(3), Buffer.alloc(bytes[5]));
         } else if (isReadOnlyBoard(this.family)) {
-          const command = assertBoardRead(this.family, bytes);
+          const silent = this.options.silentPrimary === true && c.uuid === FFE2;
+          // A silent YY channel may be probed with either layout's base read.
+          const command = assertBoardRead(this.family, bytes, this.options.legacy === true, silent);
+          if (silent) return;
           response = this.family === 'Jbd' ? jbdResponse(command, this.boardRevision)
+            : this.family === 'Jikong' ? jkResponse(command, this.boardRevision, this.options.jk04 === true)
+            : this.options.legacy ? syntheticYanYangLegacyResponse(command, this.boardRevision, this.options.slave ?? 1)
             : syntheticYanYangResponse(command, this.boardRevision);
+          if (this.family === 'YanYang' && this.options.slave && bytes[0] !== 0 && bytes[0] !== this.options.slave) response = null;
+          if (this.family === 'YanYang' && this.options.legacy && command === 1 && bytes.readUInt16BE(4) !== 47) response = null;
+          if (this.options.ignoreProfile && this.family === 'YanYang' && command === 63) response = null;
+          if (this.options.ignoreAddress && this.family === 'YanYang' && command === 0) response = null;
         } else if (this.family === 'LuXing') {
           assert.equal(bytes.length, 8); const start = bytes.readUInt16BE(2);
           const read = LUXING_READS.get(start); assert.ok(read, `Unexpected EM02 register ${start}`);
@@ -432,7 +497,7 @@ class FakeGatt {
           assert.equal(bytes.length, 19); const table = bytes[13];
           assert.ok(table === 1 || table === 2);
           assert.equal(hex(bytes), hex(lanbaoRead(table)), 'LanBao request/header/match code/private CRC');
-          response = lanbaoResponse(table);
+          response = lanbaoResponse(table, this.boardRevision);
         }
       });
       if (response) {
@@ -607,11 +672,21 @@ for (const [family, name] of [['LuXing', 'EM2APP-A581'], ['LanBao', 'BlueBabe-ME
       assert.ok(h.fake.writes.some((w) => w.bytes === hex(lanbaoRead(2))), 'Table2 handshake missing');
       assert.equal(h.state.temps[0].value, 24);
     }
+    if (family === 'LanBao') {
+      h.fake.boardRevision = 1;
+      await h.until(() => h.state.device.totalVoltage === 49.5, 'LanBao polling did not refresh changed data');
+      assert.equal(h.state.caps.stateOfHealth, false);
+      assert.equal(h.state.caps.perCellVoltage, false);
+      assert.equal(h.state.cells.length, 0);
+    }
+    saveUiState(h);
     const calls = h.fake.connectCalls, notifications = h.fake.notificationViews.length;
+    if (family === 'LanBao') h.fake.boardRevision = 0;
     h.fake.drop();
     await h.until(() => h.fake.connectCalls > calls && h.state.connected && h.fake.server.connected,
       `${family} disconnect event must recover without BMS probing`);
-    await h.until(() => h.state.hasData && h.fake.notificationViews.length > notifications,
+    await h.until(() => h.state.hasData && h.fake.notificationViews.length > notifications &&
+      (family !== 'LanBao' || h.state.device.totalVoltage === 48),
       `${family} recovery must resume real meter polling`);
     assertLive(h, family);
     assert.ok(!h.fake.writes.some((w) => w.bytes.startsWith('7ea101')), 'Recovery must also skip BMS probes');
@@ -874,10 +949,10 @@ test('Review suspended A Promise cannot block different B or tear B on late A su
     assertOneSession(h); assertLive(h, 'Ant');
   });
 
-for (const family of ['Jbd', 'YanYang']) {
+for (const family of ['Jbd', 'YanYang', 'Jikong']) {
   test(`${family} manual family read-only telemetry keeps refreshing`, family, { name: 'custom-pack-name' }, async (h) => {
     h.api.connect(family);
-    await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === 4,
+    await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === (family === 'Jikong' ? 8 : 4),
       `${family} real protocol did not produce dashboard readings`);
     assert.equal(h.state.family, family);
     assert.equal(h.state.caps.readOnly, true);
@@ -886,12 +961,13 @@ for (const family of ['Jbd', 'YanYang']) {
     assert.equal(h.state.relay.active, false);
     assert.ok(h.state.availableFields.includes('voltage'));
     assert.ok(h.state.temps.length > 0);
-    assert.equal(h.state.channel, family === 'Jbd' ? 'jbd' : 'yanyang');
+    assert.equal(h.state.channel, family === 'Jbd' ? 'jbd' : family === 'Jikong' ? 'jikong' : 'yanyang');
     const voltage = h.state.device.totalVoltage;
     h.fake.boardRevision = 1;
     await h.until(() => h.state.device.totalVoltage !== voltage, 'Polling did not refresh changed board data');
-    assert.equal(h.state.device.totalVoltage, family === 'Jbd' ? 16 : 13.6);
+    assert.equal(h.state.device.totalVoltage, family === 'Jbd' ? 16 : family === 'Jikong' ? 27 : 13.6);
     assert.ok((h.state.boardSettings || []).length > 0, 'Read-only settings were not published');
+    saveUiState(h);
     const write = await h.api.writeParam(0, 4300);
     const control = await h.api.control(6);
     const saved = await h.api.saveAllParams();
@@ -911,6 +987,84 @@ for (const family of ['Jbd', 'YanYang']) {
     assert.ok(h.fake.writes.every((w) => { assertBoardRead(family, Buffer.from(w.bytes, 'hex')); return true; }));
     assert.ok(!h.fake.writes.some((w) => w.bytes.startsWith('7e')), 'New board received ANT frames');
   });
+}
+
+test('YanYang FFE1 shared UUID handles and acknowledged writes work without profile reply', 'YanYang',
+  { singleFfe1: true, bothWriteModes: true, ignoreProfile: true }, async (h) => {
+    h.api.connect('YanYang');
+    await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === 4,
+      'No fallback from missing profile to signed summary', 20_000);
+    assert.equal(h.state.channel, 'yanyang-ffe1');
+    assert.ok(h.fake.writes.some((w) => Buffer.from(w.bytes, 'hex').readUInt16BE(2) === 1));
+    assert.equal(h.state.device.totalVoltage, 13.38);
+  });
+
+for (const family of ['Jbd', 'YanYang', 'Jikong']) {
+  test(`${family} subscribed but silent never reports connected`, family, {}, async (h) => {
+    h.fake.replyEnabled = false;
+    h.api.connect(family);
+    await h.clock.advance(10_000);
+    assert.equal(h.state.connected, false);
+    assert.equal(h.state.hasData, false);
+    assert.ok(h.fake.writes.length > 0, 'Protocol probe did not run');
+  });
+}
+
+test('YanYang silent subscribed first channel falls back to FFE1', 'YanYang', { silentPrimary: true }, async (h) => {
+  h.api.connect('YanYang');
+  await h.until(() => h.state.connected && h.state.hasData && h.state.channel === 'yanyang-ffe1',
+    'Silent FFE2 did not fall back to working FFE1', 40_000);
+  assert.ok(h.fake.writes.some((w) => w.uuid === FFE2));
+  assert.ok(h.fake.writes.some((w) => w.uuid === FFE1));
+  assert.equal(h.fake.connectCalls, 1, 'Candidate fallback should not require an extra physical reconnect');
+});
+
+test('JK04 captured float telemetry connects without inventing current or SOC', 'Jikong', { jk04: true }, async (h) => {
+  h.api.connect('Jikong');
+  await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === 16,
+    'JK04 capture did not connect through production protocol');
+  assert.equal(h.state.params.identity.protocol, 'JK04');
+  assert.ok(Math.abs(h.state.device.totalVoltage - 53.166) < 0.002);
+  for (const field of ['current', 'power', 'soc', 'capacity', 'remaining', 'mos', 'cycles', 'soh']) {
+    assert.ok(!h.state.availableFields.includes(field), `JK04 invented ${field}`);
+  }
+  assert.equal(h.state.caps.mos, false);
+  assert.equal(h.state.caps.capacity, false);
+  assert.equal(h.state.temps.length, 0);
+  const voltage = h.state.device.totalVoltage;
+  h.fake.boardRevision = 1;
+  await h.until(() => h.state.device.totalVoltage !== voltage, 'JK04 did not refresh float cells');
+  if (stateDir) writeFileSync(resolve(stateDir, 'Jk04.json'), JSON.stringify(h.state, null, 2));
+  const calls = h.fake.connectCalls;
+  h.fake.drop();
+  await h.until(() => h.fake.connectCalls > calls && h.state.connected && h.state.hasData,
+    'JK04 did not recover after disconnect');
+});
+
+for (const { slave, ignoreProfile, ignoreAddress } of [
+  { slave: 1 },
+  { slave: 1, ignoreProfile: true, ignoreAddress: true },
+  { slave: 7, ignoreProfile: true },
+]) {
+  const silent = ignoreProfile ? ' without profile reply' : '';
+  test(`YanYang legacy A layout at slave ${slave}${silent} connects and keeps refreshing`, 'YanYang',
+    { legacy: true, slave, ignoreProfile, ignoreAddress }, async (h) => {
+      h.api.connect('YanYang');
+      await h.until(() => h.state.connected && h.state.hasData && h.state.cells.length === 4,
+        'Legacy A did not connect with its own blocks', 22_000);
+      assert.equal(h.state.device.totalVoltage, 14.86);
+      assert.equal(h.state.params.identity.protocol, 'YYBMS 旧 A 兼容布局');
+      assert.ok(!h.state.availableFields.includes('soc'));
+      assert.ok(!h.state.availableFields.includes('capacity'));
+      assert.ok(!h.state.availableFields.includes('current'));
+      assert.ok(!h.state.availableFields.includes('power'));
+      assert.equal(h.state.caps.mos, false);
+      assert.equal(h.state.device.battState, '方向待确认');
+      assert.equal(h.fake.writes.filter((w) => w.bytes === '00030000000185db').length, ignoreProfile ? 1 : 0);
+      h.fake.boardRevision = 1;
+      await h.until(() => h.state.device.totalVoltage === 14.96, 'Legacy A voltage did not refresh');
+      if (stateDir && !ignoreAddress) writeFileSync(resolve(stateDir, `YanYangA-${slave}.json`), JSON.stringify(h.state, null, 2));
+    });
 }
 
 const selected = tests.filter((t) => t.name.toLowerCase().includes(filter));

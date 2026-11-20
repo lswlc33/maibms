@@ -155,7 +155,7 @@
   function flowStrip(st) {
     if (!st.hasData) return null;
     var d = st.device;
-    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var charging = d.battState === '充电' || (d.battState !== '放电' && d.current < 0);
     var idle = !d.power;
     var strip = h('div', 'flow' + (idle ? ' idle' : charging ? ' rev' : ' fwd'));
     strip.appendChild(h('span', 'lbl', '电池组'));
@@ -482,8 +482,11 @@
     info.appendChild(h('div', 'state',
       !d.hasData ? '等待数据…' : (st.stalled ? '设备失联' : d.battState)));
     info.appendChild(h('div', 'cap', d.hasData
-      ? num(d.remainCapAh, 1) + ' / ' + num(d.totalCapAh, 1) + ' Ah · SOH ' + d.soh + '% · ' + d.cycles + ' 次'
-      : '-- / -- Ah'));
+      ? [window.MaibmsBoards.hasReading(st, 'remaining') ? num(d.remainCapAh, 1) + ' Ah 剩余' : '',
+        window.MaibmsBoards.hasReading(st, 'capacity') ? num(d.totalCapAh, 1) + ' Ah 总容量' : '',
+        st.caps.stateOfHealth && window.MaibmsBoards.hasReading(st, 'soh') ? 'SOH ' + d.soh + '%' : '',
+        window.MaibmsBoards.hasReading(st, 'cycles') ? d.cycles + ' 次' : ''].filter(Boolean).join(' · ')
+      : '等待容量数据'));
     hero.appendChild(info);
     body.appendChild(hero);
 
@@ -1358,6 +1361,7 @@
 
   function renderAllInner() {
     var st = ui.state || {};
+    if ((st.caps || {}).settings === false && (ui.tab === 'params' || ui.tab === 'control')) ui.tab = 'dash';
     ensureShell();
     renderTopbar(st);
 
@@ -1365,7 +1369,10 @@
     if (!content) return;
     var boardMode = window.MaibmsBoards.supports(st);
     var navItems = document.querySelectorAll('mdui-navigation-bar-item');
-    navItems.forEach(function (item) { if (item.getAttribute('value') === 'control') item.style.display = boardMode ? 'none' : ''; });
+    navItems.forEach(function (item) {
+      if (item.getAttribute('value') === 'control') item.style.display = (st.caps || {}).readOnly ? 'none' : '';
+      if (item.getAttribute('value') === 'params') item.style.display = (st.caps || {}).settings === false ? 'none' : '';
+    });
     if (boardMode) {
       if (ui.tab === 'control') ui.tab = 'params';
       var boardKey = window.MaibmsBoards.renderKey(st, ui.tab);

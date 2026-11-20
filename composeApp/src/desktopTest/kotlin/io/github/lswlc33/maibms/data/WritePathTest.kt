@@ -39,7 +39,7 @@ class WritePathTest {
                 val repo = BmsRepository(scope, engine)
                 repo.setRealTransport(MockBmsTransport(engine, scope))
                 repo.start()
-                repo.connect(null)
+                repo.connectTo("ANT-WRITE-TEST", io.github.lswlc33.maibms.transport.DeviceFamily.Ant)
                 delay(300)   // 等第一拍轮询把链路态落到 Connected
                 body(engine, repo)
                 repo.disconnect()

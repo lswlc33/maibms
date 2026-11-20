@@ -104,7 +104,7 @@ class BackgroundPauseTest {
             repo = BmsRepository(scope, engine)
             repo.setRealTransport(transport)
             repo.start()
-            repo.connect(addr)
+            repo.connectTo(addr, DeviceFamily.Ant)
             assertTrue(waitUntil { transport.polls() >= 2 }, "前台应当持续轮询")
 
             // 退到后台（未开后台监控）→ 不再发实时轮询
@@ -145,7 +145,7 @@ class BackgroundPauseTest {
             repo = BmsRepository(scope, engine)
             repo.setRealTransport(transport)
             repo.start()
-            repo.connect(addr)
+            repo.connectTo(addr, DeviceFamily.Ant)
             assertTrue(waitUntil { transport.polls() >= 2 }, "前台应当持续轮询")
 
             AppForeground.setActive(false)

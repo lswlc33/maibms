@@ -23,7 +23,7 @@ class YanYangProtocolTest {
         assertEquals(DeviceFamily.YanYang, p.family)
         assertEquals(DeviceCapabilities.YanYang, p.caps)
         DEFAULT_FRAMES.forEachIndexed { index, frame ->
-            assertFalse(p.snapshotReady)
+            if (index < 3) assertFalse(p.snapshotReady)
             exchange(p, index, index * 2L, frame)
         }
         assertTrue(p.snapshotReady)
@@ -91,7 +91,7 @@ class YanYangProtocolTest {
         assertEquals(emptyList(), detail.alarmPairs)
         assertTrue(detail.identity.isEmpty())
         assertNull(detail.totalCycleAh, "累计电量单位未确认，不伪造 Ah")
-        assertFalse(p.snapshotReady, "完整快照还需参数/身份响应")
+        assertTrue(p.snapshotReady, "实时数据不应等待可选参数/身份响应")
     }
 
     @Test
@@ -200,18 +200,18 @@ class YanYangProtocolTest {
     }
 
     @Test
-    fun timeoutAt1200msClearsFragmentsBeforeSameLengthRetry() {
+    fun timeoutClearsFragmentsBeforeSameLengthRetry() {
         val p = YanYangProtocol()
         assertContentEquals(REQUESTS[0], p.nextRequest(0))
         assertTrue(p.onNotification(PROFILE.copyOfRange(0, 7), 100).isEmpty())
-        assertNull(p.nextRequest(1_199))
-        assertContentEquals(REQUESTS[0], p.nextRequest(1_200))
+        assertNull(p.nextRequest(3_099))
+        assertContentEquals(REQUESTS[0], p.nextRequest(3_100))
         assertTrue(p.error?.contains("超时") == true)
-        assertTrue(p.onNotification(PROFILE.copyOfRange(7, PROFILE.size), 1_201).isEmpty())
-        assertNull(p.nextRequest(1_202))
-        assertEquals(1, p.onNotification(PROFILE, 1_203).size)
+        assertTrue(p.onNotification(PROFILE.copyOfRange(7, PROFILE.size), 3_101).isEmpty())
+        assertNull(p.nextRequest(3_102))
+        assertEquals(1, p.onNotification(PROFILE, 3_103).size)
         assertNull(p.error)
-        assertContentEquals(REQUESTS[1], p.nextRequest(1_204))
+        assertContentEquals(REQUESTS[1], p.nextRequest(3_104))
     }
 
     @Test
@@ -219,10 +219,10 @@ class YanYangProtocolTest {
         val p = YanYangProtocol()
         p.nextRequest(0)
         assertTrue(p.onNotification(PROFILE.copyOfRange(0, 8), 1).isEmpty())
-        assertTrue(p.onNotification(PROFILE.copyOfRange(8, PROFILE.size), 1_200).isEmpty())
+        assertTrue(p.onNotification(PROFILE.copyOfRange(8, PROFILE.size), 3_001).isEmpty())
         assertTrue(p.error?.contains("超时") == true)
-        assertContentEquals(REQUESTS[0], p.nextRequest(1_201))
-        assertEquals(1, p.onNotification(PROFILE, 1_202).size)
+        assertContentEquals(REQUESTS[0], p.nextRequest(3_002))
+        assertEquals(1, p.onNotification(PROFILE, 3_003).size)
         assertNull(p.error)
     }
 
@@ -240,15 +240,15 @@ class YanYangProtocolTest {
     fun completeLateSameBlockIsARecentReadAndPollingContinues() {
         val p = initialized()
         assertContentEquals(REQUESTS[1], p.nextRequest(502))
-        assertContentEquals(REQUESTS[1], p.nextRequest(1_702))
+        assertContentEquals(REQUESTS[1], p.nextRequest(3_502))
         assertTrue(p.error?.contains("超时") == true)
-        assertEquals(49.506, p.onNotification(REAL_SUMMARY, 1_703).single().totalVoltage)
+        assertEquals(49.506, p.onNotification(REAL_SUMMARY, 3_503).single().totalVoltage)
         assertNull(p.error)
-        assertContentEquals(REQUESTS[2], p.nextRequest(1_704))
+        assertContentEquals(REQUESTS[2], p.nextRequest(3_504))
         // 同块重试的第二份完整回复仍按长度解析，不得解除状态块 pending。
-        assertEquals(1, p.onNotification(REAL_SUMMARY, 1_705).size)
-        assertNull(p.nextRequest(1_706))
-        assertEquals(1, p.onNotification(REAL_STATUS, 1_707).size)
+        assertEquals(1, p.onNotification(REAL_SUMMARY, 3_505).size)
+        assertNull(p.nextRequest(3_506))
+        assertEquals(1, p.onNotification(REAL_STATUS, 3_507).size)
     }
 
     @Test
@@ -256,14 +256,14 @@ class YanYangProtocolTest {
         val p = afterSummary()
         exchange(p, 2, 4, REAL_STATUS)
         assertContentEquals(REQUESTS[3], p.nextRequest(6))
-        assertContentEquals(REQUESTS[3], p.nextRequest(1_206))
-        assertContentEquals(REQUESTS[4], p.nextRequest(2_406))
-        assertEquals(1, p.onNotification(IDENTITY, 2_407).size)
-        assertFalse(p.snapshotReady)
-        exchange(p, 1, 2_408, REAL_SUMMARY)
-        exchange(p, 2, 2_410, REAL_STATUS)
+        assertContentEquals(REQUESTS[3], p.nextRequest(3_006))
+        assertContentEquals(REQUESTS[4], p.nextRequest(6_006))
+        assertEquals(1, p.onNotification(IDENTITY, 6_007).size)
+        assertTrue(p.snapshotReady)
+        exchange(p, 1, 6_008, REAL_SUMMARY)
+        exchange(p, 2, 6_010, REAL_STATUS)
         p.refreshSettings()
-        exchange(p, 3, 2_412, SETTINGS)
+        exchange(p, 3, 6_012, SETTINGS)
         assertTrue(p.snapshotReady)
         assertNull(p.error)
     }
@@ -285,13 +285,13 @@ class YanYangProtocolTest {
     }
 
     @Test
-    fun badMagicAtEitherSharedAddressAndUnsupportedThermalVariantsHaltUntilReset() {
+    fun legacyProbeUsesOwnLayoutAndBadBSignatureStillHalts() {
         val p = YanYangProtocol()
         p.nextRequest(0)
-        assertTrue(p.onNotification(changed(PROFILE) { it[3] = 0 }, 1).isEmpty())
-        assertTrue(p.error?.contains("魔数") == true)
-        assertNull(p.nextRequest(2_000))
-        assertTrue(p.onNotification(PROFILE, 2_001).isEmpty())
+        assertTrue(p.onNotification(changed(PROFILE) { it[3] = 0 }, 1).single().identity.isEmpty())
+        assertNull(p.protocolLayoutHint)
+        assertEquals(47, p.nextRequest(2)!![5].toInt() and 255)
+        assertTrue(p.onNotification(REAL_SUMMARY, 3).isEmpty())
         p.reset()
         exchange(p, 0, 3_000, PROFILE)
         assertContentEquals(REQUESTS[1], p.nextRequest(3_002))
@@ -302,10 +302,12 @@ class YanYangProtocolTest {
             val variant = afterProfile()
             variant.nextRequest(2)
             val frame = changed(REAL_SUMMARY) { hex(prefix).copyInto(it, 5) }
-            assertTrue(variant.onNotification(frame, 3).isEmpty())
-            assertTrue(variant.error?.contains("HB/O2") == true)
-            assertNull(variant.nextRequest(2_000))
-            assertFalse(variant.snapshotReady)
+            assertEquals(49.506, variant.onNotification(frame, 3).single().totalVoltage)
+            assertNull(variant.error)
+            val status = exchange(variant, 2, 4, REAL_STATUS)
+            assertTrue(status.temps!!.isEmpty(), "未确认温度布局不影响其他数据")
+            assertEquals(72, status.soc)
+            assertTrue(variant.snapshotReady)
         }
     }
 
@@ -447,6 +449,30 @@ class YanYangProtocolTest {
             assertContentEquals(frame, withCrc(frame.copyOf()))
         }
         assertEquals(listOf(13, 163, 165, 167, 45), DEFAULT_FRAMES.map { it.size })
+    }
+
+    @Test
+    fun missingOrUnsupportedProfileFallsBackToSignedSummaryAndSlowFragmentsFinish() {
+        for (exception in listOf(false, true)) {
+            val p = YanYangProtocol()
+            assertContentEquals(REQUESTS[0], p.nextRequest(0))
+            if (exception) {
+                p.onNotification(hex("01 83 02 c0 f1"), 1)
+                assertContentEquals(REQUESTS[0], p.nextRequest(2))
+                p.onNotification(hex("01 83 02 c0 f1"), 3)
+            } else {
+                assertContentEquals(REQUESTS[0], p.nextRequest(3_000))
+            }
+            assertContentEquals(REQUESTS[1], p.nextRequest(6_000))
+            val readings = REAL_SUMMARY.toList().chunked(20).flatMapIndexed { i, part ->
+                p.onNotification(part.toByteArray(), 6_100 + i * 450L)
+            }
+            assertEquals(49.506, readings.single().totalVoltage)
+            assertNull(p.error)
+            assertContentEquals(REQUESTS[2], p.nextRequest(10_200))
+            assertEquals(72, p.onNotification(REAL_STATUS, 10_210).single().soc)
+            assertTrue(p.snapshotReady)
+        }
     }
 
     private fun exchange(p: YanYangProtocol, request: Int, now: Long, response: ByteArray): BoardReading {

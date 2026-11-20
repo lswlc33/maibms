@@ -29,12 +29,13 @@ enum class DeviceFamily(
     Ant("蚂蚁保护板", DeviceKind.Board, listOf("ANT")),
     YanYang("彦阳保护板", DeviceKind.Board, listOf("YYBMS", "YY-", "彦阳")),
     Jbd("嘉佰达保护板", DeviceKind.Board, listOf("JBD", "SP", "DB", "嘉佰达")),
+    Jikong("极空保护板", DeviceKind.Board, listOf("JK-", "JK_", "极空")),
     LanBao("蓝宝电量计", DeviceKind.Meter, listOf("BLUEBABE", "BLUE", "LB")),
     LuXing("陆行电量计", DeviceKind.Meter, listOf("EM2APP")),
     Unknown("未知设备", DeviceKind.Board, emptyList());
 
     val isMeter: Boolean get() = kind == DeviceKind.Meter
-    val isReadOnlyBoard: Boolean get() = this == YanYang || this == Jbd
+    val isReadOnlyBoard: Boolean get() = this == YanYang || this == Jbd || this == Jikong
     val usesAntProtocol: Boolean get() = this == Ant || this == Unknown
 
     /** 广播名可以被改，扫描服务与手动板型选择共同兜底。 */

@@ -91,6 +91,7 @@ class StartupFastPathTest {
 
     /** 复位全局状态：不带记忆设备、不带密码、不记快照（本类只关心时序） */
     private fun prepare() {
+        AppStore.deleteParamsCache(testAddress)
         AppStore.savedAddress = null
         AppStore.savedDeviceName = null
         AppStore.autoConnectAddress = null
@@ -145,7 +146,7 @@ class StartupFastPathTest {
                 val repo = BmsRepository(scope, engine)
                 repo.setRealTransport(transport)
                 repo.start()
-                repo.connect(null)
+                repo.connectTo(testAddress, DeviceFamily.Ant)
 
                 val first = awaitWrite(transport, Proto.FC_REALTIME)
                 assertTrue(first != null, "连接后应发出实时读帧（0x01）")
@@ -205,7 +206,7 @@ class StartupFastPathTest {
                 val repo = BmsRepository(scope, engine)
                 repo.setRealTransport(transport)
                 repo.start()
-                repo.connect(null)
+                repo.connectTo(testAddress, DeviceFamily.Ant)
 
                 assertTrue(awaitWrite(transport, Proto.FC_REALTIME) != null, "应发出实时读帧")
                 val count = awaitParamRound(transport)

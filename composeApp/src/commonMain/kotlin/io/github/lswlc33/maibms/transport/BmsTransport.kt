@@ -64,12 +64,18 @@ enum class BleChannel(
         "meter", "电量计通道", "ffe2发-ffe1收", "FFE2", "FFE1",
     ),
     YanYang("yanyang", "彦阳通道", "ffe2发-ffe1收", "FFE2", "FFE1"),
+    YanYangFfe1("yanyang-ffe1", "彦阳串口模块", "ffe1收发", "FFE1", "FFE1"),
     YanYangFee9(
         "yanyang-fee9", "彦阳备用模块", "fee9模块",
         "D44BC439-ABFD-45A2-B575-925416129600", "FEE1", serviceUuid = "FEE9",
     ),
+    YanYangFee9Uart(
+        "yanyang-fee9-uart", "彦阳 UART 模块", "8ec9发-收",
+        "8EC90001-F315-4F60-9FB8-838830DAEA50", "8EC90002-F315-4F60-9FB8-838830DAEA50", serviceUuid = "FEE9",
+    ),
     Jbd("jbd", "嘉佰达通道", "ff02发-ff01收", "FF02", "FF01", serviceUuid = "FF00"),
-    JbdFfe0("jbd-ffe0", "嘉佰达串口模块", "ffe1收发", "FFE1", "FFE1");
+    JbdFfe0("jbd-ffe0", "嘉佰达串口模块", "ffe1收发", "FFE1", "FFE1"),
+    Jikong("jikong", "极空通道", "ffe1收发", "FFE1", "FFE1");
 
     companion object {
         fun byId(id: String?): BleChannel? = values().firstOrNull { it.id == id }
@@ -104,6 +110,15 @@ interface BmsTransport {
      * 默认实现忽略——只有真实 BLE 后端需要它。
      */
     fun setTargetFamily(family: DeviceFamily) {}
+
+    /** 嘉佰达旧模块的本次连接登录凭据；只存本机，不修改设备密码。 */
+    fun configureBoardAccess(password: String?, macAddress: String?) {}
+
+    /** 仅当前已确认连接的 Modbus 地址；候选切换/断开后清除。 */
+    val boardAddress: Int? get() = null
+
+    /** 当前探测已确认的协议布局，仅向同设备新轮询器传递。 */
+    val boardLayout: String? get() = null
 
     /** 当前连接设备的家族（未连接/未知 = Unknown）；用于界面按电量计/保护板分支 */
     val currentFamily: StateFlow<DeviceFamily> get() = DEFAULT_FAMILY

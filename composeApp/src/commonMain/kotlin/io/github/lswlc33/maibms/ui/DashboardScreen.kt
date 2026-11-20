@@ -219,7 +219,7 @@ fun DashboardScreen(
                     maxCell = status.maxCell, minCell = status.minCell,
                 )
                 // 趋势 + 控制
-                SectionCard {
+                if (caps.antDetails || status.trendCurrent.size >= 2 || status.trendVolt.size >= 2) SectionCard {
                     SectionHeader("趋势 · 近 1 分钟", tail = "— 电流 ─ 电压")
                     if (status.trendCurrent.size < 2 && status.trendVolt.size < 2) {
                         Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
@@ -343,7 +343,15 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
     val canScan = io.github.lswlc33.maibms.data.Bms.repository.canScan
     var selected by remember { mutableStateOf<String?>(null) }
     var selectedFamily by remember { mutableStateOf<io.github.lswlc33.maibms.transport.DeviceFamily?>(null) }
+    var needsFamily by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    fun connectSelected(address: String, known: io.github.lswlc33.maibms.transport.DeviceFamily?) {
+        val family = selectedFamily ?: known?.takeIf { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }
+        if (family == null) {
+            selected = address
+            needsFamily = true
+        } else onConnect(address, family)
+    }
     LaunchedEffect(selectedFamily) {
         selected = null
         io.github.lswlc33.maibms.data.Bms.repository.startScan(selectedFamily)
@@ -356,12 +364,18 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
         ) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             Text("附近的设备", fontSize = 16.5.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                listOf(null to "自动", io.github.lswlc33.maibms.transport.DeviceFamily.YanYang to "彦阳",
-                    io.github.lswlc33.maibms.transport.DeviceFamily.Jbd to "嘉佰达",
-                    io.github.lswlc33.maibms.transport.DeviceFamily.Ant to "蚂蚁").forEach { (family, title) ->
-                    TextButton(onClick = { selectedFamily = family }, modifier = Modifier.weight(1f)) {
-                        Text(title, fontSize = 11.sp, fontWeight = if (selectedFamily == family) FontWeight.ExtraBold else FontWeight.Normal)
+            val families = listOf(null) + io.github.lswlc33.maibms.transport.DeviceFamily.values()
+                .filter { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }
+            Column {
+                families.chunked(4).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        row.forEach { family ->
+                            TextButton(onClick = { selectedFamily = family }, modifier = Modifier.weight(1f)) {
+                                val title = family?.label?.removeSuffix("保护板")?.removeSuffix("电量计") ?: "自动"
+                                Text(title, fontSize = 11.sp, fontWeight = if (selectedFamily == family) FontWeight.ExtraBold else FontWeight.Normal)
+                            }
+                        }
+                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
@@ -397,7 +411,8 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
-                            .clickable { onConnect(p.address, null) }
+                            .clickable { connectSelected(p.address, p.family.takeIf { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }
+                                ?: io.github.lswlc33.maibms.transport.DeviceFamily.matchName(p.name)) }
                             .padding(vertical = 6.dp)
                     ) {
                         Column(Modifier.weight(1f)) {
@@ -450,7 +465,8 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
                     Spacer(Modifier.width(8.dp))
                     // 高度给到 48dp：iOS 上 40dp 的默认按钮在弹窗底部不容易点中
                     Button(
-                        onClick = { selected?.let { onConnect(it, selectedFamily) } },
+                        onClick = { selected?.let { address -> connectSelected(address,
+                            results.firstOrNull { it.address == address }?.family) } },
                         enabled = selected != null,
                         modifier = Modifier.heightIn(min = 48.dp),
                     ) {
@@ -467,6 +483,20 @@ fun ScanDialog(onDismiss: () -> Unit, onConnect: (String, io.github.lswlc33.maib
         }
         }
     }
+    if (needsFamily) AlertDialog(
+        onDismissRequest = { needsFamily = false },
+        title = { Text("选择设备品牌") },
+        text = {
+            Column {
+                Text("这台设备的广播名无法确认品牌，请选择对应协议。", fontSize = 12.sp)
+                io.github.lswlc33.maibms.transport.DeviceFamily.values()
+                    .filter { it != io.github.lswlc33.maibms.transport.DeviceFamily.Unknown }.forEach { family ->
+                        TextButton(onClick = { needsFamily = false; selected?.let { onConnect(it, family) } }) { Text(family.label) }
+                    }
+            }
+        },
+        confirmButton = { TextButton(onClick = { needsFamily = false }) { Text("取消") } },
+    )
 }
 
 /** 排查建议仅依据官方 BitDict/MosStateDict 名称分类，不推断硬件故障、不建议绕过保护。 */

@@ -1,4 +1,4 @@
-/* 彦阳/JBD 共用只读页面：三个主题使用同一份字段显隐规则。 */
+/* 彦阳/JBD/极空共用只读页面：三个主题使用同一份字段显隐规则。 */
 (function () {
   'use strict';
   var scanFamily = null;
@@ -7,7 +7,7 @@
     if (text != null) node.textContent = String(text);
     return node;
   }
-  function supported(st) { return st.family === 'YanYang' || st.family === 'Jbd'; }
+  function supported(st) { return ['YanYang', 'Jbd', 'Jikong'].indexOf(st.family) >= 0; }
   function has(st, field, capability) {
     return !!st.hasData && (!capability || (st.caps || {})[capability] !== false) &&
       (st.availableFields == null || st.availableFields.indexOf(field) >= 0);
@@ -49,7 +49,7 @@
     overlay('选择保护板种类', function (form, close) {
       note(form, '广播名被改过时请手动选择。板型会跟随设备记住，后续重连沿用。');
       var select = el('select'); select.setAttribute('aria-label', '保护板种类');
-      [['', '自动识别'], ['YanYang', '彦阳 YYBMS'], ['Jbd', '嘉佰达 JBD'], ['Ant', '蚂蚁 ANT'],
+      [['', '自动识别'], ['YanYang', '彦阳 YYBMS'], ['Jbd', '嘉佰达 JBD'], ['Jikong', '极空 JK'], ['Ant', '蚂蚁 ANT'],
         ['LanBao', '蓝宝电量计'], ['LuXing', '陆行电量计']].forEach(function (pair) {
         var option = el('option', pair[1]); option.value = pair[0]; select.appendChild(option);
       });
@@ -70,11 +70,11 @@
       pw.setAttribute('aria-label', '已有蓝牙密码'); form.appendChild(pw);
       var mac = el('input'); mac.value = saved.macAddress || ''; mac.placeholder = 'AA:BB:CC:DD:EE:FF';
       mac.setAttribute('aria-label', '模块真实 MAC 地址'); form.appendChild(mac);
-      note(form, '网页设备标识不是 MAC，请从模块标签或原厂 App 获取真实模块地址。凭据仅保存在此浏览器。');
+      note(form, 'MAC 可先留空；旧挑战登录模块才需要真实地址。凭据仅保存在此浏览器。');
       var error = el('p'); form.appendChild(error);
       form.appendChild(button('登录并读取', function () {
         if (pw.value.length === 6 && M.setBoardAccess(pw.value, mac.value)) close();
-        else error.textContent = '请输入 6 位 ASCII 密码和完整 MAC 地址';
+        else error.textContent = '请输入 6 位 ASCII 密码；MAC 可留空，填写时需完整地址';
       }));
       form.appendChild(button('清除本机凭据', function () { M.setBoardAccess('', ''); close(); }));
       form.appendChild(button('关闭', close));
@@ -88,6 +88,7 @@
     else if (!st.connected) note(header, st.hasData ? '已断开 · 显示最后收到的读数' : '未连接');
     else if (!st.hasData) note(header, '蓝牙已连接 · 等待设备返回仪表数据…');
     if (st.readError) note(header, st.readError);
+    if (st.hint && !st.connected) note(header, st.hint);
     if (st.stalled) note(header, '实时数据已中断，请检查距离、设备休眠或其他 App 的连接占用。');
     if (st.connected) header.appendChild(button('断开连接', function () { M.disconnect(); }));
     else if (!st.previewActive) header.appendChild(button('选择设备连接', chooseConnection));
@@ -117,6 +118,14 @@
       row(info, '蓝牙名称', st.deviceName); row(info, '应用版本', (st.version || {}).name);
       note(info, '新板仅支持读取；没有参数修改、MOS 控制、校准或密码修改入口。');
       if (st.family === 'Jbd' && !st.previewActive) info.appendChild(button('蓝牙访问', access));
+      if (st.channels && st.channels.length > 1 && !st.previewActive) {
+        var channels = card('通信通道');
+        st.channels.forEach(function (ch) {
+          channels.appendChild(button(ch.label + (st.channel === ch.id ? ' · 当前' : ''), function () { M.switchChannel(ch.id); }));
+        });
+        note(channels, '切换后重新连接并等待有效数据；不会修改保护板设置。');
+        wrap.appendChild(channels);
+      }
       wrap.appendChild(info); return wrap;
     }
     var live = card('仪表数据');
@@ -126,6 +135,9 @@
       .forEach(function (item) { if (has(st,item[0])) row(live,item[1],number(item[2],item[4])+' '+item[3]); });
     if (caps.stateOfHealth && has(st,'soh')) row(live,'健康度',d.soh+'%');
     if (has(st,'state')) row(live,'电池状态',d.battState);
+    if (st.relay && st.relay.active) {
+      row(live, '中继保护板', st.relay.brand); row(live, '保护板名称', st.relay.name); row(live, '保护板地址', st.relay.mac);
+    }
     if (caps.runtime && has(st,'runtime')) row(live,'运行时间',d.runtime);
     if (caps.mos && has(st,'mos')) { row(live,'充电 MOS',d.chMos); row(live,'放电 MOS',d.disMos); }
     if (caps.balance && has(st,'balance')) row(live,'均衡',d.balance);
@@ -144,6 +156,12 @@
       if (text(d.maxCell)) row(cells,'最高 / 最低',d.maxCell+' / '+d.minCell+' V');
       if (text(d.deltaCell)) row(cells,'压差',d.deltaCell+' V');
       wrap.appendChild(cells);
+    } else if (text(d.maxCell) || text(d.minCell) || text(d.deltaCell)) {
+      var summary = card('单体电压汇总');
+      if (text(d.maxCell)) row(summary, '最高', d.maxCell + ' V');
+      if (text(d.minCell)) row(summary, '最低', d.minCell + ' V');
+      if (text(d.deltaCell)) row(summary, '压差', d.deltaCell + ' V');
+      wrap.appendChild(summary);
     }
     if ((st.temps || []).length) {
       var temps = card('温度'); st.temps.forEach(function (t) { row(temps,t.name,number(t.value,1)+' ℃'); }); wrap.appendChild(temps);
@@ -158,7 +176,7 @@
   function renderKey(st, tab) {
     if (tab !== 'params' && tab !== 'settings') return null;
     return JSON.stringify([st.family, tab, st.connected, st.previewActive, st.stalled,
-      st.readError, st.boardSettings, (st.params || {}).identity]);
+      st.hint, st.readError, st.channel, st.channels, st.boardSettings, (st.params || {}).identity]);
   }
   window.MaibmsBoards = { supports: supported, render: render, connect: chooseConnection,
     hasReading: has, renderKey: renderKey };

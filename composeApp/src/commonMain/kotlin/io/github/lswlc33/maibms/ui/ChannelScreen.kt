@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.lswlc33.maibms.transport.BleChannel
 import io.github.lswlc33.maibms.transport.LinkState
+import io.github.lswlc33.maibms.transport.boardBleChannels
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -43,6 +44,9 @@ fun ChannelScreen(onBack: () -> Unit) {
     val available by repo.availableChannels.collectAsState()
     val link by repo.linkState.collectAsState()
     val hint by repo.connectHint.collectAsState()
+    val family by repo.currentFamily.collectAsState()
+    val channels = if (family.isReadOnlyBoard) boardBleChannels(family)
+        else listOf(BleChannel.Default, BleChannel.BackupA, BleChannel.BackupB)
     val scope = rememberCoroutineScope()
     val connected = link == LinkState.Connected
     var pending by remember { mutableStateOf<BleChannel?>(null) }
@@ -78,7 +82,7 @@ fun ChannelScreen(onBack: () -> Unit) {
         if (h != null) {
             InfoBanner(h, kind = if (h.contains("无应答") || h.contains("失败") || h.contains("试过")) "warn" else "info")
         }
-        BleChannel.values().forEach { ch ->
+        channels.forEach { ch ->
             ChannelCard(
                 ch = ch,
                 active = active,
@@ -95,7 +99,8 @@ fun ChannelScreen(onBack: () -> Unit) {
         SectionCard {
             SectionHeader("说明")
             Text(
-                "备用通道的代价：备用 A 占用蓝牙屏的接口、备用 B 占用充电器的接口，" +
+                if (family.isReadOnlyBoard) "按设备实际提供的蓝牙模块选择通道；切换只影响本次通信，不会修改保护板参数。收到校验正确的数据后才确认连接。"
+                else "备用通道的代价：备用 A 占用蓝牙屏的接口、备用 B 占用充电器的接口，" +
                     "使用期间对应的外设无法与保护板通信；两条备用通道都不支持固件升级。" +
                     "默认通道恢复后建议切回默认通道。",
                 fontSize = 10.sp,
@@ -121,12 +126,12 @@ private fun ChannelCard(
     val warn = warnPair().first
     val note = when {
         !known && ch == BleChannel.Default -> "标准数据通信通道"
-        !known -> "连接保护板后自动检测（现在还不知道这块板有没有备用通道）"
+        !known -> "连接设备后自动检测可用的写入和通知特征"
         !supported -> "当前设备不支持该通道（未发现对应的写/通知特征）"
         ch == BleChannel.Default -> "标准数据通信通道"
         else -> ch.warn
     }
-    val noteIsWarn = known && supported && ch != BleChannel.Default
+    val noteIsWarn = known && supported && ch.warn != null
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(

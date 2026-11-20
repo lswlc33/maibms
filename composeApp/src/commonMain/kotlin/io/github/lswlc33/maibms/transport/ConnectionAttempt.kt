@@ -70,7 +70,7 @@ internal class ConnectionAttempts {
     fun acceptsCandidate(attempt: ConnectionAttempt, candidate: Any): Boolean =
         owns(attempt) && attempt.candidate === candidate
 
-    /** Read-only boards have no transport probe; only a confirmed subscription can publish ready. */
+    /** 新板先确认通知；实时协议探测通过后，传输才调用这里发布就绪。 */
     fun publishSubscribedReady(attempt: ConnectionAttempt, candidate: Any, publish: () -> Unit): Boolean {
         if (!subscriptionConfirmed(attempt, candidate)) return false
         return publishReady(attempt, publish)

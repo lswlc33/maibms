@@ -24,6 +24,9 @@ class DeviceFamilyTest {
         assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("JBD-SP04S034"))
         assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("SP15S001-P13S-30A"))
         assertEquals(DeviceFamily.Jbd, DeviceFamily.matchName("xiaoxiang-123"))
+        assertEquals(DeviceFamily.Jikong, DeviceFamily.matchName("JK-BMS-A"))
+        assertEquals(DeviceFamily.Jikong, DeviceFamily.matchName("JK_B2A8S20P"))
+        assertEquals(DeviceFamily.Jikong, DeviceFamily.matchName("  jk-bms-a  "))
         assertNull(DeviceFamily.matchName("DL"))
         assertNull(DeviceFamily.matchName("dl-abcd"))
     }

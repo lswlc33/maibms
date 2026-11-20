@@ -7,9 +7,9 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * 彦阳 YYBMS B，只发 slave 1 / FC03 的五种白名单读取。
+ * 彦阳 YYBMS，只发 FC03 的地址发现、代际探测和已确认读取块。
  *
- * 偏移均相对响应 payload，小端；不能套用旧 A/C 代寄存器图。
+ * B 代偏移相对 payload、小端；旧 A 兼容布局单独解析，C 代不能仅凭非 B 签名确认。
  * 核对来源（固定版本，下载代码未执行）：
  * - xiaodl-top/NiuHelper@6ebda6869211ac94a45d4ca837a294669a8319b0：
  *   docs/yybms-bms-ble-protocol.md §7、BmsDecoder.kt、BmsDecoderTest.kt，含 NIU-M 实录。
@@ -20,21 +20,26 @@ import kotlin.math.roundToInt
  *   i32 电流 /100、放电正充电负；与 M 型实录一致。
  *
  * N 型合成夹具的电流符号和运行状态相反，因此有明确充放状态时统一按状态定向。
- * HB/O2 的热敏换算未得到可靠样本验证，按来源拒绝这些 SN 子型，不猜测温度。
+ * HB/O2 的热敏换算缺少可靠样本，仅隐藏这些 SN 子型的温度，不影响其他 B 代读数。
  * 调用者应串行调用；换连接时必须 reset，连接代际由仓库/传输层隔离。
  */
 class YanYangProtocol : ReadOnlyBoardProtocol {
     override val family = DeviceFamily.YanYang
-    override val caps = DeviceCapabilities.YanYang
+    override val caps: DeviceCapabilities
+        get() = if (layout == Layout.LegacyA) DeviceCapabilities.YanYang.copy(
+            protectAlarm = false, mos = false, balance = false, extTimes = false,
+            runtime = false, cycleCount = false, capacity = false, stateOfHealth = false,
+        ) else DeviceCapabilities.YanYang
 
     private enum class Block(val register: Int, val count: Int) {
-        Profile(63, 4), Summary(1, 79), Status(80, 80), Settings(160, 81), Identity(240, 20);
+        Profile(63, 4), Summary(1, 79), Status(80, 80), Settings(160, 81), Identity(240, 20),
+        Address(0, 1), LegacyMain(1, 47), LegacyExtra(48, 42), LegacyState(90, 22);
 
         val payloadSize: Int get() = count * 2
 
-        fun request(): ByteArray {
+        fun request(slave: Int): ByteArray {
             val frame = byteArrayOf(
-                1, 3, (register ushr 8).toByte(), register.toByte(),
+                slave.toByte(), 3, (register ushr 8).toByte(), register.toByte(),
                 (count ushr 8).toByte(), count.toByte(), 0, 0,
             )
             val crc = Crc16.modbus(frame, 0, 6)
@@ -50,6 +55,19 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
     private var retryBlock: Block? = null
     private val requested = mutableSetOf<Block>()
     private var profileReceived = false
+    private enum class Layout { Unknown, LegacyA, B }
+    private var layout = Layout.Unknown
+    private var slaveAddress = 1
+    private var addressRequested = false
+    private var addressPending = false
+    private var legacyExtraRequested = false
+    private var legacyStateRequested = false
+    private var legacyPollExtra = false
+    private var legacyPollState = false
+    private var legacyCells: List<Double?> = emptyList()
+    private var profileAttempts = 0
+    private var thermalSupported = true
+    private var lastFragmentAt = 0L
     private var summaryReceived = false
     private var statusReceived = false
     private var settingsReceived = false
@@ -75,22 +93,52 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
     private val settingBlocks = mutableMapOf<Block, List<BoardSetting>>()
 
     override val snapshotReady: Boolean
-        get() = !halted && profileReceived && summaryReceived && statusReceived && settingsReceived && identityReceived
+        get() = !halted && profileReceived && summaryReceived &&
+            (statusReceived || (layout == Layout.LegacyA && cellCount <= 18))
 
     override val error: String? get() = lastError
+    override val modbusAddress: Int get() = slaveAddress
+    override val protocolLayoutHint: String? get() = layout.takeIf { summaryReceived }?.name
+
+    override fun configureLayout(layout: String) {
+        val detected = Layout.values().firstOrNull { it != Layout.Unknown && it.name == layout } ?: return
+        if (this.layout != Layout.Unknown || pending != null) return
+        this.layout = detected
+        profileReceived = true
+        profileAttempts = 2
+        if (detected == Layout.LegacyA) pollStatusNext = false
+    }
+
+    override fun configureAddress(address: Int) {
+        require(address in 1..247)
+        if (pending != null || requested.isNotEmpty()) return
+        slaveAddress = address
+    }
 
     override fun nextRequest(nowMs: Long): ByteArray? {
         if (halted) return null
         expire(nowMs)
         if (pending != null) return null
         val retry = retryBlock
-        val initializing = !profileReceived || !summaryReceived || !statusReceived || !settingsRequested || !identityRequested
+        val initializing = !profileReceived || !summaryReceived ||
+            (if (layout == Layout.LegacyA) !legacyExtraRequested || !legacyStateRequested
+             else !statusReceived || !settingsRequested || !identityRequested)
         // 仓库每 80ms 调用一次；初始化/重试/手动刷新可紧接应答，稳定整轮至少 500ms。
         if (retry == null && !initializing && !settingsRefresh && !pollStatusNext &&
-            nextPollAtMs?.let { nowMs < it } == true) return null
+            !legacyPollExtra && !legacyPollState && nextPollAtMs?.let { nowMs < it } == true) return null
         retryBlock = null
         val block = retry ?: when {
-            !profileReceived -> Block.Profile
+            addressPending -> Block.Address
+            layout == Layout.Unknown && profileAttempts < 2 -> Block.Profile
+            layout == Layout.LegacyA -> when {
+                !summaryReceived -> Block.LegacyMain
+                !legacyExtraRequested -> Block.LegacyExtra
+                !legacyStateRequested -> Block.LegacyState
+                settingsRefresh -> Block.LegacyMain
+                legacyPollExtra -> Block.LegacyExtra
+                legacyPollState -> Block.LegacyState
+                else -> Block.LegacyMain
+            }
             !summaryReceived -> Block.Summary
             !statusReceived -> Block.Status
             !settingsRequested -> Block.Settings
@@ -100,6 +148,7 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
             else -> Block.Summary
         }
         when (block) {
+            Block.Profile -> profileAttempts++
             Block.Settings -> { settingsRequested = true; settingsRefresh = false }
             Block.Identity -> identityRequested = true
             Block.Summary -> {
@@ -107,13 +156,25 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
                 nextPollAtMs = nowMs + POLL_CYCLE_INTERVAL_MS
             }
             Block.Status -> pollStatusNext = false
-            Block.Profile -> Unit
+            Block.Address -> { addressPending = false; addressRequested = true }
+            Block.LegacyMain -> {
+                settingsRefresh = false
+                legacyPollExtra = true
+                legacyPollState = false
+                nextPollAtMs = nowMs + POLL_CYCLE_INTERVAL_MS
+            }
+            Block.LegacyExtra -> {
+                legacyExtraRequested = true
+                legacyPollExtra = false
+                legacyPollState = true
+            }
+            Block.LegacyState -> { legacyStateRequested = true; legacyPollState = false }
         }
         // 只清未完成碎片，不让上一请求的截断 payload 接到本次响应前面。
         buffered = 0
         requested.add(block)
         pending = Pending(block, nowMs, retry != null)
-        return block.request()
+        return block.request(if (block == Block.Address) 0 else slaveAddress)
     }
 
     override fun refreshSettings() {
@@ -125,6 +186,18 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
         retryBlock = null
         requested.clear()
         profileReceived = false
+        layout = Layout.Unknown
+        slaveAddress = 1
+        addressRequested = false
+        addressPending = false
+        legacyExtraRequested = false
+        legacyStateRequested = false
+        legacyPollExtra = false
+        legacyPollState = false
+        legacyCells = emptyList()
+        profileAttempts = 0
+        thermalSupported = true
+        lastFragmentAt = 0
         summaryReceived = false
         statusReceived = false
         settingsReceived = false
@@ -149,17 +222,33 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
 
     private fun expire(nowMs: Long) {
         val active = pending ?: return
-        if (nowMs - active.sentAtMs < RESPONSE_TIMEOUT_MS) return
+        if (nowMs - active.sentAtMs < RESPONSE_TIMEOUT_MS ||
+            (buffered > 0 && nowMs - lastFragmentAt < RESPONSE_TIMEOUT_MS && nowMs - active.sentAtMs < 10_000)) return
         pending = null
         buffered = 0
-        lastError = "彦阳读取寄存器 ${active.block.register} 超时（1.2 秒）"
-        // 可选块最多立即重试一次，丢包不应永远卡住实时轮询；缺少必需块仍会补读。
-        retryBlock = if (active.isRetry) null else active.block
+        lastError = "彦阳读取寄存器 ${active.block.register} 超时"
+        if (advanceLayoutProbe(active.block)) return
+        // 签名小块不可用时改读基础块；B 代仍须校验基础块魔数。
+        retryBlock = if (active.isRetry || (active.block == Block.Profile && profileAttempts >= 2)) null else active.block
+    }
+
+    private fun advanceLayoutProbe(block: Block): Boolean {
+        if (layout != Layout.Unknown || (block != Block.Summary && block != Block.Address)) return false
+        if (block == Block.Summary && !addressRequested) {
+            addressPending = true
+        } else {
+            // 地址发现只尝试一次；拿到从机地址后，即使代际探测无回应也保留该地址。
+            layout = Layout.LegacyA
+            pollStatusNext = false
+        }
+        retryBlock = null
+        return true
     }
 
     override fun onNotification(bytes: ByteArray, nowMs: Long): List<BoardReading> {
         if (halted) return emptyList()
         expire(nowMs)
+        if (bytes.isNotEmpty()) lastFragmentAt = nowMs
         val readings = mutableListOf<BoardReading>()
         for (byte in bytes) {
             if (halted) break
@@ -171,7 +260,8 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
 
     private fun drain(readings: MutableList<BoardReading>) {
         while (buffered > 0 && !halted) {
-            if (u8(buffer, 0) != 1) { discard(1); continue }
+            if (u8(buffer, 0) !in 1..247) { discard(1); continue }
+            if (pending?.block != Block.Address && u8(buffer, 0) != slaveAddress) { discard(1); continue }
             if (buffered < 2) return
             val function = u8(buffer, 1)
             if (function != 3 && function != 0x83) { discard(1); continue }
@@ -200,13 +290,30 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
                 lastError = "彦阳读取寄存器 ${active.block.register} 异常 0x${code.toString(16).padStart(2, '0').uppercase()}"
                 // 异常应答没有寄存器地址，只归属当前 pending；忙碌可以稍后重读。
                 retryBlock = if (code == 6 && !active.isRetry) active.block else null
+                if (retryBlock == null) advanceLayoutProbe(active.block)
                 continue
             }
             val decodedBlock = block!!
             if (decodedBlock !in requested) continue
-            if (decodedBlock != Block.Profile && !profileReceived) continue
-            if (decodedBlock != Block.Profile && decodedBlock != Block.Summary && !summaryReceived) continue
-            val reading = decode(decodedBlock, frame.copyOfRange(3, length - 2)) ?: continue
+            if (decodedBlock == Block.Profile && layout != Layout.Unknown && pending?.block != Block.Profile) continue
+            if (decodedBlock == Block.Address && pending?.block != Block.Address) continue
+            if (decodedBlock in listOf(Block.LegacyMain, Block.LegacyExtra, Block.LegacyState)) {
+                if (layout != Layout.LegacyA) continue
+            } else if (layout == Layout.LegacyA && decodedBlock != Block.Profile && decodedBlock != Block.Address) continue
+            if (decodedBlock !in listOf(Block.Profile, Block.Summary, Block.Address, Block.LegacyMain) && !profileReceived) continue
+            if (decodedBlock !in listOf(Block.Profile, Block.Summary, Block.Address, Block.LegacyMain) && !summaryReceived) continue
+            val reading = if (decodedBlock == Block.Address) {
+                slaveAddress = u8(frame, 0)
+                layout = Layout.Unknown
+                profileAttempts = 0
+                profileReceived = false
+                summaryReceived = false
+                statusReceived = false
+                pollStatusNext = false
+                nextPollAtMs = null
+                requested.clear()
+                BoardReading(identity = mapOf("modbusAddress" to slaveAddress.toString()))
+            } else decode(decodedBlock, frame.copyOfRange(3, length - 2)) ?: continue
             // Modbus 无事务号。完整迟到帧可更新同设备快照，不能解除其他长度的 pending。
             // 同块重试时旧完整帧与新帧不可区分，均视为该块的最近有效只读结果。
             if (pending?.block == decodedBlock) pending = null
@@ -218,7 +325,8 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
 
     private fun nextCompleteFrameOffset(): Int {
         for (offset in 1 until buffered - 4) {
-            if (u8(buffer, offset) != 1) continue
+            if (u8(buffer, offset) !in 1..247 ||
+                (pending?.block != Block.Address && u8(buffer, offset) != slaveAddress)) continue
             val function = u8(buffer, offset + 1)
             val length = when (function) {
                 3 -> BLOCK_BY_PAYLOAD[u8(buffer, offset + 2)]?.let { it.payloadSize + 5 } ?: continue
@@ -247,15 +355,25 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
 
     private fun decode(block: Block, data: ByteArray): BoardReading? = when (block) {
         Block.Profile -> {
-            if (u32(data, 0) != MAGIC) incompatible("彦阳协议不兼容：需要 YYBMS B 魔数 0x4D444253，旧 A/C 代不支持")
-            else {
+            if (u32(data, 0) == MAGIC) {
+                layout = Layout.B
                 profileReceived = true
                 BoardReading(identity = mapOf("protocol" to "YYBMS B"))
+            } else {
+                // 非 B 签名只用于选择下一次读取，不能独自证明是旧 A。
+                layout = Layout.LegacyA
+                pollStatusNext = false
+                BoardReading()
             }
         }
         Block.Summary -> decodeSummary(data)
         Block.Status -> decodeStatus(data)
         Block.Settings -> decodeSettings(data)
+        Block.LegacyMain -> decodeLegacyMain(data)
+        Block.LegacyExtra -> decodeLegacyExtra(data)
+        Block.LegacyState -> BoardReading(settings = updateSettings(Block.LegacyState,
+            listOf(BoardSetting("yy.a.stateRaw", "旧代状态字（原始）", wordSwapped32(data, 40).toString(16).uppercase(), group = "原始状态"))))
+        Block.Address -> null
         Block.Identity -> {
             identityReceived = true
             // 来源的 @20 文本与低压/延时字段重叠，含义未确认，不当作厂商 SN 展示。
@@ -263,12 +381,87 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
         }
     }
 
+    /** 旧 A 布局只解析有独立参考的基础量；不把 A2 的冲突电流/SOC 覆盖回 A1。 */
+    private fun decodeLegacyMain(data: ByteArray): BoardReading? {
+        val count = u8(data, 12)
+        val sensors = u8(data, 13)
+        val packVoltage = wordSwapped32(data, 22) / 1000.0
+        if (count !in 1..25 || sensors !in 0..4 || packVoltage !in 1.0..200.0) {
+            lastError = "彦阳旧代基础块不符合 A 布局，请核对型号；不会套用 B 代或猜测 C 代字段"
+            return null
+        }
+        val mainCells = List(minOf(count, 18)) { be16(data, 44 + it * 2) }
+        val mainVoltage = mainCells.sum() / 1000.0
+        val extraCount = count - mainCells.size
+        // A1 只返回前 18 串；为未到的单体与采样误差留余量。
+        val tolerance = maxOf(1.0, packVoltage * 0.10)
+        if (mainCells.any { it !in 500..6000 } ||
+            packVoltage < mainVoltage + extraCount * 0.5 - tolerance ||
+            packVoltage > mainVoltage + extraCount * 6.0 + tolerance) {
+            lastError = "彦阳旧代基础块的总压与单体电压不一致，未确认 A 布局"
+            return null
+        }
+        val previous = legacyCells
+        legacyCells = List(count) { index -> mainCells.getOrNull(index)?.div(1000.0) ?: previous.getOrNull(index) }
+        cellCount = count
+        voltage = packVoltage
+        rawCurrent = be16(data, 26).toShort().toInt() / 100.0
+        summaryReceived = true
+        profileReceived = true
+        val serial = data.copyOfRange(0, 12).toList().chunked(2)
+            .flatMap { it.reversed() }.joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0').uppercase() }
+        thermalSupported = serial.take(4) !in UNSUPPORTED_THERMAL_PREFIXES
+        val positions = listOf("MOS" to 81, "T1" to 80, "T2" to 83, "探头 4" to 82)
+        val temperatures = if (!thermalSupported) emptyList() else positions.take(sensors).mapNotNull { (label, position) ->
+            val raw = u8(data, position)
+            raw.takeIf { it in 1..127 }?.let { label to (it - 40).toDouble() }
+        }
+        val modelSettings = listOf(
+            BoardSetting("yy.protocol", "协议", "YYBMS 旧 A 兼容布局"),
+            BoardSetting("yy.legacySupport", "兼容验证", "按公开资料适配旧 A 布局，仍待实物验证；未确认 C 代"),
+            BoardSetting("yy.modbusAddress", "Modbus 地址", slaveAddress.toString()),
+            BoardSetting("yy.cellCount", "电芯串数", count.toString()),
+            BoardSetting("yy.a.socRaw", "SOC 原始值", be16(data, 38).toString(), group = "旧代原始字段"),
+            BoardSetting("yy.a.capacityRaw1", "容量字段 1（原始）", be16(data, 40).toString(), group = "旧代原始字段"),
+            BoardSetting("yy.a.capacityRaw2", "容量字段 2（原始）", be16(data, 42).toString(), group = "旧代原始字段"),
+            BoardSetting("yy.a.currentRaw", "电流（来源符号）", rawCurrent.toString(), "A", "旧代原始字段"),
+            BoardSetting("yy.a.currentDirection", "电流方向", "方向未获实录确认，不生成充放电状态或功率", group = "兼容说明"),
+        ) + if (!thermalSupported) listOf(BoardSetting("yy.thermalSupport", "温度读数", "此子型号的温度布局尚未确认，已隐藏")) else emptyList()
+        return BoardReading(
+            totalVoltage = voltage, battState = "方向待确认",
+            cells = legacyCells, temps = temperatures,
+            identity = mapOf("protocol" to "YYBMS 旧 A 兼容布局", "cellCount" to count.toString(),
+                "temperatureCount" to sensors.toString(), "modbusAddress" to slaveAddress.toString()),
+            settings = updateSettings(Block.LegacyMain, modelSettings),
+        )
+    }
+
+    private fun decodeLegacyExtra(data: ByteArray): BoardReading {
+        // A2 第 19..25 串的端序按参考 APK 的 BE16，不能照搬另一份冲突文档的 LE16。
+        legacyCells = List(cellCount) { index ->
+            if (index < 18) legacyCells.getOrNull(index)
+            else be16(data, 40 + (index - 18) * 2).takeIf { it in 500..6000 }?.div(1000.0)
+        }
+        statusReceived = true
+        return BoardReading(
+            cells = legacyCells,
+            settings = updateSettings(Block.LegacyExtra, listOf(
+                BoardSetting("yy.a.alarmRaw", "告警字（原始）", be16(data, 36).toString(16).uppercase(), group = "旧代原始字段"),
+                BoardSetting("yy.a.contactRaw", "接点状态（原始）", u8(data, 38).toString(16).uppercase(), group = "旧代原始字段"),
+            )),
+        )
+    }
+
+    private fun be16(data: ByteArray, offset: Int): Int = (u8(data, offset) shl 8) or u8(data, offset + 1)
+    private fun wordSwapped32(data: ByteArray, offset: Int): Long =
+        be16(data, offset).toLong() or (be16(data, offset + 2).toLong() shl 16)
+
     private fun decodeSummary(data: ByteArray): BoardReading? {
         if (u32(data, 124) != MAGIC) return incompatible("彦阳基础块魔数不匹配，停止按 YYBMS B 解析")
         val serial = data.copyOfRange(2, 10).joinToString("") { (it.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase() }
-        if (serial.take(4) in UNSUPPORTED_THERMAL_PREFIXES) {
-            return incompatible("彦阳 HB/O2 子型号 ${serial.take(4)} 的温度协议尚不支持")
-        }
+        profileReceived = true
+        layout = Layout.B
+        thermalSupported = serial.take(4) !in UNSUPPORTED_THERMAL_PREFIXES
         val cells = u8(data, 148)
         val batterySensors = u8(data, 103)
         val mosSensors = u8(data, 104)
@@ -301,7 +494,7 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
         val names = listOf("协议", "硬件型号", "产品型号", "序列号", "设备名称", "硬件版本", "软件版本", "Boot 版本", "电芯类型", "电芯串数", "温度探头数")
         val settings = identity.entries.mapIndexedNotNull { index, entry ->
             entry.value.takeIf { it.isNotEmpty() }?.let { BoardSetting("yy.${entry.key}", names[index], it) }
-        }
+        } + if (!thermalSupported) listOf(BoardSetting("yy.thermalSupport", "温度读数", "此子型号的温度布局尚未确认，已隐藏")) else emptyList()
         return BoardReading(
             totalVoltage = voltage,
             current = normalizedCurrent(),
@@ -332,9 +525,9 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
                 val raw = u8(data, offset)
                 if (raw != 0 && raw != 166) add(name to (raw - 40).toDouble())
             }
-            if (mosSensorCount > 0) addSensor("MOS", 64)
-            if (balanceSensorCount > 0) addSensor("均衡", 65)
-            repeat(batterySensorCount) { addSensor("T${it + 1}", 66 + it) }
+            if (thermalSupported && mosSensorCount > 0) addSensor("MOS", 64)
+            if (thermalSupported && balanceSensorCount > 0) addSensor("均衡", 65)
+            if (thermalSupported) repeat(batterySensorCount) { addSensor("T${it + 1}", 66 + it) }
         }
         // 来源只提供一张状态/故障字，没有独立的预告警寄存器：保护位保留原位号，
         // 电量低/未知位列告警，充满/放空单列运行状态，不能套用蚂蚁位表。
@@ -396,8 +589,8 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
             setting("chargeOvercurrent", "充电过流保护", (u16(data, 62) / 100.0).toString(), "A", "电流保护")
             setting("dischargeOvercurrent", "放电过流保护", (u16(data, 68) / 100.0).toString(), "A", "电流保护")
             val thermalNames = listOf("充电过温保护", "充电过温恢复", "充电低温保护", "充电低温恢复", "放电过温保护", "放电过温恢复", "放电低温保护", "放电低温恢复")
-            thermalNames.forEachIndexed { index, name ->
-                setting("thermal$index", name, (data[80 + index].toInt() - 40).toString(), "℃", "温度保护")
+            if (thermalSupported) thermalNames.forEachIndexed { index, name ->
+                setting("thermal$index", name, (u8(data, 80 + index) - 40).toString(), "℃", "温度保护")
             }
         }
         settingsReceived = true
@@ -425,7 +618,7 @@ class YanYangProtocol : ReadOnlyBoardProtocol {
         .takeWhile { it != 0.toByte() }.toByteArray().decodeToString().filter { it >= ' ' && it != '\u007F' }.trim()
 
     private companion object {
-        const val RESPONSE_TIMEOUT_MS = 1_200L
+        const val RESPONSE_TIMEOUT_MS = 3_000L
         const val POLL_CYCLE_INTERVAL_MS = 500L
         const val MAGIC = 0x4D444253L
         val BLOCK_BY_PAYLOAD = Block.values().associateBy { it.payloadSize }

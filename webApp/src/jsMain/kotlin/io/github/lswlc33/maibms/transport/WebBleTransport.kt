@@ -66,6 +66,7 @@ class WebBleTransport : BmsTransport {
 
         /** 连接超时（gatt.connect() 本身不超时，靠这里兜） */
         const val CONNECT_TIMEOUT_MS = 15_000L
+        const val BOARD_PROBE_TIMEOUT_MS = 20_000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -97,6 +98,14 @@ class WebBleTransport : BmsTransport {
         targetFamily = family
     }
 
+    private var boardPassword: String? = null
+    private var boardMac: String? = null
+    override fun configureBoardAccess(password: String?, macAddress: String?) {
+        boardPassword = password
+        boardMac = macAddress
+        activeAttempt?.boardProbe?.configureAccess(password, macAddress)
+    }
+
     /** 浏览器授权过的设备句柄：`connect()` 只能用它（换设备必须重新走用户选择） */
     private var authorized: WebBluetoothDevice? = null
 
@@ -121,11 +130,16 @@ class WebBleTransport : BmsTransport {
         var notifyListener: ((dynamic) -> Unit)? = null
         var disconnectListener: ((dynamic) -> Unit)? = null
         var probe: CompletableDeferred<Boolean>? = null
+        var boardProbe: BoardConnectionProbe? = null
+        var boardAddress: Int? = null
+        var boardLayout: String? = null
         var stage = Stage.Connect
         var cleaned = false
     }
 
     private var activeAttempt: LinkAttempt? = null
+    override val boardAddress: Int? get() = activeAttempt?.takeUnless { it.cleaned }?.boardAddress
+    override val boardLayout: String? get() = activeAttempt?.takeUnless { it.cleaned }?.boardLayout
     private val server: WebBluetoothGattServer? get() = activeAttempt?.server
     private val writeChar: WebBluetoothGattCharacteristic? get() = activeAttempt?.write
     private var suspended = false
@@ -415,7 +429,8 @@ class WebBleTransport : BmsTransport {
             } catch (e: Throwable) {
                 if (!wantsConnection(myGen, dev)) break
                 logW("本轮连接失败：${e.message}")
-                _connectHint.value = describeConnectError(e, a.stage)
+                _connectHint.value = if (a.family.isReadOnlyBoard && a.stage == Stage.Probe)
+                    boardConnectionHint(a.family) else describeConnectError(e, a.stage)
                 livedMs = 0L
             } finally {
                 cleanupLink(a)
@@ -462,8 +477,8 @@ class WebBleTransport : BmsTransport {
             val chars = service.getCharacteristics().await<Array<WebBluetoothGattCharacteristic>>()
             checkAttempt(a)
             for (channel in boardBleChannels(a.family).filter { sameBleUuid(it.serviceUuid, serviceId) }) {
-                val write = chars.firstOrNull { sameBleUuid(it.uuid, channel.writeUuid) }
-                val notify = chars.firstOrNull { sameBleUuid(it.uuid, channel.notifyUuid) }
+                val write = chars.firstOrNull { sameBleUuid(it.uuid, channel.writeUuid) && propBool(it, "write", "writeWithoutResponse") }
+                val notify = chars.firstOrNull { sameBleUuid(it.uuid, channel.notifyUuid) && propBool(it, "notify", "indicate") }
                 if (write != null && notify != null && propBool(write, "write", "writeWithoutResponse") &&
                     propBool(notify, "notify", "indicate")) found += Candidate(channel, write, notify)
             }
@@ -541,13 +556,15 @@ class WebBleTransport : BmsTransport {
      * 真正的握手交给 Repository 的电量计轮询帧（见 BmsRepository.pollLoop）。
      */
     private suspend fun probeChannels(ordered: List<Candidate>, a: LinkAttempt): Candidate? {
-        val isMeter = a.family.isMeter || a.family.isReadOnlyBoard
+        val isMeter = a.family.isMeter
         for ((index, c) in ordered.withIndex()) {
             checkAttempt(a)
             _connectHint.value = "通道探测：${c.channel.label}…"
             logI("通道探测 ${index + 1}/${ordered.size}：${c.channel.id}")
             val signal = CompletableDeferred<Boolean>()
             a.probe = signal
+            val boardProbe = if (a.family.isReadOnlyBoard) BoardConnectionProbe(a.family, boardPassword, boardMac) else null
+            a.boardProbe = boardProbe
             val listener: (dynamic) -> Unit = { event ->
                 if (activeAttempt === a && wantsConnection(a.generation, a.device) &&
                     !a.cleaned && !a.dropped.isCompleted && a.server?.connected == true
@@ -555,7 +572,8 @@ class WebBleTransport : BmsTransport {
                     val bytes = notificationBytes(event) ?: ByteArray(0)
                     if (bytes.isNotEmpty()) {
                         if (!_incoming.tryEmit(bytes)) LinkStats.noteDroppedFrame()
-                        if (!signal.isCompleted && looksLikeProbeResponse(bytes)) signal.complete(true)
+                        if (!signal.isCompleted && (boardProbe?.onNotification(bytes, io.github.lswlc33.maibms.data.epochMillisNow())
+                                ?: looksLikeProbeResponse(bytes))) signal.complete(true)
                     }
                 }
             }
@@ -582,24 +600,41 @@ class WebBleTransport : BmsTransport {
                     return c
                 }
                 a.stage = Stage.Probe
-                writeChunks(c.write, io.github.lswlc33.maibms.protocol.Frame.readRealtime(), a)
-                checkAttempt(a)
-                val ok = withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
+                val ok = if (boardProbe != null) {
+                    _connectHint.value = "正在读取${a.family.label}数据（${c.channel.label}）…"
+                    val deadline = io.github.lswlc33.maibms.data.epochMillisNow() + BOARD_PROBE_TIMEOUT_MS
+                    while (!signal.isCompleted && io.github.lswlc33.maibms.data.epochMillisNow() < deadline) {
+                        checkAttempt(a)
+                        boardProbe.nextRequest(io.github.lswlc33.maibms.data.epochMillisNow())?.let { writeChunks(c.write, it, a) }
+                        if (!signal.isCompleted) delay(80)
+                    }
+                    boardProbe.ready
+                } else {
+                    writeChunks(c.write, io.github.lswlc33.maibms.protocol.Frame.readRealtime(), a)
+                    checkAttempt(a)
+                    withTimeoutOrNull(PROBE_TIMEOUT_MS) { signal.await() } ?: false
+                }
                 checkAttempt(a)
                 if (ok) {
+                    a.boardAddress = boardProbe?.modbusAddress
+                    a.boardLayout = boardProbe?.protocolLayoutHint
                     picked = true
                     return c
                 }
-                logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
+                if (boardProbe != null) {
+                    _connectHint.value = boardConnectionHint(a.family, boardProbe.error)
+                    logW("通道 ${c.channel.id} 无有效读数：${boardProbe.error ?: "只读探测超时"}")
+                } else logW("通道 ${c.channel.id} 无应答（${PROBE_TIMEOUT_MS}ms 超时），换下一个候选")
             } catch (e: ConnectSuperseded) {
                 throw e
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 checkAttempt(a)
-                if (a.stage == Stage.Subscribe) throw e
+                if (a.stage == Stage.Subscribe && !a.family.isReadOnlyBoard) throw e
                 logW("通道 ${c.channel.id} 探测异常：${e.message}")
             } finally {
+                a.boardProbe = null
                 if (a.probe === signal) a.probe = null
                 if (!picked && !a.cleaned) {
                     runCatching { c.notify.removeEventListener("characteristicvaluechanged", listener) }
@@ -672,7 +707,7 @@ class WebBleTransport : BmsTransport {
     private suspend fun writeChunks(wc: WebBluetoothGattCharacteristic, frame: ByteArray, a: LinkAttempt) = writeMutex.withLock {
         checkAttempt(a)
         if (a.family.isReadOnlyBoard) require(isSafeBoardRead(a.family, frame)) { "只读板型拒绝修改命令" }
-        val useResponse = propBool(wc, "write") && !propBool(wc, "writeWithoutResponse")
+        val useResponse = propBool(wc, "write") && (a.family == DeviceFamily.YanYang || !propBool(wc, "writeWithoutResponse"))
         var offset = 0
         while (offset < frame.size) {
             checkAttempt(a)

@@ -44,7 +44,8 @@ data class BoardReading(
     val identity: Map<String, String> = emptyMap(),
     val settings: List<BoardSetting>? = null,
 ) {
-    val hasLiveReading: Boolean get() = totalVoltage != null && current != null
+    val hasLiveReading: Boolean get() = totalVoltage != null &&
+        (current != null || power != null || cells?.any { it != null } == true)
 }
 
 /** 每次只保留一条在途读取，Modbus 应答不带寄存器地址，不能并发猜测归属。 */
@@ -56,6 +57,12 @@ interface ReadOnlyBoardProtocol {
     fun refreshSettings()
     /** 可选 BLE 会话登录，只使用用户已有凭据，不修改模块密码。 */
     fun configureAccess(password: String?, macAddress: String?) {}
+    /** Optional connection-detected layout that should seed a fresh poller for the same device. */
+    val protocolLayoutHint: String? get() = null
+    fun configureLayout(layout: String) {}
+    /** 已由同一连接探测确认的 Modbus 地址，不在设备间记忆。 */
+    val modbusAddress: Int? get() = null
+    fun configureAddress(address: Int) {}
     fun reset()
     val snapshotReady: Boolean
     val error: String? get() = null
@@ -64,6 +71,7 @@ interface ReadOnlyBoardProtocol {
         fun forFamily(family: DeviceFamily): ReadOnlyBoardProtocol? = when (family) {
             DeviceFamily.YanYang -> YanYangProtocol()
             DeviceFamily.Jbd -> JbdProtocol()
+            DeviceFamily.Jikong -> JikongProtocol()
             else -> null
         }
     }
@@ -74,38 +82,46 @@ fun isSafeBoardRead(family: DeviceFamily, frame: ByteArray): Boolean {
     fun u8(i: Int) = frame[i].toInt() and 0xFF
     return when (family) {
         DeviceFamily.YanYang -> {
-            if (frame.size != 8 || u8(0) != 1 || u8(1) != 3) false
+            if (frame.size != 8 || u8(0) !in 0..247 || u8(1) != 3) false
             else {
                 val reg = (u8(2) shl 8) or u8(3)
                 val count = (u8(4) shl 8) or u8(5)
-                (reg to count) in listOf(63 to 4, 1 to 79, 80 to 80, 160 to 81, 240 to 20) &&
-                    Crc16.modbus(frame, 0, 6) == (u8(6) or (u8(7) shl 8))
+                val allowed = if (u8(0) == 0) reg == 0 && count == 1 else
+                    (reg to count) in listOf(63 to 4, 1 to 79, 80 to 80, 160 to 81, 240 to 20,
+                        1 to 47, 48 to 42, 90 to 22)
+                allowed && Crc16.modbus(frame, 0, 6) == (u8(6) or (u8(7) shl 8))
             }
         }
         DeviceFamily.Jbd -> if (frame.size >= 5 && u8(0) == 0xFF && u8(1) == 0xAA) {
             val command = u8(2)
             val size = u8(3)
             frame.size == size + 5 &&
-                ((command == 0x15 && size == 6 && (4 until 10).all { u8(it) == 0x30 }) ||
+                ((command == 0x15 && size == 6 && (4 until 10).all { u8(it) in 0x20..0x7E }) ||
                     (command == 0x17 && size == 0) || (command == 0x18 && size == 6)) &&
                 (frame.drop(2).dropLast(1).sumOf { it.toInt() and 0xFF } and 0xFF) == u8(frame.lastIndex)
         } else frame.size == 7 && u8(0) == 0xDD && u8(1) == 0xA5 &&
             u8(2) in 3..5 && u8(3) == 0 && u8(6) == 0x77 &&
             ((u8(4) shl 8) or u8(5)) == ((-u8(2)) and 0xFFFF)
+        DeviceFamily.Jikong -> frame.size == 20 && u8(0) == 0xAA && u8(1) == 0x55 &&
+            u8(2) == 0x90 && u8(3) == 0xEB && u8(4) in 0x96..0x97 &&
+            (5 until 19).all { u8(it) == 0 } &&
+            (frame.take(19).sumOf { it.toInt() and 255 } and 255) == u8(19)
         else -> false
     }
 }
 
 fun boardFrameForLog(family: DeviceFamily, frame: ByteArray): String {
     if (family == DeviceFamily.Jbd && frame.size >= 4 && frame[0] == 0xFF.toByte() &&
-        frame[1] == 0xAA.toByte() && frame[2] == 0x18.toByte()) {
-        return "FF AA 18 ${frame[3].toInt() and 0xFF} [登录数据已隐藏]"
+        frame[1] == 0xAA.toByte() && (frame[2] == 0x18.toByte() || frame[2] == 0x15.toByte())) {
+        val command = (frame[2].toInt() and 255).toString(16).uppercase()
+        return "FF AA $command ${frame[3].toInt() and 0xFF} [登录数据已隐藏]"
     }
     return frame.joinToString(" ") { (it.toInt() and 0xFF).toString(16).padStart(2, '0').uppercase() }
 }
 
 fun boardProbeRequest(family: DeviceFamily): ByteArray? = when (family) {
     DeviceFamily.YanYang -> byteArrayOf(1, 3, 0, 0x3F, 0, 4, 0x74, 5)
+    DeviceFamily.Jikong -> JikongProtocol.readFrame(0x97)
     DeviceFamily.Jbd -> byteArrayOf(0xDD.toByte(), 0xA5.toByte(), 3, 0, 0xFF.toByte(), 0xFD.toByte(), 0x77)
     else -> null
 }

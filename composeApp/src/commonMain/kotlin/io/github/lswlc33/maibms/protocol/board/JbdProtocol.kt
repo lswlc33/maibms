@@ -9,14 +9,16 @@ import kotlin.math.roundToInt
  * 嘉佰达/JBD 经典 BLE 透传协议的只读实现。
  *
  * 只发 0xA5 读取 0x03/0x04/0x05；不进入工厂模式，不发送 0x5A、0x16 或 0x1D。
- * FF AA 15/17/18 是旧蓝牙模块的**本次连接登录**，只在用户明确提供已有密码和
- * 真实模块 MAC 时使用，既不改密码，也不提权。协议证据见 docs/16-彦阳与嘉佰达只读接入.md。
+ * FF AA 15 支持已有密码直接登录；旧挑战模块才使用 17/18 和真实 MAC。
+ * 普通读取优先，避免历史凭据阻挡免密或系统已配对的模块。资料见 docs/16。
  */
 class JbdProtocol : ReadOnlyBoardProtocol {
     override val family = DeviceFamily.Jbd
     override val caps = DeviceCapabilities.Jbd
 
-    private enum class AccessState { None, Probe, Challenge, Login, Ready, Failed }
+    private enum class AccessState { None, DirectPassword, Probe, Challenge, Login, Verify, Ready, Failed }
+    private var authAttempted = false
+    private var legacyAttempted = false
     private data class Pending(val command: Int, val sentAtMs: Long)
 
     private var pending: Pending? = null
@@ -49,14 +51,9 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         pending = null
         buffered = 0
         lastError = null
-        accessState = when {
-            pw == null -> AccessState.None
-            mac == null -> {
-                lastError = "嘉佰达蓝牙登录需要真实模块 MAC 地址（浏览器设备标识不是 MAC）"
-                AccessState.Failed
-            }
-            else -> AccessState.Probe
-        }
+        authAttempted = false
+        legacyAttempted = false
+        accessState = AccessState.None
     }
 
     override fun nextRequest(nowMs: Long): ByteArray? {
@@ -65,6 +62,7 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         if (nowMs - lastRequestAt < MIN_REQUEST_GAP_MS) return null
 
         val frame = when (accessState) {
+            AccessState.DirectPassword -> appFrame(0x15, (accessPassword ?: return null).encodeToByteArray())
             AccessState.Probe -> appFrame(0x15, byteArrayOf(0x30, 0x30, 0x30, 0x30, 0x30, 0x30))
             AccessState.Challenge -> appFrame(0x17, byteArrayOf())
             AccessState.Login -> {
@@ -74,7 +72,7 @@ class JbdProtocol : ReadOnlyBoardProtocol {
                     ((((mac[i].toInt() and 0xFF) xor pw[i].code) + challenge) and 0xFF).toByte()
                 })
             }
-            AccessState.None, AccessState.Ready -> readFrame(nextReadCommand())
+            AccessState.None, AccessState.Ready, AccessState.Verify -> readFrame(nextReadCommand())
             AccessState.Failed -> return null
         }
         val command = frameCommand(frame)
@@ -102,7 +100,9 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         cellsRequested = false
         modelRequested = false
         refreshRequested = false
-        accessState = if (accessPassword != null && accessMac != null) AccessState.Probe else AccessState.None
+        accessState = AccessState.None
+        authAttempted = false
+        legacyAttempted = false
         buffered = 0
         lastError = null
         settings.clear()
@@ -141,10 +141,23 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         pending = null
         buffered = 0
         if (active.command in listOf(0x15, 0x17, 0x18)) {
-            accessState = AccessState.Failed
+            if (accessState == AccessState.DirectPassword && accessMac != null && !legacyAttempted) {
+                legacyAttempted = true
+                accessState = AccessState.Probe
+            } else accessState = AccessState.Failed
             lastError = "嘉佰达蓝牙登录未应答，请检查已有密码和 MAC，或先在系统蓝牙中配对后清除本机登录凭据重试"
         } else {
-            lastError = "嘉佰达读取超时；请关闭其他连接此板的 App，检查板型、蓝牙密码或系统配对"
+            if (!basicReceived && accessPassword != null && !authAttempted) {
+                authAttempted = true
+                accessState = AccessState.DirectPassword
+            } else if (!basicReceived && accessState == AccessState.Verify && accessMac != null && !legacyAttempted) {
+                legacyAttempted = true
+                accessState = AccessState.Probe
+            } else if (accessState == AccessState.Verify) {
+                accessState = AccessState.Failed
+            }
+            lastError = "嘉佰达未返回有效读数；请核对所选板型、通信通道并关闭原厂 App，需要配对的模块请完成系统蓝牙配对" +
+                if (accessState == AccessState.Failed && accessMac == null) "；旧挑战登录模块还需真实 MAC" else ""
         }
     }
 
@@ -207,6 +220,17 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         discard(total)
         pending = pending?.takeIf { it.command != command }
         if (command == 0x80 || command == 0x83 || status != 0) {
+            if (!basicReceived && accessPassword != null && !authAttempted && command in listOf(0x03, 0x80, 0x83)) {
+                pending = null
+                authAttempted = true
+                accessState = AccessState.DirectPassword
+            } else if (!basicReceived && accessState == AccessState.Verify && command in listOf(0x03, 0x80, 0x83)) {
+                pending = null
+                if (accessMac != null && !legacyAttempted) {
+                    legacyAttempted = true
+                    accessState = AccessState.Probe
+                } else accessState = AccessState.Failed
+            }
             lastError = "嘉佰达读取 0x${command.toString(16).uppercase()} 被设备拒绝（状态 0x${status.toString(16).padStart(2, '0').uppercase()}）"
             return true
         }
@@ -247,7 +271,7 @@ class JbdProtocol : ReadOnlyBoardProtocol {
         discard(total)
         val expected = pending?.command
         // 被动回显或上次登录的迟到回调不能推进另一轮登录状态。
-        if (expected != command || accessState !in listOf(AccessState.Probe, AccessState.Challenge, AccessState.Login)) return true
+        if (expected != command || accessState !in listOf(AccessState.DirectPassword, AccessState.Probe, AccessState.Challenge, AccessState.Login)) return true
         when (command) {
             0x15 -> {
                 pending = null
@@ -256,11 +280,17 @@ class JbdProtocol : ReadOnlyBoardProtocol {
                         lastError = "嘉佰达模块未返回登录状态，请先在系统蓝牙设置中配对"
                         accessState = AccessState.Failed
                     }
-                    data[0].toInt() and 0xFF == 0 -> accessState = AccessState.Challenge
-                    data[0].toInt() and 0xFF == 2 -> accessState = AccessState.Ready
+                    data[0].toInt() and 0xFF == 0 -> accessState =
+                        if (accessState == AccessState.DirectPassword) AccessState.Verify else AccessState.Challenge
+                    data[0].toInt() and 0xFF == 2 -> accessState = AccessState.Verify
                     else -> {
-                        lastError = "嘉佰达蓝牙密码探测被拒绝"
-                        accessState = AccessState.Failed
+                        if (accessState == AccessState.DirectPassword && accessMac != null) {
+                            legacyAttempted = true
+                            accessState = AccessState.Probe
+                        } else {
+                            lastError = "嘉佰达蓝牙密码登录被拒绝，请核对已有密码"
+                            accessState = AccessState.Failed
+                        }
                     }
                 }
             }
@@ -321,6 +351,7 @@ class JbdProtocol : ReadOnlyBoardProtocol {
             else -> "静置"
         }
         basicReceived = true
+        accessState = AccessState.Ready
         val dateRaw = u16(data, 10)
         val year = 2000 + (dateRaw ushr 9)
         val month = (dateRaw ushr 5) and 15
@@ -453,10 +484,10 @@ class JbdProtocol : ReadOnlyBoardProtocol {
     private fun versionText(raw: Int): String = "${raw ushr 4}.${raw and 0x0F}"
 
     private companion object {
-        const val RESPONSE_TIMEOUT_MS = 1_200L
+        const val RESPONSE_TIMEOUT_MS = 3_000L
         const val MIN_REQUEST_GAP_MS = 280L
         const val INITIAL_BUFFER = 96
-        const val MAX_PAYLOAD = 64
+        const val MAX_PAYLOAD = 255
         const val MAX_BUFFER = 1024
         val PROTECTION_NAMES = listOf(
             0 to "单体过压保护", 1 to "单体欠压保护", 2 to "总压过压保护", 3 to "总压欠压保护",

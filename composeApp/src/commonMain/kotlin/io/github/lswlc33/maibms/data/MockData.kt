@@ -469,6 +469,12 @@ object MockBms {
         val deltaV = r.deltaCell ?: if (maxV != null && minV != null) maxV - minV else null
         // 显式空列表 = 本帧所有单体都未接：连汇总值一起清空，别留上一帧的旧数字
         val cellsCleared = r.cells != null && r.cells.isEmpty()
+        val fields = (cur.availableFields ?: emptySet()).toMutableSet()
+        listOf("voltage" to r.totalVoltage, "current" to r.current, "power" to r.power,
+            "soc" to r.soc, "capacity" to r.totalCapAh, "remaining" to r.remainCapAh,
+            "cycles" to r.cycles, "state" to r.battState).forEach { (name, value) ->
+            if (value != null) fields += name
+        }
         _status.value = cur.copy(
             // 只有带实时量的帧才算“有数据”；中继信息/循环/表2 等增量帧不能把界面
             // 从 "--" 切成 0.0 V（它们的数字字段是 null，合并后会保留 cur 的默认 0）
@@ -503,6 +509,7 @@ object MockBms {
             relayBoardBrand = r.relayBoardBrand ?: cur.relayBoardBrand,
             relayBoardName = r.relayBoardName ?: cur.relayBoardName,
             relayBoardMac = r.relayBoardMac ?: cur.relayBoardMac,
+            availableFields = fields,
             trendCurrent = norm(histCurr.toList(), includeZero = true),
             trendVolt = norm(histVolt.toList(), includeZero = false),
         )
@@ -520,6 +527,9 @@ object MockBms {
         seen("runtime", r.runtimeSec); seen("remainingTime", r.remainChargeMin ?: r.remainDischargeMin)
         seen("mos", r.chMos ?: r.disMos); seen("balance", r.balancing ?: r.balanceBits)
         seen("state", r.battState); seen("protection", r.protectPairs); seen("alarms", r.alarmPairs)
+        if (r.identity["protocol"] == "JK04") {
+            fields.removeAll(setOf("current", "power", "soc", "capacity", "remaining", "soh", "cycles", "mos", "protection", "alarms"))
+        }
         val balanceBits = r.balanceBits ?: cur.cellBalanceBits
         val newCells = r.cells?.let { values ->
             val valid = values.mapIndexedNotNull { i, v -> v?.let { (i + 1) to it } }

@@ -110,7 +110,7 @@ class RepositoryTransactionsTest {
             repo.setRealTransport(transport)
             repo.start()
             assertTrue(waitUntil { transport.incoming.subscriptionCount.value > 0 })
-            repo.connect(addressA)
+            repo.connectTo(addressA, DeviceFamily.Ant)
             assertTrue(waitUntil { repo.linkState.value == LinkState.Connected })
             body(worker, repo, transport)
         } finally {
@@ -225,7 +225,7 @@ class RepositoryTransactionsTest {
         }
         assertEquals(-2, repo.writeParam(162, 113_000_000))
         transport.script = { req, _ -> transport.engine.handle(req) }
-        repo.connectTo(addressB)
+        repo.connectTo(addressB, DeviceFamily.Ant)
         assertTrue(waitUntil { repo.linkState.value == LinkState.Connected })
         assertNull(MockBms.unsavedWriteError.value, "A 的告警不能串到 B")
         assertEquals(1, repo.saveAllParams())
@@ -441,7 +441,7 @@ class RepositoryTransactionsTest {
         }
         val readA = async { repo.refreshEventLog() }
         old.awaitEntered()
-        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB) }
+        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB, DeviceFamily.Ant) }
         assertTrue(waitUntil { !MockBms.eventLogLoading.value })
         old.release.complete(Unit)
         switch.result()
@@ -473,7 +473,7 @@ class RepositoryTransactionsTest {
         }
         val read = async { repo.refreshEventLog() }
         counters.awaitEntered()
-        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB) }
+        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB, DeviceFamily.Ant) }
         counters.release.complete(Unit)
         switch.result()
         assertEquals(-1, read.result())
@@ -524,7 +524,7 @@ class RepositoryTransactionsTest {
         val writeA = async { repo.writeParam(0, 4300) }
         old.awaitEntered()
         val queuedSave = async(start = CoroutineStart.UNDISPATCHED) { repo.saveAllParams() }
-        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB) }
+        val switch = async(start = CoroutineStart.UNDISPATCHED) { repo.connectTo(addressB, DeviceFamily.Ant) }
         assertTrue(waitUntil { !MockBms.modifying.value })
         old.release.complete(Unit)
         switch.result()

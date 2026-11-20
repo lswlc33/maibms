@@ -218,7 +218,8 @@
     }
     var boardMode = window.MaibmsBoards.supports(st);
     bar.querySelectorAll('button').forEach(function (b) {
-      if (b.dataset.tab === 'control') b.style.display = boardMode ? 'none' : '';
+      if (b.dataset.tab === 'control') b.style.display = (st.caps || {}).readOnly ? 'none' : '';
+      if (b.dataset.tab === 'params') b.style.display = (st.caps || {}).settings === false ? 'none' : '';
       b.className = b.dataset.tab === ui.tab ? 'on' : '';
     });
   }
@@ -376,7 +377,7 @@
   function flowStrip(st) {
     if (!st.hasData) return null;
     var d = st.device;
-    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var charging = d.battState === '充电' || (d.battState !== '放电' && d.current < 0);
     var idle = !d.power;
     var strip = el('div', 'flow' + (idle ? ' idle' : charging ? ' rev' : ' fwd'));
 
@@ -459,8 +460,11 @@
     info.appendChild(el('div', 'name', st.deviceName));
     info.appendChild(el('div', 'state', !d.hasData ? '等待数据…' : (st.stalled ? '设备失联' : d.battState)));
     info.appendChild(el('div', 'cap', d.hasData
-      ? num(d.remainCapAh, 1) + ' / ' + num(d.totalCapAh, 1) + ' Ah · SOH ' + d.soh + '% · ' + d.cycles + ' 次'
-      : '-- / -- Ah'));
+      ? [window.MaibmsBoards.hasReading(st, 'remaining') ? num(d.remainCapAh, 1) + ' Ah 剩余' : '',
+        window.MaibmsBoards.hasReading(st, 'capacity') ? num(d.totalCapAh, 1) + ' Ah 总容量' : '',
+        st.caps.stateOfHealth && window.MaibmsBoards.hasReading(st, 'soh') ? 'SOH ' + d.soh + '%' : '',
+        window.MaibmsBoards.hasReading(st, 'cycles') ? d.cycles + ' 次' : ''].filter(Boolean).join(' · ')
+      : '等待容量数据'));
 
     ringWrap.appendChild(ring);
     ringWrap.appendChild(info);
@@ -1331,6 +1335,7 @@
 
   function renderAllInner() {
     var st = ui.state || {};
+    if ((st.caps || {}).settings === false && (ui.tab === 'params' || ui.tab === 'control')) ui.tab = 'dash';
     var app = document.getElementById('app');
     if (!app) return;
 

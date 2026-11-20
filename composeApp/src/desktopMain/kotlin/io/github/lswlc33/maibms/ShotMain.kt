@@ -150,10 +150,13 @@ private fun seedParamsAndIdentity() {
 
 /** 注入两拍（略有差异）以便趋势图能成线 */
 private fun seedUi() {
-    // 先接上「已连接但静默」的 QA 传输，再灌数据：App() 里的 start() 会补上收集器，
-    // 但因为没写 AppStore.savedAddress，不会再自发一次 connect（那会清空刚灌的数据）
+    // 先启动收集器，再明确以 ANT 连接；App() 后续重复 start() 不会清掉截图数据。
     io.github.lswlc33.maibms.data.Bms.repository.setRealTransport(ShotTransport())
-    kotlinx.coroutines.runBlocking { io.github.lswlc33.maibms.data.Bms.repository.connect("F9:99:1B:2B:1B:70") }
+    io.github.lswlc33.maibms.data.AppStore.autoReconnect = false
+    io.github.lswlc33.maibms.data.Bms.repository.start()
+    kotlinx.coroutines.runBlocking {
+        io.github.lswlc33.maibms.data.Bms.repository.connectTo("F9:99:1B:2B:1B:70", io.github.lswlc33.maibms.transport.DeviceFamily.Ant)
+    }
     seedParamsAndIdentity()
     // 第二拍把功率抬到 1.5kW（电流 17.6A 与 85.24V 自洽）：1 档满格 + 2 档半格，一屏看到已走/正在走/未走三种格子。
     // 剩余时间同样按当拍电流换算：待机拍放真机实测值（10584min），放电拍 113Ah÷17.6A≈384min。

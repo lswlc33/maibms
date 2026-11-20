@@ -145,8 +145,8 @@ fun SettingsHomeScreen(
                     else -> "未连接"
                 },
             )
-            // 通信通道：真机 BLE 才有（默认 / 备用 A / 备用 B，docs/02 §2.2）；电量计模式不适用
-            if (caps.antDetails && !readOnlyBoard) {
+            // 通信通道只选择 BLE 模块，不修改保护板设置。
+            if (!meterMode && (caps.antDetails || readOnlyBoard)) {
                 val chActive = channelActive
                 SettingRow(
                     title = "通信通道",

@@ -82,15 +82,15 @@ fun ReadOnlyBoardSettingsScreen(
                     Text("仅在本机记住已有凭据，用于连接登录，不改设备密码。若模块要求系统配对，请先在系统蓝牙中完成配对。", fontSize = 12.sp)
                     OutlinedTextField(password, { password = it }, label = { Text("已有蓝牙密码（6 位字符）") },
                         visualTransformation = PasswordVisualTransformation(), singleLine = true)
-                    OutlinedTextField(mac, { mac = it }, label = { Text("模块 MAC（AA:BB:CC:DD:EE:FF）") }, singleLine = true)
-                    Text("iOS 和网页的设备标识不是 MAC，请从模块标签或原厂 App 读取真实地址。", fontSize = 10.sp)
+                    OutlinedTextField(mac, { mac = it }, label = { Text("模块 MAC（可选，旧挑战模块需要）") }, singleLine = true)
+                    Text("可先只填写密码；旧挑战登录才需要从标签或原厂 App 取得真实 MAC。", fontSize = 10.sp)
                     validation?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
                     if (password.length == 6 && repo.setBoardAccess(password, mac)) accessOpen = false
-                    else validation = "请输入 6 位 ASCII 密码和完整的模块 MAC 地址"
+                    else validation = "请输入 6 位 ASCII 密码；MAC 可留空，填写时需完整地址"
                 }) { Text(if (connected) "登录并读取" else "保存到本机") }
             },
             dismissButton = {

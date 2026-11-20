@@ -413,6 +413,15 @@ internal fun cellStateLabels(c: CellV): List<String> = buildList {
     }
 }
 
+internal fun BmsStatus.powerForGauge(): Int {
+    val magnitude = kotlin.math.abs(power.toLong()).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    return when (battState) {
+        "充电" -> -magnitude
+        "放电" -> magnitude
+        else -> power
+    }
+}
+
 internal fun parsePowerStages(sub: String, positive: List<String>): List<Int>? {
     val subV = sub.trim().toIntOrNull() ?: return null
     // 限制输入量程，避免 abs(Int.MIN_VALUE) 溢出，也避免生成数百万根表盘刻度。
@@ -428,9 +437,10 @@ private fun <T> AdaptiveCardGrid(
     spacing: Dp = 5.dp,
     content: @Composable (T, Modifier) -> Unit,
 ) {
+    if (items.isEmpty()) return
     val fontScale = LocalDensity.current.fontScale
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val columns = cardColumnCount(maxWidth.value, fontScale, minWidth.value, maxColumns)
+        val columns = cardColumnCount(maxWidth.value, fontScale, minWidth.value, maxColumns).coerceAtMost(items.size)
         Column(verticalArrangement = Arrangement.spacedBy(spacing)) {
             items.chunked(columns).forEach { row ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(spacing)) {
@@ -598,7 +608,7 @@ fun BatteryCard(
                     val pct = socText ?: (if (status.hasReading("soc")) status.soc.toString() + "%" else "--")
                     Row {
                         Text(conn, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-                        Text(" · $pct", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
+                        if (caps.antDetails || status.hasReading("soc")) Text(" · $pct", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface, softWrap = false)
                     }
                 }
@@ -643,12 +653,12 @@ fun RelayBoardCard(
             Text("收起", fontSize = 9.5.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
         }
         Spacer(Modifier.height(4.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        if (brand.isNotBlank() && brand != "--") Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("中继保护板", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
             Text(brand, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
         }
         Spacer(Modifier.height(2.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        if (name.isNotBlank() && name != "--") Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("名称", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
             // 中继板广播名最长 25 字节（蓝宝/陆行同规格）：超出卡片宽度时截断，不撑破布局
             Text(
@@ -657,7 +667,7 @@ fun RelayBoardCard(
             )
         }
         Spacer(Modifier.height(2.dp))
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        if (mac.isNotBlank() && mac != "--") Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text("MAC", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(64.dp))
             Text(mac, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurface)
         }
@@ -745,9 +755,10 @@ fun MetricGridCard(
     modifier: Modifier = Modifier,
 ) {
     val metrics = status.metrics()
-    val powerW = status.power
-    val hasData = status.hasData
     val caps = MockBms.caps.collectAsState().value
+    if (!caps.antDetails && !status.hasReading("current") && !status.hasReading("power")) return
+    val powerW = status.powerForGauge()
+    val hasData = status.hasData
     var gaugeOn by remember { mutableStateOf(AppStore.powerGaugeEnabled) }
     var stages by remember { mutableStateOf(AppStore.powerStagesW) }
     var editing by remember { mutableStateOf(false) }
@@ -1122,8 +1133,8 @@ fun CellGridCard(cells: List<CellV>, modifier: Modifier = Modifier,
             // 电量计（蓝宝）没有逐串，但有最高/最低/压差：这里退化为一行汇总，而不是空卡
             val hasMinMax = maxCell != "--" || minCell != "--"
             if (hasMinMax) {
-                AdaptiveCardGrid(listOf("最高" to maxCell, "最低" to minCell, "平均" to avgCell, "压差" to deltaCell),
-                    minWidth = 72.dp, maxColumns = 4) { stat, mod -> MiniStat(stat.first, stat.second, mod) }
+                AdaptiveCardGrid(listOf("最高" to maxCell, "最低" to minCell, "平均" to avgCell, "压差" to deltaCell)
+                    .filter { it.second != "--" }, minWidth = 72.dp, maxColumns = 4) { stat, mod -> MiniStat(stat.first, stat.second, mod) }
             } else {
                 Text("未连接 · 无数据", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = 2.dp))

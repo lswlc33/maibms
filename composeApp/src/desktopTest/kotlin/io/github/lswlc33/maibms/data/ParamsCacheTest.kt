@@ -39,6 +39,8 @@ class ParamsCacheTest {
     @Test fun successfulConnectionPersistsCache() {
         AppStore.deleteParamsCache(ADDR)
         AppStore.savedAddress = ADDR
+        DeviceProfiles.upsert(DeviceProfile(ADDR, "ANT-CACHE-TEST", family = io.github.lswlc33.maibms.transport.DeviceFamily.Ant))
+        AppStore.autoReconnect = true
         val scope = CoroutineScope(Dispatchers.Default)
         try {
             runBlocking {

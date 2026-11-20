@@ -127,8 +127,11 @@
     soc.appendChild(document.createTextNode(' ' + (d.hasData && (!window.MaibmsBoards.supports(st) || window.MaibmsBoards.hasReading(st, 'soc')) ? d.soc : '--') + '%'));
 
     items[1].textContent = d.hasData ? num(d.totalVoltage, d.voltageDecimals) + 'V' : '--';
-    items[2].textContent = d.hasData ? num(d.current, 2) + 'A' : '--';
-    items[3].textContent = d.hasData ? d.power + 'W' : '--';
+    items[2].textContent = window.MaibmsBoards.hasReading(st, 'current') ? num(d.current, 2) + 'A' : '--';
+    items[3].textContent = window.MaibmsBoards.hasReading(st, 'power') ? d.power + 'W' : '--';
+    if (items[0].parentElement) items[0].parentElement.style.display = st.availableFields && !window.MaibmsBoards.hasReading(st, 'soc') ? 'none' : '';
+    if (items[2].parentElement) items[2].parentElement.style.display = st.availableFields && !window.MaibmsBoards.hasReading(st, 'current') ? 'none' : '';
+    if (items[3].parentElement) items[3].parentElement.style.display = st.availableFields && !window.MaibmsBoards.hasReading(st, 'power') ? 'none' : '';
 
     var link = items[4];
     var cls = '';
@@ -226,7 +229,7 @@
   function flowText(st) {
     if (!st.hasData) return '--';
     var d = st.device;
-    var charging = d.current < 0 || (!d.power && d.battState === '充电');
+    var charging = d.battState === '充电' || (d.battState !== '放电' && d.current < 0);
     var idle = !d.power;
     var dir = idle ? '— 静置' : charging ? '◀ 充电器' : '▶ 负载';
     var eta = charging ? d.remainChargeText : d.remainDischargeText;
@@ -309,17 +312,21 @@
     var d = st.device;
     var live = h('div', 'kv');
     live.appendChild(kvRow('SOC', (d.hasData ? d.soc : '--') + ' %'));
-    live.appendChild(kvRow('剩余容量', d.hasData ? num(d.remainCapAh, 1) + ' / ' + num(d.totalCapAh, 1) + ' Ah' : '--'));
-    live.appendChild(kvRow('SOH / 循环', d.hasData ? d.soh + '% / ' + d.cycles + ' 次' : '--'));
+    if (window.MaibmsBoards.hasReading(st, 'remaining')) live.appendChild(kvRow('剩余容量', num(d.remainCapAh, 1) + ' Ah'));
+    if (window.MaibmsBoards.hasReading(st, 'capacity')) live.appendChild(kvRow('总容量', num(d.totalCapAh, 1) + ' Ah'));
+    if (st.caps.stateOfHealth && window.MaibmsBoards.hasReading(st, 'soh')) live.appendChild(kvRow('SOH', d.soh + '%'));
+    if (window.MaibmsBoards.hasReading(st, 'cycles')) live.appendChild(kvRow('循环', d.cycles + ' 次'));
     live.appendChild(kvRow('总电压', reading(d, d.totalVoltage, d.voltageDecimals) + ' V'));
     live.appendChild(kvRow('电流', reading(d, d.current, 2) + ' A'));
     live.appendChild(kvRow('功率', d.hasData ? d.power + ' W' : '--'));
     live.appendChild(kvRow('流向', flowText(st)));
     live.appendChild(kvRow('压差', d.hasData ? d.deltaCell + ' V' : '--'));
-    live.appendChild(kvRow('充电剩余', d.remainChargeText));
-    live.appendChild(kvRow('放电剩余', d.remainDischargeText));
-    live.appendChild(kvRow('本次充电', d.thisChargeText));
-    live.appendChild(kvRow('距上次充电', d.lastChargeGapText));
+    if (st.caps.extTimes) {
+      if (d.remainChargeText !== '--') live.appendChild(kvRow('充电剩余', d.remainChargeText));
+      if (d.remainDischargeText !== '--') live.appendChild(kvRow('放电剩余', d.remainDischargeText));
+      if (d.thisChargeText !== '--') live.appendChild(kvRow('本次充电', d.thisChargeText));
+      if (d.lastChargeGapText !== '--') live.appendChild(kvRow('距上次充电', d.lastChargeGapText));
+    }
     wrap.appendChild(panel('实时读数', live));
 
     // MOS / 均衡
@@ -922,6 +929,7 @@
 
   function renderAll() {
     var st = ui.state || {};
+    if ((st.caps || {}).settings === false && (ui.tab === 'params' || ui.tab === 'control')) ui.tab = 'dash';
     renderHud(st);
     renderTabs(st);
 
@@ -929,7 +937,8 @@
     if (!content) return;
     var boardMode = window.MaibmsBoards.supports(st);
     document.querySelectorAll('#tabs .tab').forEach(function (item) {
-      if (item.dataset.tab === 'control') item.style.display = boardMode ? 'none' : '';
+      if (item.dataset.tab === 'control') item.style.display = (st.caps || {}).readOnly ? 'none' : '';
+      if (item.dataset.tab === 'params') item.style.display = (st.caps || {}).settings === false ? 'none' : '';
     });
     if (boardMode) {
       if (ui.tab === 'control') ui.tab = 'params';

@@ -65,6 +65,14 @@ class CardLogicTest {
         assertNull(parsePowerStages("1500", listOf("1000", "3000", "10000000")))
     }
 
+    @Test fun gaugeDirectionUsesReportedStateWithoutChangingMeterReadings() {
+        val discharge = BmsStatus(hasData = true, battState = "放电", current = -2.5, power = -120)
+        assertEquals(120, discharge.powerForGauge())
+        assertEquals(-120, discharge.power)
+        assertEquals(-120, discharge.copy(battState = "充电", power = 120).powerForGauge())
+        assertEquals(-120, discharge.copy(battState = "未知").powerForGauge())
+    }
+
     @Test fun safety_advice_uses_official_mos_reason_and_never_bypasses_protection() {
         assertTrue(safetyChecks(BmsStatus()).isEmpty())
         val advice = safetyChecks(BmsStatus(hasData = true, chMosCode = 3)).joinToString(" ")

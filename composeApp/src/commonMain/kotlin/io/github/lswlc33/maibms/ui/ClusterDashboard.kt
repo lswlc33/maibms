@@ -185,7 +185,8 @@ fun ClusterDashboard(
                                 .padding(horizontal = u * 1.6f, vertical = u * 0.8f),
                             u,
                         )
-                        ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
+                        if (caps.antDetails || status.hasReading("power"))
+                            ClusterGaugeP(status, useKw, Modifier.weight(1.08f).fillMaxHeight(), u)
                     }
                     Box(Modifier.align(Alignment.CenterStart).width(u * 0.09f).fillMaxHeight().background(ClusterLine))
                     Box(Modifier.align(Alignment.CenterEnd).width(u * 0.09f).fillMaxHeight().background(ClusterLine))
@@ -226,7 +227,7 @@ private fun ClusterMidColumn(
     modifier: Modifier = Modifier, u: Dp,
 ) {
     val caps by MockBms.caps.collectAsState()
-    val charging = status.hasReading("power") && status.power < -20
+    val charging = status.hasReading("power") && status.powerForGauge() < -20
     val remainAh = status.remainCapAh
     Column(
         modifier,
@@ -236,7 +237,7 @@ private fun ClusterMidColumn(
     ) {
         // SOC 大字 + 状态章
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(u * 1.4f)) {
-            Row(verticalAlignment = Alignment.Bottom) {
+            if (caps.antDetails || status.hasReading("soc")) Row(verticalAlignment = Alignment.Bottom) {
                 Text(
                     if (status.hasReading("soc")) status.soc.toString() else "--",
                     fontSize = (u.value * 5.6).sp, fontWeight = FontWeight.Light,
@@ -246,8 +247,9 @@ private fun ClusterMidColumn(
             }
             val state = when {
                 !status.hasData -> "未连接" to ClusterFg2
+                !status.hasReading("power") -> status.battState to ClusterFg2
                 charging -> "充电" to ClusterTeal
-                status.power > 20 -> "放电" to ClusterGreen
+                status.powerForGauge() > 20 -> "放电" to ClusterGreen
                 else -> "待机" to ClusterFg2
             }
             Box(
@@ -261,7 +263,7 @@ private fun ClusterMidColumn(
         // 10 段电量条（<15% 整条转红）
         val lit = if (status.hasData) ClusterMath.socSegments(status.soc) else 0
         val segColor = if (status.hasData && ClusterMath.socLow(status.soc)) ClusterRed else ClusterGreen
-        Row(
+        if (caps.antDetails || status.hasReading("soc")) Row(
             Modifier.fillMaxWidth().padding(horizontal = u * 0.8f).height(u * 1.85f),
             horizontalArrangement = Arrangement.spacedBy(u * 0.34f),
         ) {
@@ -386,7 +388,7 @@ private fun ClusterGaugeP(status: BmsStatus, useKw: Boolean, modifier: Modifier 
     val range = ClusterMath.powerRangeW(stages)
     val chargeFrom = ClusterMath.chargeBandFromW(stages)
     val zones = ClusterMath.dischargeZonesW(stages)
-    val fillW = if (hasData) status.power.toFloat() else 0f
+    val fillW = if (hasData) status.powerForGauge().toFloat() else 0f
     Canvas(modifier) {
         val cx = size.width / 2f
         val cy = size.height / 2f
@@ -422,8 +424,8 @@ private fun ClusterGaugeP(status: BmsStatus, useKw: Boolean, modifier: Modifier 
         dialTicks(cx, cy, ClusterMath.ticksP(range, useKw), range, r, zeroBold = true)
         drawCenterText(
             textMeasurer,
-            if (hasData) ClusterMath.fmtPower(fillW, useKw) else "--",
-            if (!hasData) "" else (if (fillW < -2f) "充电 " else "") +
+            if (hasData) ClusterMath.fmtPower(status.power.toFloat(), useKw) else "--",
+            if (!hasData) "" else (if (fillW < -2f) "充电 " else if (fillW > 2f) "放电 " else "") +
                 (if (useKw) "%.2fkW".fmt(kotlin.math.abs(fillW) / 1000) else "${kotlin.math.abs(fillW).toInt()}W") +
                 " · " + (if (status.current > 0.05f) "+" else "") + "%.1fA".fmt(status.current),
             cx, cy, r, u,

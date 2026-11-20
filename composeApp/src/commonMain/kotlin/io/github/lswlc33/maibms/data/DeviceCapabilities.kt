@@ -67,6 +67,13 @@ data class DeviceCapabilities(
             cycleCount = true, stateOfHealth = false,
         )
 
+        val Jikong = DeviceCapabilities(
+            permission = false, controlCharge = false, controlDischarge = false,
+            controlBalance = false, maxCells = 32, extTimes = false, readOnly = true,
+            antDetails = false, runtime = true, cycleCapacity = false,
+            cycleCount = true,
+        )
+
         /** 蓝宝电量计：无保护/告警、无 MOS/均衡、无逐串、仅 1 路温度、无扩展时间、无权限、无控制 */
         val LanBao = DeviceCapabilities(
             protectAlarm = false, mos = false, balance = false,
@@ -91,6 +98,7 @@ data class DeviceCapabilities(
         fun forFamily(f: DeviceFamily): DeviceCapabilities = when (f) {
             DeviceFamily.YanYang -> YanYang
             DeviceFamily.Jbd -> Jbd
+            DeviceFamily.Jikong -> Jikong
             DeviceFamily.LanBao -> LanBao
             DeviceFamily.LuXing -> LuXing
             else -> Board

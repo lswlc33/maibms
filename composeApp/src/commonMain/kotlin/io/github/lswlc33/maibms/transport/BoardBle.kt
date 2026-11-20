@@ -8,17 +8,19 @@ fun bleUuid(value: String): String = if (value.length == 4) {
 fun sameBleUuid(a: String, b: String): Boolean = bleUuid(a) == bleUuid(b)
 
 fun boardBleChannels(family: DeviceFamily): List<BleChannel> = when (family) {
-    DeviceFamily.YanYang -> listOf(BleChannel.YanYang, BleChannel.YanYangFee9)
+    DeviceFamily.YanYang -> listOf(BleChannel.YanYang, BleChannel.YanYangFee9, BleChannel.YanYangFee9Uart, BleChannel.YanYangFfe1)
     DeviceFamily.Jbd -> listOf(BleChannel.Jbd, BleChannel.JbdFfe0)
+    DeviceFamily.Jikong -> listOf(BleChannel.Jikong)
     else -> emptyList()
 }
 
-/** 名称只作提示；FF00/FEE9 是专用模块，通用 FFE0 则留待用户选择协议。 */
-fun advertisedFamily(name: String?, serviceUuids: List<String>): DeviceFamily? =
+/** 名称优先；FF00/FEE9 模块及极空的 FFE0 + 公司 ID 仅作名称不明时的提示。 */
+fun advertisedFamily(name: String?, serviceUuids: List<String>, manufacturerIds: List<Int> = emptyList()): DeviceFamily? =
     if (name?.trim()?.uppercase()?.startsWith(DeviceFamily.CONTROLLER_PREFIX) == true) null
     else DeviceFamily.matchName(name) ?: when {
         serviceUuids.any { sameBleUuid(it, "FF00") } -> DeviceFamily.Jbd
         serviceUuids.any { sameBleUuid(it, "FEE9") } -> DeviceFamily.YanYang
+        serviceUuids.any { sameBleUuid(it, "FFE0") } && manufacturerIds.any { it == 0x0B65 || it == 0x4B4A } -> DeviceFamily.Jikong
         serviceUuids.any { sameBleUuid(it, "FFE0") } -> DeviceFamily.Unknown
         else -> null
     }

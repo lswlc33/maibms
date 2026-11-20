@@ -223,6 +223,20 @@ class ReadOnlyBoardRepositoryTest {
     }
 
     @Test
+    fun unknownDeviceMustSelectBrandAndNeverFallsBackToAnt() =
+        withRepository { _, repo, transport, _ ->
+            repo.connectTo("custom-address")
+            assertTrue(transport.configuredFamilies().isEmpty())
+            assertTrue(transport.writes().isEmpty())
+            assertTrue(repo.connectHint.value?.contains("品牌") == true)
+            assertNull(DeviceProfiles.find("custom-address"))
+            repo.connectTo("custom-address", DeviceFamily.Jbd)
+            assertTrue(awaitTrue(5_000) { MockBms.status.value.hasReading("voltage") })
+            assertEquals(DeviceFamily.Jbd, repo.currentFamily.value)
+            assertEquals(DeviceFamily.Jbd, DeviceProfiles.find("custom-address")?.family)
+        }
+
+    @Test
     fun jbdGoldenFramesAreFragmentedIntoUiAndPollingContinuesReadOnly() =
         withRepository { _, repo, transport, _ ->
             val address = "JBD:00:00:00:00:01"
